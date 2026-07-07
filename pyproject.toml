@@ -1,0 +1,30 @@
+﻿[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdo-toolkit"
+version = "0.1.0"
+description = "Passive, read-only BDO packet parsing toolkit for app developers."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "scapy",
+]
+license = { text = "MIT" }
+authors = [
+  { name = "BDO Toolkit contributors" },
+]
+keywords = ["bdo", "packets", "parse", "pcap", "passive"]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bdo_toolkit = ["py.typed"]
+

@@ -1,0 +1,93 @@
+{
+  "calibration_item_id": 7003,
+  "profile_active": true,
+  "specs": {
+    "INVENTORY_TRANSFER": [
+      {
+        "confidence": "calibrated-potato-medium",
+        "context_offset": 23,
+        "event": "INVENTORY_TRANSFER",
+        "item_id_offset": 33,
+        "item_instance_offset": 68,
+        "length": 255,
+        "observed_at": "2026-07-06T15:50:20",
+        "opcode": "0x0F16",
+        "quantity_offset": 37,
+        "repeat_stride": 228,
+        "score": 0.9,
+        "source": "calibrate-potato storage-to-inventory"
+      }
+    ],
+    "LOOT_PREVIEW": [
+      {
+        "confidence": "calibrated-potato-high",
+        "event": "LOOT_PREVIEW",
+        "item_id_offset": 23,
+        "item_instance_offset": 58,
+        "length": 244,
+        "observed_at": "2026-07-02T11:54:26",
+        "opcode": "0x1643",
+        "quantity_offset": 27,
+        "score": 1.0,
+        "source": "calibrate-potato loot-preview"
+      }
+    ],
+    "SOURCE_CONTAINER_DECREMENT": [
+      {
+        "confidence": "calibrated-potato-medium",
+        "context_offset": 7,
+        "event": "SOURCE_CONTAINER_DECREMENT",
+        "length": 40,
+        "observed_at": "2026-07-06T15:50:20",
+        "opcode": "0x13A5",
+        "quantity_removed_offset": 32,
+        "score": 0.86,
+        "source": "calibrate-potato storage-to-inventory",
+        "source_instance_offset": 23
+      }
+    ],
+    "SOURCE_ITEM_REFERENCE": [
+      {
+        "confidence": "calibrated-potato-medium",
+        "event": "SOURCE_ITEM_REFERENCE",
+        "item_id_offset": 10,
+        "length": 24,
+        "observed_at": "2026-07-02T11:51:05",
+        "opcode": "0x0C3B",
+        "score": 0.82,
+        "source": "calibrate-potato inventory-to-storage qty=3"
+      }
+    ],
+    "SOURCE_STACK_DECREMENT": [
+      {
+        "confidence": "calibrated-potato-medium",
+        "event": "SOURCE_STACK_DECREMENT",
+        "length": 52,
+        "observed_at": "2026-07-02T11:51:05",
+        "opcode": "0x1A32",
+        "quantity_removed_offset": 42,
+        "score": 0.88,
+        "source": "calibrate-potato inventory-to-storage qty=3",
+        "source_instance_offset": 34
+      }
+    ],
+    "STORAGE_ITEM_DELTA": [
+      {
+        "confidence": "calibrated-potato-high",
+        "context_offset": 8,
+        "destination_instance_offset": 72,
+        "event": "STORAGE_ITEM_DELTA",
+        "item_id_offset": 37,
+        "length": 261,
+        "observed_at": "2026-07-02T11:51:05",
+        "opcode": "0x0E6A",
+        "quantity_added_offset": 41,
+        "repeat_stride": 226,
+        "score": 1.0,
+        "source": "calibrate-potato inventory-to-storage qty=3"
+      }
+    ]
+  },
+  "updated_at": "2026-07-06T15:50:22",
+  "version": 1
+}
