@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BDO Toolkit — API Reference</title>
+<meta name="description" content="API reference for bdo-toolkit: passive, read-only BDO packet telemetry for Python. Pcap replay, live capture, structured item events, opcode profile calibration.">
+<style>
+:root {
+  --ground: #f4f6f5;
+  --panel: #ffffff;
+  --panel-2: #eef1f0;
+  --ink: #1b2423;
+  --dim: #5c6d68;
+  --line: #dbe2df;
+  --accent: #0e7c6b;
+  --accent-ink: #0a5f52;
+  --accent-wash: #e2efec;
+  --warn-wash: #f7efdd;
+  --warn-edge: #b7852c;
+  --warn-ink: #7a5a1d;
+  --code-ground: #16201e;
+  --code-ink: #d7e4e0;
+  --code-dim: #7c948d;
+  --code-str: #a3d9b1;
+  --code-kw: #8ecbbf;
+  --code-fn: #e8d59a;
+  --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", "Avenir Next", Seravek, system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #0e1413;
+    --panel: #131b1a;
+    --panel-2: #1a2422;
+    --ink: #dde7e3;
+    --dim: #8da39c;
+    --line: #253230;
+    --accent: #3ecfae;
+    --accent-ink: #5eddc0;
+    --accent-wash: #14261f;
+    --warn-wash: #241d10;
+    --warn-edge: #b7852c;
+    --warn-ink: #d9b36a;
+    --code-ground: #0a100f;
+    --code-ink: #cfdeda;
+  }
+}
+:root[data-theme="light"] {
+  --ground: #f4f6f5; --panel: #ffffff; --panel-2: #eef1f0;
+  --ink: #1b2423; --dim: #5c6d68; --line: #dbe2df;
+  --accent: #0e7c6b; --accent-ink: #0a5f52; --accent-wash: #e2efec;
+  --warn-wash: #f7efdd; --warn-edge: #b7852c; --warn-ink: #7a5a1d;
+  --code-ground: #16201e; --code-ink: #d7e4e0;
+}
+:root[data-theme="dark"] {
+  --ground: #0e1413; --panel: #131b1a; --panel-2: #1a2422;
+  --ink: #dde7e3; --dim: #8da39c; --line: #253230;
+  --accent: #3ecfae; --accent-ink: #5eddc0; --accent-wash: #14261f;
+  --warn-wash: #241d10; --warn-edge: #b7852c; --warn-ink: #d9b36a;
+  --code-ground: #0a100f; --code-ink: #cfdeda;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+.shell { display: grid; grid-template-columns: 264px minmax(0, 1fr); max-width: 1200px; margin: 0 auto; }
+
+/* ---- sidebar ---- */
+.side {
+  position: sticky; top: 0; align-self: start;
+  height: 100vh; overflow-y: auto;
+  padding: 28px 20px 40px 24px;
+  border-right: 1px solid var(--line);
+  font-size: 13.5px;
+}
+.brand { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: .02em; color: var(--ink); text-decoration: none; display: block; }
+.brand .tk { color: var(--accent); }
+.ver { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 2px; }
+.side nav { margin-top: 22px; }
+.navgroup { margin-bottom: 18px; }
+.navgroup > .nglabel {
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .14em; color: var(--dim); margin-bottom: 6px;
+}
+.side a.nl {
+  display: block; color: var(--ink); text-decoration: none;
+  padding: 3px 8px; margin-left: -8px; border-radius: 4px;
+  border-left: 2px solid transparent;
+}
+.side a.nl:hover { background: var(--panel-2); }
+.side a.nl.on { color: var(--accent-ink); border-left-color: var(--accent); background: var(--accent-wash); }
+.side a.nl code { font-family: var(--mono); font-size: 12.5px; }
+.themebtn {
+  margin-top: 8px; font-family: var(--mono); font-size: 11px;
+  background: none; border: 1px solid var(--line); border-radius: 4px;
+  color: var(--dim); padding: 4px 10px; cursor: pointer;
+}
+.themebtn:hover { color: var(--ink); border-color: var(--dim); }
+.themebtn:focus-visible, a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- main ---- */
+main { padding: 0 40px 96px 44px; min-width: 0; }
+.section { padding-top: 34px; }
+h1, h2, h3, h4 { line-height: 1.25; text-wrap: balance; }
+h1 { font-size: 30px; font-weight: 650; margin: 10px 0 8px; }
+h2 {
+  font-size: 22px; font-weight: 650; margin: 42px 0 10px;
+  padding-top: 26px; border-top: 1px solid var(--line);
+}
+h3 { font-size: 17px; margin: 30px 0 8px; }
+h3.api, h2.api { font-family: var(--mono); font-weight: 600; }
+h2.api { font-size: 19px; }
+h3.api { font-size: 15.5px; }
+p, ul, ol { max-width: 68ch; }
+p { margin: 10px 0; }
+a { color: var(--accent-ink); }
+.eyebrow {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .16em; color: var(--accent); margin: 40px 0 0;
+}
+.lede { font-size: 17.5px; color: var(--dim); max-width: 62ch; margin-top: 4px; }
+
+/* masthead */
+.mast { padding-top: 46px; }
+.pipeline {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 13px;
+  margin: 22px 0 6px;
+}
+.pipeline .node {
+  border: 1px solid var(--line); background: var(--panel);
+  padding: 7px 13px; border-radius: 4px; white-space: nowrap;
+}
+.pipeline .node.hot { border-color: var(--accent); color: var(--accent-ink); background: var(--accent-wash); }
+.pipeline .arrow { color: var(--dim); }
+.guarantee {
+  display: inline-block; margin-top: 14px;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em;
+  color: var(--accent-ink); background: var(--accent-wash);
+  border: 1px solid var(--accent); border-radius: 999px; padding: 3px 12px;
+}
+
+/* code */
+pre {
+  background: var(--code-ground); color: var(--code-ink);
+  font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  border-radius: 6px; padding: 14px 16px; overflow-x: auto;
+  border: 1px solid var(--line); margin: 14px 0;
+}
+pre .c { color: var(--code-dim); }
+pre .s { color: var(--code-str); }
+pre .k { color: var(--code-kw); }
+pre .f { color: var(--code-fn); }
+code {
+  font-family: var(--mono); font-size: .88em;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 3px; padding: 1px 5px;
+}
+pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.sig {
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 4px; padding: 12px 16px; margin: 12px 0;
+  font-family: var(--mono); font-size: 13px; overflow-x: auto; line-height: 1.55;
+}
+.sig .k { color: var(--dim); }
+.sig .f { color: var(--accent-ink); font-weight: 600; }
+
+/* parameter rows */
+.params { margin: 14px 0 6px; border-top: 1px solid var(--line); }
+.prow { display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 8px 20px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.prow .pname { font-family: var(--mono); font-size: 12.5px; word-break: break-word; }
+.prow .pname .ptype { display: block; color: var(--dim); font-size: 11px; margin-top: 1px; }
+.prow .pdesc { font-size: 14px; max-width: 62ch; }
+.prow .pdesc p { margin: 0 0 6px; }
+.pdefault { color: var(--dim); }
+
+/* data tables */
+.tablewrap { overflow-x: auto; margin: 14px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th {
+  text-align: left; font-family: var(--mono); font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .12em; color: var(--dim);
+  border-bottom: 1px solid var(--line); padding: 6px 14px 6px 0; font-weight: 600;
+}
+td { border-bottom: 1px solid var(--line); padding: 7px 14px 7px 0; vertical-align: top; }
+td.mono, .mono { font-family: var(--mono); font-size: 12.5px; }
+td { font-variant-numeric: tabular-nums; }
+
+/* callouts */
+.note, .warn {
+  border: 1px solid var(--line); border-radius: 4px;
+  padding: 12px 16px; margin: 16px 0; font-size: 14.5px; max-width: 72ch;
+}
+.note { background: var(--accent-wash); border-color: var(--accent); }
+.warn { background: var(--warn-wash); border-color: var(--warn-edge); color: var(--warn-ink); }
+.note .tag, .warn .tag {
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .14em; display: block; margin-bottom: 4px;
+}
+.note .tag { color: var(--accent-ink); }
+.warn .tag { color: var(--warn-edge); }
+
+.kicker { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+footer {
+  margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--line);
+  font-size: 13px; color: var(--dim); max-width: 68ch;
+}
+
+/* mobile */
+@media (max-width: 860px) {
+  .shell { grid-template-columns: 1fr; }
+  .side { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  main { padding: 0 20px 80px; }
+  .prow { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<aside class="side">
+  <a class="brand" href="#top">bdo-<span class="tk">toolkit</span></a>
+  <div class="ver">v0.1.0 · MIT · Python ≥3.10</div>
+  <button class="themebtn" id="themeToggle" type="button">theme: auto</button>
+  <nav aria-label="Reference navigation">
+    <div class="navgroup">
+      <div class="nglabel">Start</div>
+      <a class="nl" href="#overview">Overview</a>
+      <a class="nl" href="#install">Install</a>
+      <a class="nl" href="#quickstart">Quick start</a>
+      <a class="nl" href="#concepts">Concepts</a>
+    </div>
+    <div class="navgroup">
+      <div class="nglabel">Decoding</div>
+      <a class="nl" href="#replay-pcap"><code>replay_pcap()</code></a>
+      <a class="nl" href="#capture-live"><code>capture_live()</code></a>
+      <a class="nl" href="#bdoevent"><code>BDOEvent</code></a>
+      <a class="nl" href="#event-types">Event types &amp; sources</a>
+      <a class="nl" href="#eventfilter"><code>EventFilter</code></a>
+      <a class="nl" href="#writers">Writers</a>
+    </div>
+    <div class="navgroup">
+      <div class="nglabel">Profiles</div>
+      <a class="nl" href="#profiles">Opcode profiles</a>
+      <a class="nl" href="#load-opcode-profile"><code>load_opcode_profile()</code></a>
+    </div>
+    <div class="navgroup">
+      <div class="nglabel">Calibration</div>
+      <a class="nl" href="#calibration">How calibration works</a>
+      <a class="nl" href="#calibrationsession"><code>CalibrationSession</code></a>
+      <a class="nl" href="#calibrate-pcap"><code>calibrate_pcap()</code></a>
+      <a class="nl" href="#calibrate-live"><code>calibrate_live()</code></a>
+      <a class="nl" href="#update-profile"><code>update_profile()</code></a>
+      <a class="nl" href="#calibration-types">Result types</a>
+    </div>
+    <div class="navgroup">
+      <div class="nglabel">More</div>
+      <a class="nl" href="#cli">Command line</a>
+      <a class="nl" href="#errors">Errors</a>
+      <a class="nl" href="#stability">Stability &amp; safety</a>
+    </div>
+  </nav>
+</aside>
+
+<main id="top">
+
+<div class="mast section" id="overview">
+  <p class="eyebrow" style="margin-top:0">API Reference</p>
+  <h1>BDO Toolkit</h1>
+  <p class="lede">Passive, read-only packet telemetry for Black Desert Online.
+  Feed it a capture — live or recorded — and get structured gameplay item
+  events your app can consume.</p>
+
+  <div class="pipeline" role="img" aria-label="Pipeline: packet capture or pcap replay, into TCP reassembly and frame decoding, out as structured BDOEvent objects">
+    <span class="node">live capture / .pcapng</span>
+    <span class="arrow">──▶</span>
+    <span class="node">reassemble · decode</span>
+    <span class="arrow">──▶</span>
+    <span class="node hot">BDOEvent stream</span>
+  </div>
+  <span class="guarantee">passive · read-only · never sends or modifies traffic</span>
+
+  <p style="margin-top:20px">The toolkit observes server-to-client traffic only. It contains no code
+  path that injects, modifies, delays, or replays packets to game servers, and no gameplay
+  automation. Decoding is driven by a data file (the <a href="#profiles">opcode profile</a>) that
+  you can recalibrate yourself when a game patch shifts the protocol.</p>
+</div>
+
+<section class="section" id="install">
+  <h2>Install</h2>
+<pre><code>pip install bdo-toolkit</code></pre>
+  <p>Or from a checkout: <code>pip install -e ".[dev]"</code> and run <code>pytest</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Requirement</th><th>Needed for</th></tr>
+    <tr><td>Python 3.10+</td><td>everything</td></tr>
+    <tr><td><span class="mono">scapy</span> (installed automatically)</td><td>pcap replay and live capture</td></tr>
+    <tr><td><a href="https://npcap.com/">Npcap</a> + Administrator shell (Windows)</td><td><strong>live capture only</strong> — offline replay needs neither</td></tr>
+  </table></div>
+</section>
+
+<section class="section" id="quickstart">
+  <h2>Quick start</h2>
+  <p>Replay a recorded capture and print every decoded event:</p>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> replay_pcap
+
+<span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(<span class="s">"session.pcapng"</span>):
+    <span class="f">print</span>(event.<span class="f">format_human</span>())</code></pre>
+
+  <p>Filter to what your app cares about — here, worker deposits into storage:</p>
+<pre><code><span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(
+    <span class="s">"session.pcapng"</span>,
+    event_types={<span class="s">"storage_delta"</span>},
+    sources={<span class="s">"Worker Deposit"</span>},
+):
+    <span class="f">print</span>(event.item_id, event.quantity)</code></pre>
+
+  <p>Listen live (requires Npcap + admin on Windows) and stream events as they happen:</p>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
+
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"item_received"</span>}, sources={<span class="s">"Mob Drop"</span>}):
+    <span class="f">print</span>(event.<span class="f">to_dict</span>())</code></pre>
+</section>
+
+<section class="section" id="concepts">
+  <h2>Concepts</h2>
+  <h3>Events</h3>
+  <p>Every decoded item record becomes a <a href="#bdoevent"><code>BDOEvent</code></a> — a frozen
+  dataclass with normalized fields (<code>item_id</code>, <code>quantity</code>,
+  <code>source</code>, …) plus an <code>extra</code> mapping for provisional fields. The schema is
+  <em>additive</em>: new optional fields may appear, existing ones don't break.</p>
+  <h3>Opcode profiles</h3>
+  <p>The wire protocol is observed, not documented — opcodes and byte offsets can shift with any
+  game patch. Decoding is therefore driven by a JSON profile. A known-good default ships inside
+  the package; when it goes stale, you <a href="#calibration">calibrate a local one</a> and pass
+  it via <code>opcode_profile=</code>.</p>
+  <h3>Filtering at the edge</h3>
+  <p>The engine decodes every known category in one pass; the <code>event_types</code> /
+  <code>sources</code> / <code>item_ids</code> arguments control only what is <em>yielded to
+  your app</em>. Filtering never changes what the engine understands.</p>
+</section>
+
+<p class="eyebrow">Decoding API</p>
+
+<section class="section" id="replay-pcap">
+  <h2 class="api">bdo_toolkit.replay_pcap()</h2>
+  <div class="sig"><span class="f">replay_pcap</span>(path, *, opcode_profile=<span class="k">None</span>, ports=(8884, 8885, 8889),
+            include_legacy_opcodes=<span class="k">False</span>, ignore_opcode_profile=<span class="k">False</span>,
+            event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
+            quiet=<span class="k">True</span>) → Iterator[BDOEvent]</div>
+  <p>Replay a <code>.pcap</code>/<code>.pcapng</code> file and yield structured events in
+  capture order. Works fully offline; no capture driver needed.</p>
+  <div class="params">
+    <div class="prow"><div class="pname">path<span class="ptype">str | Path</span></div>
+      <div class="pdesc">Capture file to decode.</div></div>
+    <div class="prow"><div class="pname">opcode_profile<span class="ptype">str | Path | None</span></div>
+      <div class="pdesc">Path to a local <code>opcodes.json</code>. <span class="pdefault">Default: the profile bundled with the package.</span></div></div>
+    <div class="prow"><div class="pname">ports<span class="ptype">tuple[int, ...]</span></div>
+      <div class="pdesc">BDO server source ports to treat as game traffic. <span class="pdefault">Default: (8884, 8885, 8889).</span></div></div>
+    <div class="prow"><div class="pname">include_legacy_opcodes<span class="ptype">bool</span></div>
+      <div class="pdesc">Also decode legacy opcodes observed in older captures — useful when replaying old recordings.</div></div>
+    <div class="prow"><div class="pname">ignore_opcode_profile<span class="ptype">bool</span></div>
+      <div class="pdesc">Skip the profile entirely and use the built-in current spec table.</div></div>
+    <div class="prow"><div class="pname">event_types / sources / item_ids<span class="ptype">Iterable | None</span></div>
+      <div class="pdesc">Yield only matching events. See <a href="#event-types">event types &amp; sources</a>.</div></div>
+    <div class="prow"><div class="pname">quiet<span class="ptype">bool</span></div>
+      <div class="pdesc">Retained for backwards compatibility; the engine produces no console output either way.</div></div>
+  </div>
+  <p><strong>Raises</strong> <code>FileNotFoundError</code> if the file does not exist,
+  <code>ValueError</code> if it cannot be read as a capture, <code>ProfileError</code> for a
+  corrupt profile, <code>RuntimeError</code> if scapy is missing.</p>
+</section>
+
+<section class="section" id="capture-live">
+  <h2 class="api">bdo_toolkit.capture_live()</h2>
+  <div class="sig"><span class="f">capture_live</span>(*, opcode_profile=<span class="k">None</span>, interface=<span class="k">None</span>, local_ip=<span class="k">None</span>,
+             ports=(8884, 8885, 8889), include_legacy_opcodes=<span class="k">False</span>,
+             ignore_opcode_profile=<span class="k">False</span>, event_types=<span class="k">None</span>, sources=<span class="k">None</span>,
+             item_ids=<span class="k">None</span>, capture_seconds=<span class="k">None</span>, no_bpf=<span class="k">False</span>,
+             no_local_ip_filter=<span class="k">False</span>) → Iterator[BDOEvent]</div>
+  <p>Start passive live capture and yield events as they are decoded. The iterator blocks
+  between events; it ends when <code>capture_seconds</code> elapses or the capture stops.
+  Stranded TCP segments are drained on shutdown so end-of-session events are not lost.</p>
+  <div class="params">
+    <div class="prow"><div class="pname">interface<span class="ptype">str | None</span></div>
+      <div class="pdesc">Capture interface name. <span class="pdefault">Default: auto-detected from the default route.</span></div></div>
+    <div class="prow"><div class="pname">local_ip<span class="ptype">str | None</span></div>
+      <div class="pdesc">Require this IPv4 address as the packet destination. <span class="pdefault">Default: auto-detected unless <code>no_local_ip_filter=True</code>.</span></div></div>
+    <div class="prow"><div class="pname">capture_seconds<span class="ptype">float | None</span></div>
+      <div class="pdesc">Stop automatically after this long. <span class="pdefault">Default: run until the consumer stops iterating.</span></div></div>
+    <div class="prow"><div class="pname">no_bpf<span class="ptype">bool</span></div>
+      <div class="pdesc">Disable the kernel capture filter and filter in Python instead — a fallback for adapters with broken BPF support.</div></div>
+    <div class="prow"><div class="pname">(shared)<span class="ptype">&nbsp;</span></div>
+      <div class="pdesc"><code>opcode_profile</code>, <code>ports</code>, <code>include_legacy_opcodes</code>,
+      <code>ignore_opcode_profile</code>, and the three filters behave exactly as in
+      <a href="#replay-pcap"><code>replay_pcap()</code></a>.</div></div>
+  </div>
+  <div class="warn"><span class="tag">Windows</span>
+  Live capture needs <a href="https://npcap.com/">Npcap</a> installed and usually an
+  Administrator shell. Offline replay does not.</div>
+</section>
+
+<section class="section" id="bdoevent">
+  <h2 class="api">bdo_toolkit.BDOEvent</h2>
+  <p>One decoded gameplay item event. Frozen dataclass — safe to store, hash by identity,
+  and pass between threads.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">event_type</td><td class="mono">str</td><td>Stable category — see <a href="#event-types">event types</a>.</td></tr>
+    <tr><td class="mono">timestamp</td><td class="mono">float</td><td>Packet epoch time. <span class="mono">timestamp_text</span> property renders <span class="mono">HH:MM:SS.mmm</span>.</td></tr>
+    <tr><td class="mono">flow</td><td class="mono">Flow</td><td>Server→client network flow: <span class="mono">source_ip/port</span>, <span class="mono">destination_ip/port</span>.</td></tr>
+    <tr><td class="mono">item_id</td><td class="mono">int</td><td>Raw item id as seen on the wire (may encode enhancement — see below).</td></tr>
+    <tr><td class="mono">quantity</td><td class="mono">int</td><td>Item count for this record.</td></tr>
+    <tr><td class="mono">source</td><td class="mono">str | None</td><td>Human label for where the item came from (<span class="mono">"Mob Drop"</span>, <span class="mono">"Worker Deposit"</span>, …). Unrecognized contexts surface as <span class="mono">UNKNOWN(0x…)</span> rather than silently matching a known source.</td></tr>
+    <tr><td class="mono">raw_context</td><td class="mono">str | None</td><td>The raw context bytes as hex — preserved even when <span class="mono">source</span> has a label.</td></tr>
+    <tr><td class="mono">opcode</td><td class="mono">int | None</td><td>Message opcode. Serialized as a hex string (<span class="mono">"0x0F16"</span>) in <span class="mono">to_dict()</span>.</td></tr>
+    <tr><td class="mono">message_length</td><td class="mono">int | None</td><td>Length of the containing BDO message.</td></tr>
+    <tr><td class="mono">legacy_label</td><td class="mono">str | None</td><td>The research-era label (<span class="mono">INVENTORY_TRANSFER</span>, …). Kept for traceability — don't build app logic on it.</td></tr>
+    <tr><td class="mono">base_item_id</td><td class="mono">int | None</td><td>Item id with the enhancement byte stripped, when one was detected.</td></tr>
+    <tr><td class="mono">enhancement_level</td><td class="mono">int | None</td><td>Detected enhancement level (1–20), from <span class="mono">item_id &gt;&gt; 24</span>.</td></tr>
+    <tr><td class="mono">enhancement</td><td class="mono">str | None</td><td>Label for the level: <span class="mono">PRI DUO TRI TET PEN HEX SEP OCT NOV DEC</span>.</td></tr>
+    <tr><td class="mono">inventory_slot</td><td class="mono">int | None</td><td>Inventory slot byte when the spec exposes one (hex string in <span class="mono">to_dict()</span>).</td></tr>
+    <tr><td class="mono">item_instance</td><td class="mono">str | None</td><td>8-byte per-item instance id as hex — stable across moves of the same item stack.</td></tr>
+    <tr><td class="mono">storage_instance</td><td class="mono">str | None</td><td>8-byte destination storage instance as hex, on storage deltas.</td></tr>
+    <tr><td class="mono">record_index / record_count</td><td class="mono">int | None</td><td>Set only on multi-record messages: this is record <em>i</em> of <em>n</em> (1-based).</td></tr>
+    <tr><td class="mono">record_offset</td><td class="mono">int | None</td><td>Byte offset of the record inside its message.</td></tr>
+    <tr><td class="mono">confidence</td><td class="mono">str | None</td><td>Currently always <span class="mono">"observed"</span> — packet knowledge is provisional by design.</td></tr>
+    <tr><td class="mono">extra</td><td class="mono">Mapping</td><td>Provisional fields that may change: <span class="mono">stream_sequence</span> (TCP position), <span class="mono">storage_delta</span> (signed storage change).</td></tr>
+  </table></div>
+  <h3>Methods</h3>
+  <div class="params">
+    <div class="prow"><div class="pname">to_dict()<span class="ptype">→ dict</span></div>
+      <div class="pdesc">JSON-safe dict. Optional fields are <em>omitted</em> when <code>None</code>; <code>opcode</code> and <code>inventory_slot</code> become hex strings; <code>timestamp_text</code> is included. One event per <code>json.dumps</code> line makes valid JSONL.</div></div>
+    <div class="prow"><div class="pname">format_human()<span class="ptype">→ str</span></div>
+      <div class="pdesc">One-line log rendering: <span class="mono">[23:06:01.086] STORAGE_DELTA source='Worker Deposit' item_id=5960 quantity=1 …</span></div></div>
+  </div>
+</section>
+
+<section class="section" id="event-types">
+  <h2>Event types &amp; sources</h2>
+  <div class="tablewrap"><table>
+    <tr><th>event_type</th><th>Meaning</th></tr>
+    <tr><td class="mono">loot_preview</td><td>A previewed/offered item record — currently gathering-focused.</td></tr>
+    <tr><td class="mono">item_received</td><td>Inventory receipt or update: mob drops, gathering, storage pulls.</td></tr>
+    <tr><td class="mono">storage_delta</td><td>Item added to storage — manual deposits and worker deposits.</td></tr>
+  </table></div>
+  <p>Known <code>source</code> labels, decoded from the message's context bytes:</p>
+  <div class="tablewrap"><table>
+    <tr><th colspan="3">Sources</th></tr>
+    <tr><td>Character Load</td><td>Gathering</td><td>Mob Drop</td></tr>
+    <tr><td>Storage</td><td>Worker Deposit</td><td>Central Market</td></tr>
+    <tr><td>Black Spirit Safe</td><td>Challenges</td><td>In-Game Mail</td></tr>
+    <tr><td>Box/Bundle</td><td>NPC Exchange</td><td>NPC Shop</td></tr>
+    <tr><td>Choose Your Rewards Box</td><td>NPC Sell</td><td class="mono">UNKNOWN(0x…)</td></tr>
+  </table></div>
+  <div class="note"><span class="tag">Design note</span>
+  A context value the toolkit has never seen surfaces as <code>UNKNOWN(0x…)</code> — it will
+  <em>not</em> match a filter like <code>sources={"Storage"}</code>. That keeps new protocol
+  behavior visible instead of silently miscategorized. The raw bytes are always in
+  <code>raw_context</code>.</div>
+</section>
+
+<section class="section" id="eventfilter">
+  <h2 class="api">bdo_toolkit.EventFilter</h2>
+  <div class="sig"><span class="f">EventFilter.from_values</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>) → EventFilter
+<span class="f">filter.allows</span>(event) → bool</div>
+  <p>The same filtering used by the <code>event_types</code>/<code>sources</code>/<code>item_ids</code>
+  arguments, as a standalone object — build one when your app filters events itself (for example,
+  fan one decoded stream out to multiple consumers). A criterion left as <code>None</code>
+  matches everything; set criteria must <em>all</em> match.</p>
+</section>
+
+<section class="section" id="writers">
+  <h2>Writers</h2>
+  <div class="sig"><span class="f">ConsoleEventWriter</span>(stream=<span class="k">None</span>)   <span class="k"># default: sys.stdout</span>
+<span class="f">JsonlEventWriter</span>(stream=<span class="k">None</span>)
+writer.<span class="f">write</span>(event)</div>
+  <p><code>ConsoleEventWriter</code> prints <code>event.format_human()</code> per event;
+  <code>JsonlEventWriter</code> prints one sorted-key JSON object per line — pipe it anywhere.
+  Both accept any text stream (a file handle, a socket wrapper, an in-memory buffer).</p>
+</section>
+
+<p class="eyebrow">Opcode profiles</p>
+
+<section class="section" id="profiles">
+  <h2>Opcode profiles</h2>
+  <p>A profile is a JSON file mapping event categories to opcodes and byte offsets. The package
+  bundles the maintainers' last calibration, so everything works out of the box.</p>
+  <div class="warn"><span class="tag">Goes stale</span>
+  Opcodes and offsets can change whenever the game is patched. If events stop decoding after a
+  patch, the bundled profile is stale — <a href="#calibration">recalibrate a local profile</a>
+  and pass it via <code>opcode_profile=</code>. Never edit the file inside the installed
+  package; keep local profiles in your app's config directory.</div>
+</section>
+
+<section class="section" id="load-opcode-profile">
+  <h2 class="api">bdo_toolkit.load_opcode_profile()</h2>
+  <div class="sig"><span class="f">load_opcode_profile</span>(path=<span class="k">None</span>) → OpcodeProfile
+<span class="f">default_profile_path</span>() → Path</div>
+  <p>Inspect a profile without decoding anything — useful for showing profile status in your
+  app's UI. <code>OpcodeProfile</code> is a frozen dataclass:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">path</td><td class="mono">Path</td><td>Where it was loaded from.</td></tr>
+    <tr><td class="mono">active</td><td class="mono">bool</td><td><span class="mono">profile_active</span> flag — inactive profiles fall back to built-in specs.</td></tr>
+    <tr><td class="mono">version</td><td class="mono">int | None</td><td>Profile format version.</td></tr>
+    <tr><td class="mono">updated_at</td><td class="mono">str | None</td><td>ISO timestamp of the last calibration write.</td></tr>
+    <tr><td class="mono">calibration_item_id</td><td class="mono">int | None</td><td>Item used for the last calibration (Potato: 7003).</td></tr>
+    <tr><td class="mono">specs</td><td class="mono">dict[str, list[dict]]</td><td>Raw spec entries per event category.</td></tr>
+  </table></div>
+</section>
+
+<p class="eyebrow">Calibration</p>
+
+<section class="section" id="calibration">
+  <h2>How calibration works</h2>
+  <p>You perform a <em>known</em> action in game — the classic: buy Potatoes (item
+  <code>7003</code>), move an exact quantity between inventory and storage — while the toolkit
+  captures. It then searches every frame for that item id, scores candidate record layouts, and
+  promotes the plausible ones into opcode specs. Three actions are recognized:</p>
+  <div class="tablewrap"><table>
+    <tr><th>action</th><th>You perform</th><th>Discovers</th></tr>
+    <tr><td class="mono">loot-preview</td><td>Open a loot/gathering preview showing the item</td><td class="mono">LOOT_PREVIEW</td></tr>
+    <tr><td class="mono">storage-to-inventory</td><td>Withdraw the item from storage</td><td class="mono">INVENTORY_TRANSFER, SOURCE_CONTAINER_DECREMENT</td></tr>
+    <tr><td class="mono">inventory-to-storage</td><td>Deposit the item into storage</td><td class="mono">STORAGE_ITEM_DELTA, SOURCE_STACK_DECREMENT, SOURCE_ITEM_REFERENCE</td></tr>
+    <tr><td class="mono">auto</td><td>—</td><td>Runs all three analyses over the same frames.</td></tr>
+  </table></div>
+  <p>Calibration is fully built in at three levels: a session object for apps, one-call wrappers
+  for scripts, and the <a href="#cli"><code>bdo-toolkit calibrate</code></a> command for
+  terminals.</p>
+</section>
+
+<section class="section" id="calibrationsession">
+  <h2 class="api">calibration.CalibrationSession</h2>
+  <div class="sig"><span class="f">CalibrationSession</span>(*, item_id, quantity=<span class="k">None</span>, action=<span class="s">"auto"</span>,
+                   ports=(8884, 8885, 8889), interface=<span class="k">None</span>, local_ip=<span class="k">None</span>,
+                   context_frames=5, min_confidence=0.80)</div>
+  <p>Live calibration with programmatic start/stop — the API to embed in an app with its own
+  UI. Capture runs on a background thread between <code>start()</code> and <code>stop()</code>;
+  your interface stays responsive, and <em>your app</em> decides when the user is done:</p>
+<pre><code><span class="k">from</span> bdo_toolkit.calibration <span class="k">import</span> CalibrationSession, update_profile
+
+session = <span class="f">CalibrationSession</span>(item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>,
+                             action=<span class="s">"inventory-to-storage"</span>)
+session.<span class="f">start</span>()
+<span class="c"># your UI: "Move 3 potatoes into storage, then click Done"</span>
+<span class="c"># session.frames_collected → live counter for a traffic indicator</span>
+result = session.<span class="f">stop</span>()          <span class="c"># user clicked Done</span>
+<span class="k">if</span> result.specs:
+    <span class="f">update_profile</span>(result, <span class="s">"my_app/opcodes.json"</span>,
+                   action=<span class="s">"inventory-to-storage"</span>, replace=<span class="k">True</span>)</code></pre>
+  <div class="params">
+    <div class="prow"><div class="pname">start()<span class="ptype">→ None</span></div>
+      <div class="pdesc">Begin passive background capture; returns immediately. Raises <code>RuntimeError</code> if already running.</div></div>
+    <div class="prow"><div class="pname">stop()<span class="ptype">→ CalibrationResult</span></div>
+      <div class="pdesc">End capture, drain pending TCP segments, score frames, return the result. Raises <code>RuntimeError</code> if the session was never started — a usage bug fails loudly instead of returning an empty result that looks like "nothing found".</div></div>
+    <div class="prow"><div class="pname">running<span class="ptype">bool (property)</span></div>
+      <div class="pdesc">Whether a capture is currently active.</div></div>
+    <div class="prow"><div class="pname">frames_collected<span class="ptype">int (property)</span></div>
+      <div class="pdesc">Frames decoded so far — drive a "traffic detected" indicator with it.</div></div>
+    <div class="prow"><div class="pname">min_confidence<span class="ptype">float</span></div>
+      <div class="pdesc">Candidates scoring below this are rejected (with reasons, in <code>result.ignored</code>). <span class="pdefault">Default: 0.80.</span></div></div>
+    <div class="prow"><div class="pname">context_frames<span class="ptype">int</span></div>
+      <div class="pdesc">How many frames before a hit are searched for companion records (source decrements, references). <span class="pdefault">Default: 5.</span></div></div>
+  </div>
+  <p>Also a context manager: <code>with CalibrationSession(...) as session:</code> stops the
+  capture on exit even if the block raises. Call <code>stop()</code> inside the block to get
+  the result.</p>
+</section>
+
+<section class="section" id="calibrate-pcap">
+  <h2 class="api">calibration.calibrate_pcap()</h2>
+  <div class="sig"><span class="f">calibrate_pcap</span>(path, *, item_id, quantity=<span class="k">None</span>, action=<span class="s">"auto"</span>,
+               ports=(8884, 8885, 8889), context_frames=5,
+               min_confidence=0.80) → CalibrationResult</div>
+  <p>Calibrate offline from a pre-recorded capture of the known action. Same parameters as the
+  session, plus the capture <code>path</code>. Fully deterministic — ideal for testing your
+  recalibration flow.</p>
+</section>
+
+<section class="section" id="calibrate-live">
+  <h2 class="api">calibration.calibrate_live()</h2>
+  <div class="sig"><span class="f">calibrate_live</span>(*, item_id, capture_seconds=<span class="k">None</span>, quantity=<span class="k">None</span>,
+               action=<span class="s">"auto"</span>, ports=(8884, 8885, 8889), interface=<span class="k">None</span>,
+               local_ip=<span class="k">None</span>, context_frames=5,
+               min_confidence=0.80) → CalibrationResult</div>
+  <p>Blocking convenience wrapper around <code>CalibrationSession</code> for console scripts.
+  With <code>capture_seconds</code> it stops on a timer; without, it listens until
+  <kbd>Ctrl+C</kbd> — which is treated as <em>"action performed, calibrate now"</em>, not as an
+  abort. Apps with their own UI should use
+  <a href="#calibrationsession"><code>CalibrationSession</code></a> instead.</p>
+</section>
+
+<section class="section" id="update-profile">
+  <h2 class="api">calibration.update_profile() / reset_profile()</h2>
+  <div class="sig"><span class="f">update_profile</span>(result, path, *, action=<span class="s">"auto"</span>, replace=<span class="k">False</span>,
+               backup=<span class="k">True</span>) → ProfileUpdate
+<span class="f">reset_profile</span>(path, calibration_item_id=7003, *, backup=<span class="k">True</span>) → Path | <span class="k">None</span></div>
+  <p><code>update_profile</code> merges promoted specs into a local profile file (creating it if
+  needed) and marks it active. Duplicate specs are skipped via structural dedupe keys, so
+  re-applying a result is a no-op. With <code>replace=True</code>, the profile entries belonging
+  to <code>action</code> are cleared first, so a recalibration fully supersedes stale entries.
+  The previous file is backed up to <code>opcodes_backups/</code> beside it unless
+  <code>backup=False</code>.</p>
+  <p><code>reset_profile</code> writes an empty active profile — a clean slate before a full
+  recalibration.</p>
+</section>
+
+<section class="section" id="calibration-types">
+  <h2>Result types</h2>
+  <h3 class="api">CalibrationResult</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">specs</td><td class="mono">tuple[OpcodeSpec, ...]</td><td>Promoted opcode specs. Empty tuple = nothing plausible found.</td></tr>
+    <tr><td class="mono">ignored</td><td class="mono">tuple[str, ...]</td><td>Rejected candidates with reasons (<span class="mono">low-confidence</span>, <span class="mono">quantity-only</span>, …) — show these when calibration fails.</td></tr>
+    <tr><td class="mono">frames_scanned</td><td class="mono">int</td><td>Total frames analyzed.</td></tr>
+  </table></div>
+  <h3 class="api">OpcodeSpec</h3>
+  <p>One discovered spec: <code>event</code>, <code>opcode</code>, <code>length</code>, the byte
+  offsets that were located (<code>item_id_offset</code>, <code>quantity_offset</code>,
+  <code>item_instance_offset</code>, <code>context_offset</code>, <code>repeat_stride</code>, …),
+  plus <code>confidence</code>, <code>score</code>, and <code>observed_at</code>.
+  <code>to_json_dict()</code> renders the profile-file form.</p>
+  <h3 class="api">ProfileUpdate</h3>
+  <p>What a write actually did: <code>path</code>, <code>added</code> (specs newly merged),
+  <code>replaced_events</code> (categories cleared by <code>replace=True</code>), and
+  <code>backup_path</code>.</p>
+</section>
+
+<p class="eyebrow">Command line</p>
+
+<section class="section" id="cli">
+  <h2>bdo-toolkit CLI</h2>
+  <p>Installed with the package. Every flag maps one-to-one onto a library keyword argument —
+  the CLI is a convenience for terminals, not a separate capability.</p>
+<pre><code><span class="c"># decode a capture as JSONL, filtered to worker deposits</span>
+bdo-toolkit replay session.pcapng --jsonl --source <span class="s">"Worker Deposit"</span>
+
+<span class="c"># live decode until Ctrl+C</span>
+bdo-toolkit live --event-type storage_delta --jsonl
+
+<span class="c"># calibrate live: perform the action in game, then Ctrl+C</span>
+bdo-toolkit calibrate --item-id 7003 --qty 3 --action inventory-to-storage \
+    --write opcodes.json --replace
+
+<span class="c"># calibrate offline from a recording (dry run without --write)</span>
+bdo-toolkit calibrate --pcap move3.pcapng --item-id 7003 --qty 3
+
+<span class="c"># start over with an empty active profile</span>
+bdo-toolkit reset-profile opcodes.json</code></pre>
+  <div class="tablewrap"><table>
+    <tr><th>Command</th><th>Purpose</th><th>Key flags</th></tr>
+    <tr><td class="mono">replay &lt;pcap&gt;</td><td>Decode a capture file</td><td class="mono">--jsonl --profile --event-type --source --item-id --ports --include-legacy-opcodes --ignore-profile</td></tr>
+    <tr><td class="mono">live</td><td>Decode live traffic</td><td class="mono">replay flags + --iface --capture-seconds</td></tr>
+    <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --replace --verbose</td></tr>
+    <tr><td class="mono">reset-profile &lt;path&gt;</td><td>Write an empty active profile</td><td class="mono">--calibration-item-id</td></tr>
+  </table></div>
+  <p class="kicker">Events go to stdout; status lines go to stderr — safe to pipe
+  <code>--jsonl</code> output directly into other tools.</p>
+</section>
+
+<section class="section" id="errors">
+  <h2>Errors</h2>
+  <div class="tablewrap"><table>
+    <tr><th>Exception</th><th>Raised when</th></tr>
+    <tr><td class="mono">FileNotFoundError</td><td>The capture file passed to <span class="mono">replay_pcap</span>/<span class="mono">calibrate_pcap</span> does not exist.</td></tr>
+    <tr><td class="mono">ValueError</td><td>The file exists but cannot be read as a pcap/pcapng.</td></tr>
+    <tr><td class="mono">bdo_toolkit._specs.ProfileError</td><td>An opcode profile file is not valid JSON or not an object. Subclass of <span class="mono">ValueError</span>, so catching that suffices.</td></tr>
+    <tr><td class="mono">RuntimeError</td><td>scapy is not installed (capture/replay), or a <span class="mono">CalibrationSession</span> is started twice / stopped before starting.</td></tr>
+  </table></div>
+</section>
+
+<section class="section" id="stability">
+  <h2>Stability &amp; safety</h2>
+  <ul>
+    <li><strong>Public surface:</strong> everything importable from <code>bdo_toolkit</code> and
+    <code>bdo_toolkit.calibration</code>. Modules prefixed with <code>_</code> are internal and
+    may change without notice.</li>
+    <li><strong>Additive schema:</strong> new optional <code>BDOEvent</code> fields may appear in
+    any release; existing fields keep their meaning. Provisional fields live in
+    <code>extra</code> first.</li>
+    <li><strong>Passive by construction:</strong> the toolkit opens capture handles read-only and
+    contains no packet-sending code path. It never automates gameplay.</li>
+    <li><strong>Provisional knowledge:</strong> all offsets and labels come from observed
+    captures. Treat <code>confidence="observed"</code> as exactly that.</li>
+  </ul>
+  <footer>
+    bdo-toolkit v0.1.0 · MIT License · packet knowledge is observational and may lag game patches.<br>
+    Regression-tested against recorded captures on every commit.
+  </footer>
+</section>
+
+</main>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById("themeToggle");
+  var modes = ["auto", "light", "dark"];
+  var current = 0;
+  btn.addEventListener("click", function () {
+    current = (current + 1) % modes.length;
+    var mode = modes[current];
+    if (mode === "auto") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", mode);
+    btn.textContent = "theme: " + mode;
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll(".side a.nl"));
+  var targets = links
+    .map(function (link) { return document.querySelector(link.getAttribute("href")); })
+    .filter(Boolean);
+  function onScroll() {
+    var pos = window.scrollY + 90;
+    var active = targets[0];
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i].offsetTop <= pos) active = targets[i];
+    }
+    links.forEach(function (link) {
+      link.classList.toggle("on", link.getAttribute("href") === "#" + active.id);
+    });
+  }
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+})();
+</script>
+</body>
+</html>

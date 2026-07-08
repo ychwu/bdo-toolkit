@@ -1,7 +1,9 @@
-﻿# BDO Toolkit
+# BDO Toolkit
 
 Passive, read-only packet telemetry tooling for developers building BDO helper
 apps.
+
+**📖 Full API reference: [ychwu.github.io/bdo-toolkit](https://ychwu.github.io/bdo-toolkit/)**
 
 The toolkit goal is simple:
 
@@ -9,42 +11,86 @@ The toolkit goal is simple:
 packet capture or pcap replay in -> structured gameplay item events out
 ```
 
-Example app code:
-
 ```python
-from bdo_toolkit import replay_pcap
+from bdo_toolkit import replay_pcap, capture_live
 
 for event in replay_pcap("session.pcapng", sources={"Mob Drop"}):
     print(event.item_id, event.quantity)
-```
-
-Live capture is also exposed:
-
-```python
-from bdo_toolkit import capture_live
 
 for event in capture_live(event_types={"storage_delta"}, sources={"Worker Deposit"}):
     print(event.to_dict())
 ```
 
-## Current Status
+## Installation
 
-This folder is an isolated prototype workspace intended to move into its own
-repository later. It currently uses `home_internet_analyzer.py` through a
-transitional `legacy_bridge` module so the public API can be tested before the
-parser internals are fully migrated.
-
-The public API is designed to stay stable while the internals change:
-
-```text
-bdo_toolkit.replay_pcap(...)
-bdo_toolkit.capture_live(...)
-BDOEvent.to_dict()
-BDOEvent.format_human()
-ConsoleEventWriter
-JsonlEventWriter
-EventFilter
+```powershell
+git clone https://github.com/ychwu/bdo-toolkit.git
+cd bdo-toolkit
+pip install -e ".[dev]"
+pytest
 ```
+
+Requirements:
+
+- Python 3.10+
+- `scapy` (installed automatically)
+- For **live capture on Windows**: [Npcap](https://npcap.com/) must be
+  installed, and capture usually requires an elevated (Administrator) shell.
+  Offline pcap replay needs neither.
+
+Smoke test against one of your own captures:
+
+```powershell
+python examples/simple_log.py path\to\session.pcapng
+bdo-toolkit replay path\to\session.pcapng --jsonl
+```
+
+## Documentation
+
+The [API reference](https://ychwu.github.io/bdo-toolkit/) covers the full
+public surface with examples:
+
+- [Quick start](https://ychwu.github.io/bdo-toolkit/#quickstart) and
+  [core concepts](https://ychwu.github.io/bdo-toolkit/#concepts)
+- [`replay_pcap`](https://ychwu.github.io/bdo-toolkit/#replay-pcap) /
+  [`capture_live`](https://ychwu.github.io/bdo-toolkit/#capture-live) — decode
+  captures into events
+- [`BDOEvent`](https://ychwu.github.io/bdo-toolkit/#bdoevent) — the stable
+  event model and its [event types](https://ychwu.github.io/bdo-toolkit/#event-types)
+- [Opcode profiles](https://ychwu.github.io/bdo-toolkit/#profiles) — bundled
+  default, local overrides, staleness after game patches
+- [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration) — rebuild a
+  profile after a patch, including
+  [`CalibrationSession`](https://ychwu.github.io/bdo-toolkit/#calibrationsession)
+  for embedding calibration in your own app's UI
+- [Command line](https://ychwu.github.io/bdo-toolkit/#cli),
+  [errors](https://ychwu.github.io/bdo-toolkit/#errors), and the
+  [API stability policy](https://ychwu.github.io/bdo-toolkit/#stability)
+
+## Calibration in 30 seconds
+
+Opcodes and byte offsets can shift when the game is patched, and the bundled
+profile may go stale. Rebuild a local profile from a known in-game action
+(classic workflow: move a known quantity of Potatoes to storage):
+
+```powershell
+# start listening, perform the action once in game, press Ctrl+C
+bdo-toolkit calibrate --item-id 7003 --qty 3 `
+    --action inventory-to-storage --write opcodes.json --replace
+```
+
+```python
+# same thing embedded in an app, stopped by your own UI instead of Ctrl+C
+from bdo_toolkit.calibration import CalibrationSession, update_profile
+
+session = CalibrationSession(item_id=7003, quantity=3, action="inventory-to-storage")
+session.start()
+# ... user performs the action, then clicks "Done" ...
+result = session.stop()
+update_profile(result, "opcodes.json", action="inventory-to-storage", replace=True)
+```
+
+Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
 
 ## Design Principles
 
@@ -58,69 +104,47 @@ EventFilter
 
 ```text
 src/bdo_toolkit/
-  capture.py          Live capture and pcap replay entry points
-  events.py           Stable app-facing event model
-  filters.py          Event filtering helpers
-  legacy_bridge.py    Temporary adapter to the current prototype parser
-  profiles.py         Opcode profile loading
-  writers.py          Console and JSONL writers
+  capture.py            Live capture and pcap replay entry points
+  events.py             Stable app-facing event model
+  filters.py            Event filtering helpers
+  profiles.py           Opcode profile loading
+  writers.py            Console and JSONL writers
+  calibration.py        Opcode profile calibration and profile updates
+  cli.py                bdo-toolkit command line
+  data/opcodes.json     Bundled default opcode profile
+  _*.py                 Internal engine modules (may change without notice)
 
-examples/
-  simple_log.py
-  grind_loot_counter.py
-  worker_production_log.py
-  live_mob_drops.py
-
-profiles/
-  opcodes.json        Current active opcode profile copy
-
-docs/
-  PACKET_PROTOCOL_WIKI.md
-  CONTEXT.md
-  AGENT_CONTEXT.md
-  HANDOFF.md
+site/                   API reference, deployed to GitHub Pages
+examples/               Small runnable examples
+tests/                  Test suite (see note on fixtures below)
 ```
 
-## Event Types
+Build apps against the public API only; `_`-prefixed modules are internal.
 
-Current app-facing event types:
-
-```text
-loot_preview       A preview/offered item record, currently gathering-focused
-item_received      Inventory receipt/update such as mob drops, gathering, storage pulls
-storage_delta      Item added to storage, including manual deposits and worker deposits
-```
-
-Event objects intentionally include both normalized fields and an `extra`
-mapping for newly discovered packet fields.
-
-## Quick Start From This Repo
-
-From the parent repo root:
+## Testing
 
 ```powershell
-$env:PYTHONPATH="bdo-toolkit\src;."
-py - <<'PY'
-from bdo_toolkit import replay_pcap
-
-for event in replay_pcap("captures/fixtures/5960_qty1_and_4015_qty1_multi.pcapng"):
-    print(event.format_human())
-PY
+pytest
 ```
 
-Run tests from the parent repo root:
+The test suite has two tiers:
+
+- **Synthetic tests** (always run, including in CI): engine unit tests and a
+  synthetic-pcap round trip. These need no capture files.
+- **Regression tests against real captures**: replay recorded pcaps and
+  compare decoded events against JSONL baselines. The capture files are
+  personal game-session recordings and are **not part of the public
+  repository** — these tests skip automatically when the files are absent.
+
+If you have local fixtures in `tests/fixtures/`, regenerate the baselines
+after an intentional decoding change and review the diff:
 
 ```powershell
-py -m unittest discover -s tests
+python scripts/regenerate_baselines.py
+git diff tests/baselines/
 ```
 
-## Migration Plan
+## Roadmap
 
-1. Keep the prototype script stable.
-2. Build app-facing package APIs in this isolated folder.
-3. Move TCP reassembly into native package modules.
-4. Move BDO frame parsing into native package modules.
-5. Move decoders by category: inventory receipts, storage deltas, snapshots.
-6. Replace `legacy_bridge.py` with native orchestration.
-7. Move this folder into its own repo.
-
+- Event schema versioning.
+- Inventory snapshot event API.

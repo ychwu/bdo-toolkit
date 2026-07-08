@@ -31,7 +31,14 @@ class OpcodeProfile:
 
 
 def default_profile_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "profiles" / "opcodes.json"
+    """Path to the opcode profile bundled with the package.
+
+    The bundled profile reflects the last calibration performed by the toolkit
+    maintainers and can go stale after a game patch. Pass an explicit path to
+    ``load_opcode_profile``/``replay_pcap``/``capture_live`` to use a locally
+    calibrated profile instead.
+    """
+    return Path(__file__).resolve().parent / "data" / "opcodes.json"
 
 
 def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:

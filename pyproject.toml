@@ -1,4 +1,4 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
@@ -22,9 +22,15 @@ dev = [
   "pytest",
 ]
 
+[project.scripts]
+bdo-toolkit = "bdo_toolkit.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools.package-data]
-bdo_toolkit = ["py.typed"]
+bdo_toolkit = ["py.typed", "data/*.json"]
 

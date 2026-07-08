@@ -1,19 +1,65 @@
-﻿"""Packet capture and pcap replay APIs."""
+"""Packet capture and pcap replay APIs."""
 
 from __future__ import annotations
 
-import contextlib
-import io
 import time
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Iterable, Iterator, Optional
+from typing import Callable, Iterable, Iterator, Optional
 
+from ._capture_backend import (
+    build_bpf_filter,
+    detect_default_capture_target,
+    import_scapy,
+    make_packet_handler,
+    replay_pcap_file,
+)
+from ._engine import PacketEngine, toolkit_event_from_record
+from ._protocol import DEFAULT_SERVER_PORTS, LootEvent
+from ._specs import select_event_specs
 from .events import BDOEvent
 from .filters import EventFilter
-from .legacy_bridge import ToolkitLootSniffer, legacy_parser
+from .profiles import default_profile_path
 
-DEFAULT_SERVER_PORTS = (8884, 8885, 8889)
+
+class _EventCollector:
+    """Wire a PacketEngine to app-facing events with optional filtering."""
+
+    def __init__(
+        self,
+        *,
+        server_ports: tuple[int, ...],
+        event_filter: Optional[EventFilter] = None,
+        on_event: Optional[Callable[[BDOEvent], None]] = None,
+        opcode_profile: str | Path | None = None,
+        include_legacy_opcodes: bool = False,
+        ignore_opcode_profile: bool = False,
+    ) -> None:
+        profile_path = (
+            Path(opcode_profile) if opcode_profile is not None else default_profile_path()
+        )
+        event_specs, profile_source = select_event_specs(
+            opcodes_path=profile_path,
+            include_legacy=include_legacy_opcodes,
+            ignore_opcodes=ignore_opcode_profile,
+        )
+        self.events: list[BDOEvent] = []
+        self.event_filter = event_filter
+        self.on_event = on_event
+        self.profile_source = profile_source
+        self.engine = PacketEngine(
+            server_ports=server_ports,
+            event_specs=event_specs,
+            on_event=self._handle_record,
+        )
+
+    def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
+        event = toolkit_event_from_record(record)
+        if self.event_filter is not None and not self.event_filter.allows(event):
+            return
+        self.events.append(event)
+        if self.on_event is not None:
+            self.on_event(event)
 
 
 def _event_filter(
@@ -43,10 +89,13 @@ def replay_pcap(
     item_ids: Optional[Iterable[int]] = None,
     quiet: bool = True,
 ) -> Iterator[BDOEvent]:
-    """Replay a pcap/pcapng file and yield structured events."""
+    """Replay a pcap/pcapng file and yield structured events.
 
-    legacy = legacy_parser()
-    bridge = ToolkitLootSniffer(
+    ``quiet`` is retained for backwards compatibility; the native replay engine
+    produces no console output either way.
+    """
+
+    collector = _EventCollector(
         server_ports=ports,
         event_filter=_event_filter(
             event_types=event_types,
@@ -57,11 +106,8 @@ def replay_pcap(
         include_legacy_opcodes=include_legacy_opcodes,
         ignore_opcode_profile=ignore_opcode_profile,
     )
-    output = io.StringIO()
-    stdout_context = contextlib.redirect_stdout(output) if quiet else contextlib.nullcontext()
-    with stdout_context:
-        legacy.run_offline(Path(path), bridge.sniffer)
-    yield from bridge.events
+    replay_pcap_file(Path(path), collector.engine)
+    yield from collector.events
 
 
 def capture_live(
@@ -85,12 +131,11 @@ def capture_live(
     optional filters control what reaches the application.
     """
 
-    legacy = legacy_parser()
-    IP, TCP, _, _, _ = legacy.import_scapy()
+    IP, TCP, _, _, _ = import_scapy()
     from scapy.sendrecv import AsyncSniffer  # type: ignore
 
     queue: Queue[BDOEvent] = Queue()
-    bridge = ToolkitLootSniffer(
+    collector = _EventCollector(
         server_ports=ports,
         event_filter=_event_filter(
             event_types=event_types,
@@ -103,19 +148,19 @@ def capture_live(
         ignore_opcode_profile=ignore_opcode_profile,
     )
 
-    detected_target = legacy.detect_default_capture_target()
+    detected_target = detect_default_capture_target()
     capture_interface = interface or detected_target.interface
     capture_local_ip = local_ip
     if capture_local_ip is None and interface is None and not no_local_ip_filter:
         capture_local_ip = detected_target.local_ip
 
-    bpf_filter = None if no_bpf else legacy.build_bpf_filter(ports, capture_local_ip)
+    bpf_filter = None if no_bpf else build_bpf_filter(ports, capture_local_ip)
     lfilter = None
     if no_bpf:
         lfilter = lambda packet: (  # noqa: E731
             IP in packet
             and TCP in packet
-            and int(packet[TCP].sport) in bridge.sniffer.server_ports
+            and int(packet[TCP].sport) in collector.engine.server_ports
             and (
                 capture_local_ip is None
                 or str(packet[IP].dst) == capture_local_ip
@@ -126,7 +171,7 @@ def capture_live(
         iface=capture_interface,
         filter=bpf_filter,
         lfilter=lfilter,
-        prn=legacy.make_packet_handler(bridge.sniffer),
+        prn=make_packet_handler(collector.engine),
         store=False,
     )
     live_capture.start()
@@ -145,5 +190,4 @@ def capture_live(
     finally:
         if live_capture.running:
             live_capture.stop()
-        bridge.sniffer.finish()
-
+        collector.engine.finish()

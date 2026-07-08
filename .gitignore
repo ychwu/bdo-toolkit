@@ -1,6 +1,14 @@
 # Project docs
 docs/
 
+# Personal packet captures and their decoded baselines (local-only; tests
+# that need them skip automatically when absent)
+tests/fixtures/
+tests/baselines/
+
+# Local calibration output
+opcodes_backups/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
