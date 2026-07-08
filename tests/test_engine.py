@@ -1,4 +1,4 @@
-"""Unit tests for engine behaviors the pcap fixtures do not exercise."""
+﻿"""Unit tests for engine behaviors the pcap fixtures do not exercise."""
 
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._protocol import (
@@ -9,7 +9,7 @@ from bdo_toolkit._protocol import (
 
 
 def test_source_label_known_context_wins_over_default():
-    assert source_label(STORAGE_DELTA_CONTEXTS[1], "Storage") == "Worker Deposit"
+    assert source_label(STORAGE_DELTA_CONTEXTS[1], "Storage") == "Batch Storage Deposit"
 
 
 def test_source_label_default_applies_only_without_candidate():
@@ -106,3 +106,4 @@ def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):
         ("loot_preview", 7003, 6)
     ]
     assert events[0].source == "Gathering"
+

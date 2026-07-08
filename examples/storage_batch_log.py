@@ -1,6 +1,6 @@
-"""Tiny example: print passive worker storage deposits.
+"""Tiny example: print batch-style storage-delta events.
 
-Usage: python examples/worker_production_log.py [path/to/session.pcapng]
+Usage: python examples/storage_batch_log.py [path/to/session.pcapng]
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def main() -> None:
     for event in replay_pcap(
         pcap,
         event_types={"storage_delta"},
-        sources={"Worker Deposit"},
+        sources={"Batch Storage Deposit"},
     ):
         writer.write(event)
 

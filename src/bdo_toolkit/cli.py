@@ -1,4 +1,4 @@
-"""Command-line interface: ``bdo-toolkit <command>``."""
+﻿"""Command-line interface: ``bdo-toolkit <command>``."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="sources",
         metavar="SOURCE",
-        help='only yield this source (repeatable), e.g. "Worker Deposit"',
+        help='only yield this source (repeatable), e.g. "Batch Storage Deposit"',
     )
     parser.add_argument(
         "--item-id",
@@ -392,3 +392,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

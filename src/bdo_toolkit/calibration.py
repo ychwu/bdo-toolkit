@@ -611,10 +611,10 @@ def _has_storage_delta_context(frame: BDOFrame) -> bool:
     """A storage-delta reason code at the known current-gen context offset.
 
     Every current-generation storage delta (0x0E6A) carries `05000000`
-    (manual/player) or `20000000` (worker) at offset 8, with zero collisions
-    on any receipt frame in the labeled set. This is an INTRINSIC into_storage
-    signal, symmetric with the into_inventory context label, and it does not
-    depend on a companion reference frame — so it classifies multi-record
+    (single/manual-style) or `20000000` (batch-style) at offset 8, with zero
+    collisions on any receipt frame in the labeled set. This is an INTRINSIC
+    into_storage signal, symmetric with the into_inventory context label, and
+    it does not depend on a companion reference frame, so it classifies multi-record
     unstackable deposits, which carry no reference frame.
     """
     end = CURRENT_STORAGE_DELTA_CONTEXT_OFFSET + 4

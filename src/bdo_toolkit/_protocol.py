@@ -59,7 +59,7 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("85fa5745"): "Mob Drop",
     bytes.fromhex("d0f205a3"): "Storage",
     STORAGE_DELTA_CONTEXTS[0]: "Storage",
-    STORAGE_DELTA_CONTEXTS[1]: "Worker Deposit",
+    STORAGE_DELTA_CONTEXTS[1]: "Batch Storage Deposit",
     bytes.fromhex("43ce1321"): "Central Market",
     bytes.fromhex("89fa09af"): "Black Spirit Safe",
     bytes.fromhex("35bd5d70"): "Challenges",
