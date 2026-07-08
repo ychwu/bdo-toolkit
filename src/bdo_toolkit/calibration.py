@@ -34,6 +34,7 @@ from ._capture_backend import replay_pcap_file
 from ._framing import FrameCollectorScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
+    CURRENT_STORAGE_DELTA_CONTEXT_OFFSET,
     DEFAULT_SERVER_PORTS,
     LOOT_PREVIEW_SENTINEL_INSTANCE,
     SOURCE_CONTEXT_LABELS,
@@ -122,6 +123,32 @@ class OpcodeSpec:
         return output
 
 
+class DirectionMismatchError(ValueError):
+    """A capture's structure contradicts the explicitly declared action.
+
+    Raised only in single-direction calibration (``action=`` set to a specific
+    transfer). Auto calibration never raises this; it classifies each direction
+    from structure and keeps whatever it can confirm.
+    """
+
+
+@dataclass(frozen=True)
+class DirectionEvidence:
+    """Why a candidate record was assigned (or not) to a transfer family.
+
+    ``detected_family`` is ``"into_storage"``, ``"into_inventory"``, or ``None``
+    when the two structural features disagree or neither fires. See
+    :func:`detect_transfer_family`.
+    """
+
+    action: str
+    opcode: int
+    detected_family: Optional[str]
+    reference_frame: bool
+    context_label: bool
+    storage_context: bool = False
+
+
 @dataclass(frozen=True)
 class CalibrationResult:
     """Promoted opcode specs plus diagnostics for rejected candidates."""
@@ -129,6 +156,7 @@ class CalibrationResult:
     specs: tuple[OpcodeSpec, ...]
     ignored: tuple[str, ...]
     frames_scanned: int
+    evidence: tuple[DirectionEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -201,21 +229,41 @@ def calibrate_frames(
         min_confidence=min_confidence,
     )
     ignored: list[str] = []
-    actions = CALIBRATION_ACTIONS if action == "auto" else (action,)
+    evidence: list[DirectionEvidence] = []
     specs: list[OpcodeSpec] = []
+
+    # Auto covers both transfer directions and classifies each from structure,
+    # so the user need only move an item storage->inventory and back (in either
+    # order). Direction is never taken on faith. Loot preview needs a gathering
+    # action, so it stays an explicit, optional mode.
+    if action == "auto":
+        actions = ("storage-to-inventory", "inventory-to-storage")
+        strict = False
+    else:
+        actions = (action,)
+        strict = True
 
     for current_action in actions:
         if current_action == "loot-preview":
             specs.extend(_calibrate_loot_preview(frames, options, ignored))
         elif current_action == "storage-to-inventory":
-            specs.extend(_calibrate_storage_to_inventory(frames, options, ignored))
+            specs.extend(
+                _calibrate_storage_to_inventory(
+                    frames, options, ignored, evidence, strict
+                )
+            )
         elif current_action == "inventory-to-storage":
-            specs.extend(_calibrate_inventory_to_storage(frames, options, ignored))
+            specs.extend(
+                _calibrate_inventory_to_storage(
+                    frames, options, ignored, evidence, strict
+                )
+            )
 
     return CalibrationResult(
         specs=tuple(_dedupe_opcode_specs(specs)),
         ignored=tuple(ignored),
         frames_scanned=len(frames),
+        evidence=tuple(evidence),
     )
 
 
@@ -247,16 +295,17 @@ class CalibrationSession:
     The session captures passively in the background between ``start()`` and
     ``stop()``; the capture thread never blocks the caller. Typical app flow::
 
-        session = CalibrationSession(
-            item_id=7003, quantity=3, action="inventory-to-storage",
-        )
+        session = CalibrationSession(item_id=7003, quantity=3)  # action="auto"
         session.start()
-        # ... tell the user to perform the action in game,
+        # ... tell the user to move the item to storage and back,
         #     then have them click "Done" in your UI ...
         result = session.stop()
         if result.specs:
-            update_profile(result, my_profile_path,
-                           action="inventory-to-storage", replace=True)
+            update_profile(result, my_profile_path, replace=True)
+
+    Auto calibration (the default) classifies each transfer direction from
+    packet structure, so the user only needs to move an item to storage and
+    back in either order; no ``action`` need be declared.
 
     ``frames_collected`` can drive a UI indicator that traffic is arriving.
     Used as a context manager, the capture is stopped on exit even if the
@@ -495,6 +544,194 @@ def reset_profile(
     return backup_path
 
 
+# --- opcode-free transfer-direction classification (2026-07-07 re-audit) ---
+
+# Item-id-bearing frame lengths are bimodal in every labeled capture:
+# reference frames run 24-39 bytes (39 = a TWO-record worker deposit, and the
+# reference grows ~15 bytes per additional record), while record/wrapper
+# frames start at 251. The cut sits mid-gap so multi-record deposit
+# references stay classified without ever reaching wrapper territory.
+REFERENCE_FRAME_MAX_LENGTH = 128
+
+# Context labels with real per-source entropy. The low-entropy storage-delta
+# reasons (05.., 20..) and the all-zero character-load context are excluded:
+# they appear on storage-delta frames and would blur the receipt signal.
+_HIGH_ENTROPY_CONTEXTS = tuple(
+    value
+    for value in SOURCE_CONTEXT_LABELS
+    if value != CHARACTER_LOAD_CONTEXT and value not in STORAGE_DELTA_CONTEXTS
+)
+
+# Which structural family each explicit transfer action expects to observe.
+_EXPECTED_FAMILY = {
+    "storage-to-inventory": "into_inventory",
+    "inventory-to-storage": "into_storage",
+}
+
+
+def _has_context_label_before(frame: BDOFrame, before_offset: int) -> bool:
+    for value in _HIGH_ENTROPY_CONTEXTS:
+        offset = frame.message.find(value)
+        if 0 <= offset < before_offset:
+            return True
+    return False
+
+
+def _has_item_reference_frame(
+    frames: list[BDOFrame],
+    record_frame: BDOFrame,
+    item_id: int,
+    context_frames: int,
+) -> bool:
+    """A small same-flow frame carrying the raw item id, PRECEDING the record.
+
+    Only preceding frames are considered — the reference precedes its record
+    in every labeled capture across both opcode generations — and the
+    backward scan stops at the first frame that itself carries a plausible
+    watched-item record: that frame belongs to an adjacent transaction, and
+    its companion frames must not bleed into this record's classification.
+    """
+    item_bytes = item_id.to_bytes(4, "little")
+    same_flow = [
+        frame for frame in frames if frame.context.flow == record_frame.context.flow
+    ]
+    try:
+        index = same_flow.index(record_frame)
+    except ValueError:
+        return False
+    for frame in reversed(same_flow[max(0, index - context_frames) : index]):
+        if _plausible_record_offsets(frame, item_bytes):
+            return False  # adjacent transaction's record frame: boundary
+        if frame.length <= REFERENCE_FRAME_MAX_LENGTH and item_bytes in frame.message:
+            return True
+    return False
+
+
+def _has_storage_delta_context(frame: BDOFrame) -> bool:
+    """A storage-delta reason code at the known current-gen context offset.
+
+    Every current-generation storage delta (0x0E6A) carries `05000000`
+    (manual/player) or `20000000` (worker) at offset 8, with zero collisions
+    on any receipt frame in the labeled set. This is an INTRINSIC into_storage
+    signal, symmetric with the into_inventory context label, and it does not
+    depend on a companion reference frame — so it classifies multi-record
+    unstackable deposits, which carry no reference frame.
+    """
+    end = CURRENT_STORAGE_DELTA_CONTEXT_OFFSET + 4
+    if end > len(frame.message):
+        return False
+    return bytes(frame.message[CURRENT_STORAGE_DELTA_CONTEXT_OFFSET:end]) in STORAGE_DELTA_CONTEXTS
+
+
+def detect_transfer_family(
+    frames: list[BDOFrame],
+    record_frame: BDOFrame,
+    item_offset: int,
+    item_id: int,
+    context_frames: int = 5,
+) -> tuple[Optional[str], bool, bool, bool]:
+    """Classify a record frame's transfer direction, opcode-free.
+
+    Returns ``(family, reference_frame, context_label, storage_context)`` where
+    ``family`` is:
+
+    - ``"into_inventory"`` — the record frame carries a high-entropy source
+      context label before the item record. The item is entering inventory (a
+      receipt: storage pull, mob drop, gathering, mail, ...).
+    - ``"into_storage"`` — the record frame carries a storage-delta reason at
+      the known context offset (intrinsic), OR a small companion frame nearby
+      carries the raw item id (windowed reference). The item is entering
+      storage; covers player inventory->storage moves AND worker deposits.
+    - ``None`` — no feature fires, or the two intrinsic features contradict.
+
+    Two INTRINSIC features (both in-frame, both validated across two opcode
+    generations; see docs/PACKET_PROTOCOL_WIKI.md) decide direction and take
+    priority: the high-entropy context label => into_inventory, the
+    storage-delta context => into_storage. If both fire the frame is refused
+    (``None``), never guessed. The WINDOWED reference frame is only a fallback
+    for into_storage when no intrinsic feature fired (e.g. the legacy
+    generation, whose storage delta has no offset-8 context) — it can bleed in
+    from an adjacent transaction, so an intrinsic signal always outranks it.
+    """
+    reference_frame = _has_item_reference_frame(
+        frames, record_frame, item_id, context_frames
+    )
+    context_label = _has_context_label_before(record_frame, item_offset)
+    storage_context = _has_storage_delta_context(record_frame)
+
+    if context_label and storage_context:
+        family: Optional[str] = None  # contradictory intrinsic signals: refuse
+    elif context_label:
+        family = "into_inventory"
+    elif storage_context:
+        family = "into_storage"
+    elif reference_frame:
+        family = "into_storage"
+    else:
+        family = None
+    return family, reference_frame, context_label, storage_context
+
+
+def _select_records_by_family(
+    frames: list[BDOFrame],
+    records: list["_CalibratedItemRecord"],
+    action: str,
+    context_frames: int,
+    evidence: list[DirectionEvidence],
+    strict: bool,
+    allow_unclassified: bool = False,
+) -> list["_CalibratedItemRecord"]:
+    """Keep only records whose detected family matches ``action``.
+
+    Records the classification of every candidate in ``evidence``. In strict
+    (explicit single-direction) mode, a candidate that clearly belongs to the
+    opposite family with none matching raises :class:`DirectionMismatchError`.
+
+    ``allow_unclassified`` keeps records neither feature can classify. It is
+    set only for explicit inventory-to-storage calibration: an explicit
+    declaration must stay usable even if a future patch silences both
+    features (the post-patch recovery path), so strictness there means
+    "refuse contradiction", not "require positive proof". Auto mode never
+    allows unclassified records — with no declaration to fall back on, an
+    unclassifiable record is dropped.
+    """
+    expected = _EXPECTED_FAMILY[action]
+    matched: list[_CalibratedItemRecord] = []
+    opposite: Optional[str] = None
+    for record in records:
+        family, reference_frame, context_label, storage_context = detect_transfer_family(
+            frames, record.frame, record.item_offset, record.item_id, context_frames
+        )
+        evidence.append(
+            DirectionEvidence(
+                action=action,
+                opcode=record.frame.opcode,
+                detected_family=family,
+                reference_frame=reference_frame,
+                context_label=context_label,
+                storage_context=storage_context,
+            )
+        )
+        if family == expected or (allow_unclassified and family is None):
+            matched.append(record)
+        elif family is not None:
+            opposite = family
+
+    if not matched and opposite is not None and strict:
+        observed = (
+            "storage-to-inventory"
+            if opposite == "into_inventory"
+            else "inventory-to-storage"
+        )
+        raise DirectionMismatchError(
+            f"declared action {action!r} but the capture's structure indicates "
+            f"{observed!r} (item entering "
+            f"{'inventory' if opposite == 'into_inventory' else 'storage'}). "
+            "Perform the declared action, or use auto calibration."
+        )
+    return matched
+
+
 # --- calibration heuristics, ported unchanged from the research prototype ---
 
 
@@ -508,7 +745,7 @@ def _calibrate_loot_preview(
         record
         for record in records
         if record.instance == LOOT_PREVIEW_SENTINEL_INSTANCE
-        and record.confidence >= options.min_confidence
+        and _passes_min_confidence(record.confidence, options.min_confidence)
     ]
     if not preview_records:
         return []
@@ -534,6 +771,8 @@ def _calibrate_storage_to_inventory(
     frames: list[BDOFrame],
     options: _Options,
     ignored: list[str],
+    evidence: list[DirectionEvidence],
+    strict: bool,
 ) -> list[OpcodeSpec]:
     records = _find_calibration_item_records(
         frames,
@@ -546,13 +785,30 @@ def _calibrate_storage_to_inventory(
         for record in records
         if record.instance is not None
         and record.instance != LOOT_PREVIEW_SENTINEL_INSTANCE
-        and _discover_context_offset(record.frame, record.item_offset) is not None
-        and record.confidence >= options.min_confidence
+        and _passes_min_confidence(record.confidence, options.min_confidence)
     ]
+    # Family selection subsumes the legacy "known context label before the
+    # record" receipt filter (into_inventory fires on exactly that label), and
+    # running it on ALL structural candidates makes strict mismatch detection
+    # symmetric: a wrong-direction capture raises here with evidence recorded
+    # instead of silently pre-filtering down to an empty result.
+    receipt_records = _select_records_by_family(
+        frames,
+        receipt_records,
+        "storage-to-inventory",
+        options.context_frames,
+        evidence,
+        strict,
+    )
     if not receipt_records:
         return []
 
-    best = max(receipt_records, key=lambda record: record.confidence)
+    # On ties (a multi-record frame yields one candidate per record, all with
+    # equal confidence) prefer the FIRST record: spec offsets are relative to
+    # the first record and later ones are reached via repeat_stride.
+    best = max(
+        receipt_records, key=lambda record: (record.confidence, -record.item_offset)
+    )
     source_decrement = _discover_source_container_decrement(frames, best, options)
     if source_decrement is None:
         ignored.append(
@@ -561,17 +817,24 @@ def _calibrate_storage_to_inventory(
             'reason="source-decrement-not-found;promoting-receipt-only"'
         )
 
+    # Write the SINGLE-record length even when calibrated from a multi-record
+    # frame (unstackables): the recorded length acts as a minimum at load
+    # time, so the observed multi-record length would block single transfers.
+    single_record_length, observed_stride = _record_frame_shape(
+        best.frame, best.item_id
+    )
     specs = [
         OpcodeSpec(
             event="INVENTORY_TRANSFER",
             opcode=best.frame.opcode,
-            length=best.frame.length,
+            length=single_record_length,
             item_id_offset=best.item_offset,
             quantity_offset=best.item_offset + 4,
             item_instance_offset=best.instance_offset,
             context_offset=_discover_context_offset(best.frame, best.item_offset),
             inventory_slot_offset=_discover_inventory_slot_offset(best.frame, best.item_offset),
-            repeat_stride=_discover_repeat_stride(best.frame, best.item_offset),
+            repeat_stride=_discover_repeat_stride(best.frame, best.item_offset)
+            or observed_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "storage-to-inventory"),
             observed_at=_iso_timestamp(best.frame.context.timestamp),
@@ -588,6 +851,8 @@ def _calibrate_inventory_to_storage(
     frames: list[BDOFrame],
     options: _Options,
     ignored: list[str],
+    evidence: list[DirectionEvidence],
+    strict: bool,
 ) -> list[OpcodeSpec]:
     records = _find_calibration_item_records(
         frames,
@@ -600,12 +865,24 @@ def _calibrate_inventory_to_storage(
         for record in records
         if record.instance is not None
         and record.instance != LOOT_PREVIEW_SENTINEL_INSTANCE
-        and record.confidence >= options.min_confidence
+        and _passes_min_confidence(record.confidence, options.min_confidence)
     ]
+    storage_records = _select_records_by_family(
+        frames,
+        storage_records,
+        "inventory-to-storage",
+        options.context_frames,
+        evidence,
+        strict,
+        allow_unclassified=strict,
+    )
     if not storage_records:
         return []
 
-    best = max(storage_records, key=lambda record: record.confidence)
+    # Same first-record tie-break as the receipt path (multi-record frames).
+    best = max(
+        storage_records, key=lambda record: (record.confidence, -record.item_offset)
+    )
     specs: list[OpcodeSpec] = []
     source_stack = _discover_source_stack_decrement(frames, best, options)
     if source_stack is not None:
@@ -615,14 +892,21 @@ def _calibrate_inventory_to_storage(
     if source_ref is not None:
         specs.append(source_ref)
 
+    # Same single-record length normalization as the receipt spec; also record
+    # the observed stride so a multi-record storage delta (unstackable
+    # deposits) decodes all records under the written profile.
+    single_record_length, observed_stride = _record_frame_shape(
+        best.frame, best.item_id
+    )
     specs.append(
         OpcodeSpec(
             event="STORAGE_ITEM_DELTA",
             opcode=best.frame.opcode,
-            length=best.frame.length,
+            length=single_record_length,
             item_id_offset=best.item_offset,
             quantity_added_offset=best.item_offset + 4,
             destination_instance_offset=best.instance_offset,
+            repeat_stride=observed_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "inventory-to-storage"),
             observed_at=_iso_timestamp(best.frame.context.timestamp),
@@ -642,6 +926,10 @@ def _find_calibration_item_records(
     records: list[_CalibratedItemRecord] = []
 
     for frame in frames:
+        frame_quantity_total = _sum_plausible_item_record_quantities(
+            frame,
+            item_bytes,
+        )
         quantity_only = (
             options.quantity is not None
             and options.quantity.to_bytes(4, "little") in frame.message
@@ -683,8 +971,9 @@ def _find_calibration_item_records(
                 instance=instance,
                 options=options,
                 action=action,
+                frame_quantity_total=frame_quantity_total,
             )
-            if confidence < options.min_confidence:
+            if not _passes_min_confidence(confidence, options.min_confidence):
                 ignored.append(
                     f'IGNORED opcode=0x{frame.opcode:04X} length={frame.length} '
                     f'item_offset={item_offset} reason="low-confidence:{confidence:.2f}"'
@@ -707,6 +996,10 @@ def _find_calibration_item_records(
     return records
 
 
+def _passes_min_confidence(confidence: float, min_confidence: float) -> bool:
+    return confidence + 1e-9 >= min_confidence
+
+
 def _score_item_record_candidate(
     *,
     frame: BDOFrame,
@@ -714,6 +1007,7 @@ def _score_item_record_candidate(
     instance: Optional[bytes],
     options: _Options,
     action: str,
+    frame_quantity_total: Optional[int],
 ) -> tuple[float, list[str]]:
     score = 0.35
     reasons = ["contains-watched-item"]
@@ -725,6 +1019,9 @@ def _score_item_record_candidate(
         elif quantity == options.quantity:
             score += 0.25
             reasons.append("quantity-match")
+        elif frame_quantity_total == options.quantity:
+            score += 0.20
+            reasons.append("multi-record-total-quantity-match")
         else:
             score -= 0.20
             reasons.append("quantity-mismatch")
@@ -763,6 +1060,61 @@ def _score_item_record_candidate(
         reasons.append("tiny-hit-without-instance")
 
     return max(0.0, min(1.0, score)), reasons
+
+
+def _plausible_record_offsets(frame: BDOFrame, item_bytes: bytes) -> list[int]:
+    """Offsets of plausible watched-item records (item id + qty + instance)."""
+    offsets: list[int] = []
+    search_at = 0
+    while True:
+        item_offset = frame.message.find(item_bytes, search_at)
+        if item_offset < 0:
+            return offsets
+        search_at = item_offset + 1
+        if item_offset + 43 > len(frame.message):
+            continue
+        quantity = int.from_bytes(
+            frame.message[item_offset + 4 : item_offset + 8], "little"
+        )
+        instance = frame.message[item_offset + 35 : item_offset + 43]
+        if 0 < quantity <= 1_000_000 and _is_plausible_instance(instance):
+            offsets.append(item_offset)
+
+
+def _sum_plausible_item_record_quantities(
+    frame: BDOFrame,
+    item_bytes: bytes,
+) -> Optional[int]:
+    offsets = _plausible_record_offsets(frame, item_bytes)
+    if not offsets:
+        return None
+    return sum(
+        int.from_bytes(frame.message[offset + 4 : offset + 8], "little")
+        for offset in offsets
+    )
+
+
+def _record_frame_shape(frame: BDOFrame, item_id: int) -> tuple[int, Optional[int]]:
+    """``(single_record_length, stride)`` for a repeated-record frame.
+
+    A frame carrying N watched-item records at a uniform stride (unstackables
+    move as N records of quantity 1) must be written into the profile at its
+    SINGLE-record length: the profile loader treats the recorded length as a
+    minimum message length, so writing the observed multi-record length would
+    produce a profile that cannot decode ordinary single transfers.
+
+    Limitation: only records of the watched item are counted, so a mixed-item
+    multi-record frame (e.g. a worker deposit batching different items) does
+    not normalize; calibrate with a dedicated item move, not ambient traffic.
+    """
+    offsets = _plausible_record_offsets(frame, item_id.to_bytes(4, "little"))
+    if len(offsets) < 2:
+        return frame.length, None
+    deltas = {b - a for a, b in zip(offsets, offsets[1:])}
+    if len(deltas) != 1:
+        return frame.length, None
+    stride = deltas.pop()
+    return frame.length - (len(offsets) - 1) * stride, stride
 
 
 def _discover_source_container_decrement(

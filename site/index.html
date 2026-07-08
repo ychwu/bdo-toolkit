@@ -526,14 +526,31 @@ writer.<span class="f">write</span>(event)</div>
   <p>You perform a <em>known</em> action in game — the classic: buy Potatoes (item
   <code>7003</code>), move an exact quantity between inventory and storage — while the toolkit
   captures. It then searches every frame for that item id, scores candidate record layouts, and
-  promotes the plausible ones into opcode specs. Three actions are recognized:</p>
+  promotes the plausible ones into opcode specs.</p>
+  <p><strong>Auto (the default) detects transfer direction from packet structure</strong>, so you
+  don't declare which action is which — you move the item to storage and back (either order) and
+  the toolkit classifies each leg itself. Direction is decided from the packet's own structure
+  (validated across two opcode generations): a high-entropy source-context label before the
+  record means the item is <em>entering inventory</em> (a receipt); a storage-delta reason code
+  in the record means it is <em>entering storage</em> (a storage delta, which also covers worker
+  deposits and multi-record unstackable moves). A nearby item-id reference frame is a fallback
+  signal for older captures. Each candidate's classification is reported in
+  <a href="#calibration-types"><code>result.evidence</code></a>.</p>
   <div class="tablewrap"><table>
     <tr><th>action</th><th>You perform</th><th>Discovers</th></tr>
-    <tr><td class="mono">loot-preview</td><td>Open a loot/gathering preview showing the item</td><td class="mono">LOOT_PREVIEW</td></tr>
+    <tr><td class="mono">auto <span class="pdefault">(default)</span></td><td>Move the item to storage and back</td><td class="mono">Both transfer families, direction auto-classified</td></tr>
     <tr><td class="mono">storage-to-inventory</td><td>Withdraw the item from storage</td><td class="mono">INVENTORY_TRANSFER, SOURCE_CONTAINER_DECREMENT</td></tr>
     <tr><td class="mono">inventory-to-storage</td><td>Deposit the item into storage</td><td class="mono">STORAGE_ITEM_DELTA, SOURCE_STACK_DECREMENT, SOURCE_ITEM_REFERENCE</td></tr>
-    <tr><td class="mono">auto</td><td>—</td><td>Runs all three analyses over the same frames.</td></tr>
+    <tr><td class="mono">loot-preview</td><td>Open a loot/gathering preview (optional, separate)</td><td class="mono">LOOT_PREVIEW</td></tr>
   </table></div>
+  <p>Explicit single-direction actions are <strong>strict</strong>: if the capture's structure
+  contradicts the declared action (in either direction — a declared deposit that looks like a
+  withdrawal, or a declared withdrawal that looks like a deposit), calibration raises
+  <code>DirectionMismatchError</code> and writes nothing, rather than promoting specs under the
+  wrong event names. Auto never raises — it keeps whatever it can confirm. If neither structural
+  feature can classify a capture at all, an explicit action still calibrates (a declaration with
+  no contradiction stands — the post-patch recovery path), while auto drops what it cannot
+  confirm.</p>
   <p>Calibration is fully built in at three levels: a session object for apps, one-call wrappers
   for scripts, and the <a href="#cli"><code>bdo-toolkit calibrate</code></a> command for
   terminals.</p>
@@ -549,15 +566,13 @@ writer.<span class="f">write</span>(event)</div>
   your interface stays responsive, and <em>your app</em> decides when the user is done:</p>
 <pre><code><span class="k">from</span> bdo_toolkit.calibration <span class="k">import</span> CalibrationSession, update_profile
 
-session = <span class="f">CalibrationSession</span>(item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>,
-                             action=<span class="s">"inventory-to-storage"</span>)
+session = <span class="f">CalibrationSession</span>(item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>)  <span class="c"># action="auto"</span>
 session.<span class="f">start</span>()
-<span class="c"># your UI: "Move 3 potatoes into storage, then click Done"</span>
+<span class="c"># your UI: "Move 3 potatoes to storage and back, then click Done"</span>
 <span class="c"># session.frames_collected → live counter for a traffic indicator</span>
 result = session.<span class="f">stop</span>()          <span class="c"># user clicked Done</span>
 <span class="k">if</span> result.specs:
-    <span class="f">update_profile</span>(result, <span class="s">"my_app/opcodes.json"</span>,
-                   action=<span class="s">"inventory-to-storage"</span>, replace=<span class="k">True</span>)</code></pre>
+    <span class="f">update_profile</span>(result, <span class="s">"my_app/opcodes.json"</span>, replace=<span class="k">True</span>)</code></pre>
   <div class="params">
     <div class="prow"><div class="pname">start()<span class="ptype">→ None</span></div>
       <div class="pdesc">Begin passive background capture; returns immediately. Raises <code>RuntimeError</code> if already running.</div></div>
@@ -623,7 +638,15 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
     <tr><td class="mono">specs</td><td class="mono">tuple[OpcodeSpec, ...]</td><td>Promoted opcode specs. Empty tuple = nothing plausible found.</td></tr>
     <tr><td class="mono">ignored</td><td class="mono">tuple[str, ...]</td><td>Rejected candidates with reasons (<span class="mono">low-confidence</span>, <span class="mono">quantity-only</span>, …) — show these when calibration fails.</td></tr>
     <tr><td class="mono">frames_scanned</td><td class="mono">int</td><td>Total frames analyzed.</td></tr>
+    <tr><td class="mono">evidence</td><td class="mono">tuple[DirectionEvidence, ...]</td><td>Per-candidate direction classification — which family each record was assigned and which structural features fired.</td></tr>
   </table></div>
+  <h3 class="api">DirectionEvidence</h3>
+  <p>Why a candidate was placed in (or excluded from) a transfer family:
+  <code>action</code>, <code>opcode</code>, <code>detected_family</code>
+  (<span class="mono">"into_inventory"</span>, <span class="mono">"into_storage"</span>, or
+  <code>None</code> when neither feature fires), and the two feature booleans
+  <code>reference_frame</code>, <code>context_label</code>, and <code>storage_context</code>. Use it to audit or display why
+  auto calibration classified a capture the way it did.</p>
   <h3 class="api">OpcodeSpec</h3>
   <p>One discovered spec: <code>event</code>, <code>opcode</code>, <code>length</code>, the byte
   offsets that were located (<code>item_id_offset</code>, <code>quantity_offset</code>,
@@ -648,12 +671,11 @@ bdo-toolkit replay session.pcapng --jsonl --source <span class="s">"Worker Depos
 <span class="c"># live decode until Ctrl+C</span>
 bdo-toolkit live --event-type storage_delta --jsonl
 
-<span class="c"># calibrate live: perform the action in game, then Ctrl+C</span>
-bdo-toolkit calibrate --item-id 7003 --qty 3 --action inventory-to-storage \
-    --write opcodes.json --replace
+<span class="c"># calibrate live (auto): move the item to storage and back, then Ctrl+C</span>
+bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
 
 <span class="c"># calibrate offline from a recording (dry run without --write)</span>
-bdo-toolkit calibrate --pcap move3.pcapng --item-id 7003 --qty 3
+bdo-toolkit calibrate --pcap move_both_ways.pcapng --item-id 7003 --qty 3
 
 <span class="c"># start over with an empty active profile</span>
 bdo-toolkit reset-profile opcodes.json</code></pre>

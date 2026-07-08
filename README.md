@@ -73,24 +73,32 @@ Opcodes and byte offsets can shift when the game is patched, and the bundled
 profile may go stale. Rebuild a local profile from a known in-game action
 (classic workflow: move a known quantity of Potatoes to storage):
 
+Auto calibration detects transfer direction from packet structure, so you
+don't declare which action is which — just move the item to storage and back:
+
 ```powershell
-# start listening, perform the action once in game, press Ctrl+C
-bdo-toolkit calibrate --item-id 7003 --qty 3 `
-    --action inventory-to-storage --write opcodes.json --replace
+# start listening, move the item to storage and back, press Ctrl+C
+bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
 ```
 
 ```python
 # same thing embedded in an app, stopped by your own UI instead of Ctrl+C
 from bdo_toolkit.calibration import CalibrationSession, update_profile
 
-session = CalibrationSession(item_id=7003, quantity=3, action="inventory-to-storage")
+session = CalibrationSession(item_id=7003, quantity=3)   # action defaults to auto
 session.start()
-# ... user performs the action, then clicks "Done" ...
+# ... user moves the item to storage and back, then clicks "Done" ...
 result = session.stop()
-update_profile(result, "opcodes.json", action="inventory-to-storage", replace=True)
+update_profile(result, "opcodes.json", replace=True)
 ```
 
 Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
+
+Direction is classified from structure, not taken on faith: an explicit
+`--action` calibration refuses (rather than mislabels) a capture whose
+structure contradicts the declared action. See the
+[calibration docs](https://ychwu.github.io/bdo-toolkit/#calibration) for the
+full workflow and how direction detection works.
 
 ## Design Principles
 

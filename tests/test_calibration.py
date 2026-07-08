@@ -84,15 +84,60 @@ def test_calibration_storage_to_inventory_with_changed_source_instance():
 
 
 @requires_fixtures
-def test_storage_to_inventory_calibration_rejects_storage_delta_family():
+def test_calibration_accepts_total_quantity_for_unstackable_multi_record_transfer():
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
-        item_id=7003,
-        quantity=3,
+        FIXTURE_DIR / "hit_1_5_unstackable.pcapng",
+        item_id=1000306,
+        quantity=5,
         action="storage-to-inventory",
     )
 
-    assert result.specs == ()
+    specs = _specs_by_event(result)
+    transfer = specs["INVENTORY_TRANSFER"][0]
+    # length is normalized to the SINGLE-record frame length (1167 - 4*228):
+    # the profile loader treats it as a minimum, so recording the observed
+    # multi-record length would block ordinary single transfers.
+    assert (transfer.opcode, transfer.length) == (0x0F16, 255)
+    assert transfer.repeat_stride == 228
+    assert transfer.item_id_offset == 33
+    assert transfer.quantity_offset == 37
+
+
+@requires_fixtures
+def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path):
+    """End-to-end guard for the multi-record length-poisoning bug."""
+    from bdo_toolkit import replay_pcap
+
+    result = calibrate_pcap(
+        FIXTURE_DIR / "hit_1_5_unstackable.pcapng",
+        item_id=1000306,
+        quantity=5,
+        action="storage-to-inventory",
+    )
+    profile_path = tmp_path / "opcodes.json"
+    update_profile(result, profile_path, action="storage-to-inventory", backup=False)
+
+    multi = list(
+        replay_pcap(FIXTURE_DIR / "hit_1_5_unstackable.pcapng", opcode_profile=profile_path)
+    )
+    single = list(replay_pcap(FIXTURE_DIR / "new_potato.pcapng", opcode_profile=profile_path))
+    assert len(multi) == 5
+    assert [(e.item_id, e.quantity) for e in single] == [(7003, 10)]
+
+
+@requires_fixtures
+def test_storage_to_inventory_calibration_rejects_storage_delta_family():
+    # Declared storage-to-inventory on an inventory-to-storage capture must
+    # refuse loudly (symmetric with the inverse case), not return empty.
+    from bdo_toolkit.calibration import DirectionMismatchError
+
+    with pytest.raises(DirectionMismatchError, match="inventory-to-storage"):
+        calibrate_pcap(
+            FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+            item_id=7003,
+            quantity=3,
+            action="storage-to-inventory",
+        )
 
 
 @requires_fixtures

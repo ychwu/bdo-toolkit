@@ -12,6 +12,7 @@ from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
     CALIBRATION_ACTIONS,
     CalibrationResult,
+    DirectionMismatchError,
     calibrate_live,
     calibrate_pcap,
     reset_profile,
@@ -158,9 +159,24 @@ def _print_calibration_result(result: CalibrationResult, verbose: bool) -> None:
         if spec.score is not None:
             fields.append(f"confidence={spec.score:.2f}")
         print("discovered " + " ".join(fields))
+    _FAMILY_LABEL = {"into_inventory": "storage->inventory", "into_storage": "inventory->storage"}
+    detected = {
+        _FAMILY_LABEL[e.detected_family]
+        for e in result.evidence
+        if e.detected_family is not None
+    }
+    if detected:
+        print(f"detected direction(s): {', '.join(sorted(detected))}", file=sys.stderr)
     if verbose:
         for line in result.ignored:
             print(line, file=sys.stderr)
+        for e in result.evidence:
+            print(
+                f"classify opcode=0x{e.opcode:04X} family={e.detected_family} "
+                f"reference_frame={e.reference_frame} context_label={e.context_label} "
+                f"storage_context={e.storage_context}",
+                file=sys.stderr,
+            )
 
 
 def _run_calibrate(args: argparse.Namespace) -> int:
@@ -171,34 +187,43 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.pcap is not None:
-        result = calibrate_pcap(
-            args.pcap,
-            item_id=args.item_id,
-            quantity=args.qty,
-            action=args.action,
-            ports=args.ports,
-            min_confidence=args.min_confidence,
+
+    if args.action == "auto":
+        instruction = (
+            f"move item {args.item_id} from storage to inventory and back "
+            "(either order)"
         )
     else:
-        if args.capture_seconds is not None:
-            stop_instruction = f"stopping automatically after {args.capture_seconds:g}s"
+        instruction = f"perform the {args.action} action with item {args.item_id} once"
+
+    try:
+        if args.pcap is not None:
+            result = calibrate_pcap(
+                args.pcap,
+                item_id=args.item_id,
+                quantity=args.qty,
+                action=args.action,
+                ports=args.ports,
+                min_confidence=args.min_confidence,
+            )
         else:
-            stop_instruction = "press Ctrl+C when done"
-        print(
-            f"listening -- perform the {args.action} action with item "
-            f"{args.item_id} once, {stop_instruction}",
-            file=sys.stderr,
-        )
-        result = calibrate_live(
-            item_id=args.item_id,
-            quantity=args.qty,
-            action=args.action,
-            ports=args.ports,
-            interface=args.iface,
-            capture_seconds=args.capture_seconds,
-            min_confidence=args.min_confidence,
-        )
+            if args.capture_seconds is not None:
+                stop_instruction = f"stopping automatically after {args.capture_seconds:g}s"
+            else:
+                stop_instruction = "press Ctrl+C when done"
+            print(f"listening -- {instruction}, {stop_instruction}", file=sys.stderr)
+            result = calibrate_live(
+                item_id=args.item_id,
+                quantity=args.qty,
+                action=args.action,
+                ports=args.ports,
+                interface=args.iface,
+                capture_seconds=args.capture_seconds,
+                min_confidence=args.min_confidence,
+            )
+    except DirectionMismatchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     _print_calibration_result(result, args.verbose)
 
@@ -303,7 +328,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--action",
         choices=CALIBRATION_ACTIONS + ("auto",),
         default="auto",
-        help="calibration workflow to run (default: auto)",
+        help=(
+            "calibration workflow (default: auto). auto detects both transfer "
+            "directions from packet structure -- just move the item to storage "
+            "and back. Explicit directions are strict and refuse a capture whose "
+            "structure contradicts the declared action. loot-preview is a "
+            "separate optional gathering calibration."
+        ),
     )
     calibrate.add_argument(
         "--ports",
