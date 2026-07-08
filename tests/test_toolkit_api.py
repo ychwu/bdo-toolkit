@@ -30,7 +30,10 @@ def test_replay_batch_storage_deposit_as_structured_events():
 
     assert len(events) == 2
     assert [event.event_type for event in events] == ["storage_delta", "storage_delta"]
-    assert [event.source for event in events] == ["Batch Storage Deposit", "Batch Storage Deposit"]
+    assert [event.source for event in events] == [
+        "Batch Storage Deposit",
+        "Batch Storage Deposit",
+    ]
     assert [event.item_id for event in events] == [5960, 4015]
     assert [event.quantity for event in events] == [1, 1]
     assert [event.record_index for event in events] == [1, 2]
@@ -46,8 +49,8 @@ def test_replay_filters_by_event_type_and_source():
     fixture = FIXTURE_DIR / "5960_qty1_and_4015_qty1_multi.pcapng"
 
     assert list(replay_pcap(fixture, event_types={"item_received"})) == []
-    batch_events = list(replay_pcap(fixture, sources={"Batch Storage Deposit"}))
-    assert len(batch_events) == 2
+    worker_events = list(replay_pcap(fixture, sources={"Batch Storage Deposit"}))
+    assert len(worker_events) == 2
     assert list(replay_pcap(fixture, item_ids={5960}))[0].item_id == 5960
 
 

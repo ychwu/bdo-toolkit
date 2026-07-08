@@ -124,5 +124,8 @@ class BDOEvent:
             parts.append(f"item_instance={self.item_instance}")
         if self.storage_instance is not None:
             parts.append(f"storage_instance={self.storage_instance}")
+        deposit_origin = self.extra.get("deposit_origin")
+        if deposit_origin is not None:
+            parts.append(f"deposit_origin={deposit_origin}")
         return " ".join(parts)
 

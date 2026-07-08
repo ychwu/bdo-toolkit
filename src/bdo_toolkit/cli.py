@@ -90,10 +90,25 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="emit newline-delimited JSON instead of human-readable lines",
     )
+    parser.add_argument(
+        "--deposit-origin",
+        choices=("worker", "manual", "unknown"),
+        default=None,
+        help=(
+            "only yield storage_delta events with this classified deposit "
+            "origin (worker deposits vs manual deposits)"
+        ),
+    )
 
 
 def _writer(args: argparse.Namespace):
     return JsonlEventWriter() if args.jsonl else ConsoleEventWriter()
+
+
+def _passes_deposit_origin(event, wanted: Optional[str]) -> bool:
+    if wanted is None:
+        return True
+    return event.extra.get("deposit_origin") == wanted
 
 
 def _run_replay(args: argparse.Namespace) -> int:
@@ -109,6 +124,8 @@ def _run_replay(args: argparse.Namespace) -> int:
         sources=set(args.sources) if args.sources else None,
         item_ids=set(args.item_ids) if args.item_ids else None,
     ):
+        if not _passes_deposit_origin(event, args.deposit_origin):
+            continue
         writer.write(event)
         count += 1
     print(f"decoded {count} events", file=sys.stderr)
@@ -129,6 +146,8 @@ def _run_live(args: argparse.Namespace) -> int:
             item_ids=set(args.item_ids) if args.item_ids else None,
             capture_seconds=args.capture_seconds,
         ):
+            if not _passes_deposit_origin(event, args.deposit_origin):
+                continue
             writer.write(event)
     except KeyboardInterrupt:
         pass

@@ -25,6 +25,17 @@ MAX_PENDING_SEGMENTS = 128
 GAP_RESET_SECONDS = 1.5
 DEDUP_HISTORY_LIMIT = 4096
 LOOT_PREVIEW_SENTINEL_INSTANCE = b"\xff" * 8
+
+# Companion frames observed immediately after every known worker storage
+# deposit (n=4 captures, BOTH storage-delta context modes 05/20, qty 1..25,
+# single and multi record) and near zero manual deposits. Raw current-gen
+# opcodes with unknown semantics: provisional and patch-fragile — used only
+# as one of two corroborating deposit-origin signals, never alone as fact.
+WORKER_DEPOSIT_COMPANION_OPCODES = (0x1558, 0x1168)
+
+# Source-stack-decrement family fallbacks when the active profile carries no
+# calibrated SOURCE_STACK_DECREMENT entries (current-gen, legacy).
+DEPOSIT_DECREMENT_FALLBACK_OPCODES = (0x1A32, 0x13ED)
 CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH = 27
 CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH = 35
 CURRENT_STORAGE_DELTA_RECORD_STRIDE = 226
@@ -33,6 +44,12 @@ CHARACTER_LOAD_CONTEXT = b"\x00" * 4
 STORAGE_DELTA_CONTEXTS = (
     bytes.fromhex("05000000"),
     bytes.fromhex("20000000"),
+    # Royal Workshop production deposits (observed 2026-07-08, item 821108,
+    # 2-record frame; n=1, no pcap yet — produces intermittently). Registered
+    # here so these frames get the intrinsic into_storage direction signal and
+    # are never mistaken for a receipt context label. Worker attribution is
+    # deposit_origin's job, never the context byte (see the 20000000 history).
+    bytes.fromhex("8c050000"),
 )
 
 ENHANCEMENT_LABELS: dict[int, str] = {
@@ -59,7 +76,11 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("85fa5745"): "Mob Drop",
     bytes.fromhex("d0f205a3"): "Storage",
     STORAGE_DELTA_CONTEXTS[0]: "Storage",
+    # 0x20 is batch-style storage delta: seen on worker deposits (any record
+    # count, including single) AND manual multi-record deposits. It is NOT
+    # worker-specific; worker isolation needs correlation (see wiki).
     STORAGE_DELTA_CONTEXTS[1]: "Batch Storage Deposit",
+    STORAGE_DELTA_CONTEXTS[2]: "Royal Workshop",
     bytes.fromhex("43ce1321"): "Central Market",
     bytes.fromhex("89fa09af"): "Black Spirit Safe",
     bytes.fromhex("35bd5d70"): "Challenges",

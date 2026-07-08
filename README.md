@@ -3,7 +3,7 @@
 Passive, read-only packet telemetry tooling for developers building BDO helper
 apps.
 
-**ðŸ“– Full API reference: [ychwu.github.io/bdo-toolkit](https://ychwu.github.io/bdo-toolkit/)**
+**📖 Full API reference: [ychwu.github.io/bdo-toolkit](https://ychwu.github.io/bdo-toolkit/)**
 
 The toolkit goal is simple:
 
@@ -17,8 +17,9 @@ from bdo_toolkit import replay_pcap, capture_live
 for event in replay_pcap("session.pcapng", sources={"Mob Drop"}):
     print(event.item_id, event.quantity)
 
-for event in capture_live(event_types={"storage_delta"}, sources={"Batch Storage Deposit"}):
-    print(event.to_dict())
+for event in capture_live(event_types={"storage_delta"}):
+    if event.extra.get("deposit_origin") == "worker":   # worker vs manual vs unknown,
+        print(event.to_dict())                          # classified from packet structure
 ```
 
 `"Batch Storage Deposit"` is not worker-only. It is a batch-style storage delta
@@ -56,13 +57,13 @@ public surface with examples:
 - [Quick start](https://ychwu.github.io/bdo-toolkit/#quickstart) and
   [core concepts](https://ychwu.github.io/bdo-toolkit/#concepts)
 - [`replay_pcap`](https://ychwu.github.io/bdo-toolkit/#replay-pcap) /
-  [`capture_live`](https://ychwu.github.io/bdo-toolkit/#capture-live) â€” decode
+  [`capture_live`](https://ychwu.github.io/bdo-toolkit/#capture-live) — decode
   captures into events
-- [`BDOEvent`](https://ychwu.github.io/bdo-toolkit/#bdoevent) â€” the stable
+- [`BDOEvent`](https://ychwu.github.io/bdo-toolkit/#bdoevent) — the stable
   event model and its [event types](https://ychwu.github.io/bdo-toolkit/#event-types)
-- [Opcode profiles](https://ychwu.github.io/bdo-toolkit/#profiles) â€” bundled
+- [Opcode profiles](https://ychwu.github.io/bdo-toolkit/#profiles) — bundled
   default, local overrides, staleness after game patches
-- [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration) â€” rebuild a
+- [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration) — rebuild a
   profile after a patch, including
   [`CalibrationSession`](https://ychwu.github.io/bdo-toolkit/#calibrationsession)
   for embedding calibration in your own app's UI
@@ -77,7 +78,7 @@ profile may go stale. Rebuild a local profile from a known in-game action
 (classic workflow: move a known quantity of Potatoes to storage):
 
 Auto calibration detects transfer direction from packet structure, so you
-don't declare which action is which â€” just move the item to storage and back:
+don't declare which action is which — just move the item to storage and back:
 
 ```powershell
 # start listening, move the item to storage and back, press Ctrl+C
@@ -145,7 +146,7 @@ The test suite has two tiers:
 - **Regression tests against real captures**: replay recorded pcaps and
   compare decoded events against JSONL baselines. The capture files are
   personal game-session recordings and are **not part of the public
-  repository** â€” these tests skip automatically when the files are absent.
+  repository** — these tests skip automatically when the files are absent.
 
 If you have local fixtures in `tests/fixtures/`, regenerate the baselines
 after an intentional decoding change and review the diff:

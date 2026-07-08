@@ -1,6 +1,12 @@
-"""Tiny example: print batch-style storage-delta events.
+"""Tiny example: print worker-attributed storage deposits.
 
-Usage: python examples/storage_batch_log.py [path/to/session.pcapng]
+Usage: python examples/worker_production_log.py [path/to/session.pcapng]
+
+Every storage_delta event carries extra["deposit_origin"]:
+"worker" / "manual" / "unknown", classified from packet structure (a manual
+deposit is preceded by a matching source-stack decrement; a worker deposit is
+followed by its companion frames). "unknown" means the evidence was absent or
+contradictory -- the toolkit refuses to guess.
 """
 
 from __future__ import annotations
@@ -22,12 +28,9 @@ DEFAULT_PCAP = (
 def main() -> None:
     pcap = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PCAP
     writer = JsonlEventWriter()
-    for event in replay_pcap(
-        pcap,
-        event_types={"storage_delta"},
-        sources={"Batch Storage Deposit"},
-    ):
-        writer.write(event)
+    for event in replay_pcap(pcap, event_types={"storage_delta"}):
+        if event.extra.get("deposit_origin") == "worker":
+            writer.write(event)
 
 
 if __name__ == "__main__":

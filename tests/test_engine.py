@@ -107,3 +107,11 @@ def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):
     ]
     assert events[0].source == "Gathering"
 
+
+def test_royal_workshop_context_labels_and_stays_storage_mode():
+    # 0x8c050000 is both a named source AND a storage-delta mode: the label
+    # must resolve, and because it sits in STORAGE_DELTA_CONTEXTS it must
+    # never act as a receipt context signature for direction classification.
+    royal = bytes.fromhex("8c050000")
+    assert source_label(royal, None) == "Royal Workshop"
+    assert royal in STORAGE_DELTA_CONTEXTS

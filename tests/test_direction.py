@@ -364,3 +364,28 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     # STORAGE_ITEM_DELTA is emitted as an INVENTORY_TO_STORAGE decode spec.
     assert "INVENTORY_TRANSFER" in labels
     assert "INVENTORY_TO_STORAGE" in labels
+
+
+def test_special_production_context_is_intrinsic_into_storage():
+    # 0x8c050000 (special worker production, observed 2026-07-08) is a
+    # storage-delta mode: it must classify into_storage WITHOUT needing a
+    # reference frame, and must never read as a receipt context label.
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import detect_transfer_family
+
+    message = bytearray(261)
+    message[0:2] = (261).to_bytes(2, "little")
+    message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[8:12] = bytes.fromhex("8c050000")
+    message[37:41] = (821108).to_bytes(4, "little")
+    message[41:45] = (65).to_bytes(4, "little")
+    message[72:80] = b"\x22" * 8
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(timestamp=1000.0, flow=FlowKey("1.1.1.1", 8889, "2.2.2.2", 50000)),
+        stream_sequence=1,
+    )
+    family, ref, ctx, storage_ctx = detect_transfer_family([frame], frame, 37, 821108)
+    assert family == "into_storage"
+    assert storage_ctx and not ctx and not ref
