@@ -56,3 +56,6 @@ ENV/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Claude Code local tooling (per-user, not part of the package)
+.claude/
