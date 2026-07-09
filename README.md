@@ -87,14 +87,23 @@ bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
 ```
 
 ```python
-# same thing embedded in an app, stopped by your own UI instead of Ctrl+C
+# same thing as one library call: capture, calibrate, persist
+from bdo_toolkit.calibration import calibrate_and_update
+
+result, update = calibrate_and_update("opcodes.json", item_id=7003, quantity=3)
+print(result.summary())                # what was found, human-readable
+```
+
+```python
+# embedded in an app, stopped by your own UI instead of Ctrl+C
 from bdo_toolkit.calibration import CalibrationSession, update_profile
 
 session = CalibrationSession(item_id=7003, quantity=3)   # action defaults to auto
 session.start()
 # ... user moves the item to storage and back, then clicks "Done" ...
 result = session.stop()
-update_profile(result, "opcodes.json", replace=True)
+if "STORAGE_ITEM_DELTA" in result.events_found:
+    update_profile(result, "opcodes.json", replace=True)
 ```
 
 Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
@@ -105,11 +114,102 @@ structure contradicts the declared action. See the
 [calibration docs](https://ychwu.github.io/bdo-toolkit/#calibration) for the
 full workflow and how direction detection works.
 
+## Worker origin: classification vs. learning
+
+You do **not** need an `OriginLearner` to classify deposits. Normal
+`capture_live()` and `replay_pcap()` calls always classify each storage delta as
+`"worker"`, `"manual"`, or `"unknown"` in `event.deposit_origin`:
+
+```python
+from bdo_toolkit import capture_live
+
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_types={"storage_delta"},
+):
+    print(event.deposit_origin)
+```
+
+Worker classification uses a three-frame **structure**: the storage delta and
+the next two contiguous companion frames must share the same informative
+8-byte token. The exact companion opcode values are not part of that verdict.
+
+| Shared-token structure | Promoted opcode family | Classification | Audit metadata |
+| --- | --- | --- | --- |
+| Present | Known | `worker` | `known_family=True` |
+| Present | Unknown | `worker` | `known_family=False` |
+| Absent | Even if the following opcodes look familiar | Not worker from companion evidence | No companion-chain audit record |
+
+A matching calibrated source-stack decrement can classify the remaining case
+as `manual`; incomplete or absent evidence stays `unknown`. In other words,
+**companion frames are required for worker classification, but previously
+learned companion opcode identities are not.**
+
+The family lookup is still a cross-check: it reports whether the structural
+match agrees with metadata already promoted into the profile. It never
+upgrades, downgrades, or vetoes `deposit_origin`.
+
+The optional `OriginLearner` records which opcode/length families were seen
+after the structural classifier already found a worker chain. This is useful
+for patch auditing; it does not make the classification happen. The workflow
+has three separate steps:
+
+| Goal | What to use | Writes files? |
+| --- | --- | --- |
+| Classify deposits | `capture_live()` or `replay_pcap()` | No |
+| Aggregate observed families | `origin_observer=learner.observe` | No |
+| Save candidates | `learner.save(...)` or `origin-learn` | Candidate JSON only |
+| Mark reviewed families as known | `promote_origin_candidates(...)` or `origin-promote` | Explicitly updates the opcode profile |
+
+`min_observations=2` means a family becomes a confirmed **promotion
+candidate** after two independent observations. It does not mean "run the
+learner twice," and it is not a worker-confidence threshold.
+
+For the complete workflow, jump to
+[classification](https://ychwu.github.io/bdo-toolkit/#origin-classification),
+[learning](https://ychwu.github.io/bdo-toolkit/#origin-learner), or
+[promotion](https://ychwu.github.io/bdo-toolkit/#origin-promotion) in the API
+reference.
+
+To audit families from the command line:
+
+```powershell
+# Offline discovery from one or more captures (omit --pcap to listen live).
+bdo-toolkit origin-learn --profile opcodes.local `
+  --pcap worker-single.pcapng --pcap worker-multi.pcapng
+
+# After the configured observation threshold is met, explicitly promote it.
+bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.local
+```
+
+Apps can collect the same candidates without filesystem writes:
+
+```python
+from bdo_toolkit import OriginLearner, capture_live
+
+learner = OriginLearner(min_observations=2)
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    origin_observer=learner.observe,
+):
+    print(event.deposit_origin)
+
+# Explicit opt-in persistence:
+learner.save("opcodes.origin-candidates.json")
+```
+
+The learner stores hashes of shared tokens, never the raw token. Replaying the
+same capture again does not inflate its observation count. Saving candidates
+does not affect `known_family`; only explicit promotion into the normal opcode
+profile does.
+
 ## Design Principles
 
 - Passive/read-only only: never inject, send, delay, replay, or modify packets.
 - Decode all known categories in the engine, then let apps filter events.
 - Keep opcode profiles data-driven and easy to replace after patches.
+- Classify worker origins structurally; learned opcode families are audit
+  metadata, never the sole verdict.
 - Treat packet knowledge as provisional unless repeated captures prove it.
 - Preserve raw fields and add new event fields without breaking old apps.
 
@@ -121,6 +221,7 @@ src/bdo_toolkit/
   events.py             Stable app-facing event model
   filters.py            Event filtering helpers
   profiles.py           Opcode profile loading
+  origin_learning.py    Structural companion discovery and opt-in learning
   writers.py            Console and JSONL writers
   calibration.py        Opcode profile calibration and profile updates
   cli.py                bdo-toolkit command line

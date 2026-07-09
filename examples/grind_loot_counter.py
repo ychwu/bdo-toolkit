@@ -1,27 +1,24 @@
 """Tiny example: count mob-drop items in a pcap.
 
-Usage: python examples/grind_loot_counter.py [path/to/session.pcapng]
+Usage: python examples/grind_loot_counter.py path/to/session.pcapng
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 from collections import Counter
 from pathlib import Path
 
 from bdo_toolkit import replay_pcap
 
 
-DEFAULT_PCAP = (
-    Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "44291_qty1_127.pcapng"
-)
-
-
 def main() -> None:
-    pcap = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PCAP
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pcap", type=Path, help="capture file to count")
+    args = parser.parse_args()
     totals: Counter[int] = Counter()
     for event in replay_pcap(
-        pcap,
+        args.pcap,
         include_legacy_opcodes=True,
         event_types={"item_received"},
         sources={"Mob Drop"},

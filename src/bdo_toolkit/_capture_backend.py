@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Protocol
+from typing import Iterable, Iterator, Optional, Protocol
 
 
 class SegmentConsumer(Protocol):
@@ -37,12 +37,6 @@ class CaptureTarget:
 
 def import_scapy():
     try:
-        # The toolkit only needs IPv4. Disabling IPv6 before importing the
-        # IPv4 layers also avoids unnecessary route discovery on startup.
-        from scapy.config import conf  # type: ignore
-
-        conf.ipv6_enabled = False
-
         from scapy.interfaces import get_if_list  # type: ignore
         from scapy.layers.inet import IP, TCP  # type: ignore
         from scapy.sendrecv import sniff  # type: ignore
@@ -76,11 +70,27 @@ def detect_default_capture_target() -> CaptureTarget:
 
 
 def build_bpf_filter(ports: Iterable[int], local_ip: Optional[str] = None) -> str:
-    port_expression = " or ".join(f"src port {port}" for port in ports)
+    normalized_ports = validate_server_ports(ports)
+    port_expression = " or ".join(f"src port {port}" for port in normalized_ports)
     bpf_filter = f"tcp and ({port_expression})"
     if local_ip is not None:
         bpf_filter += f" and dst host {local_ip}"
     return bpf_filter
+
+
+def validate_server_ports(ports: Iterable[int]) -> tuple[int, ...]:
+    """Return unique validated TCP ports, preserving caller order."""
+    normalized: list[int] = []
+    for port in ports:
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ValueError(f"server port must be an integer, got {port!r}")
+        if not 1 <= port <= 65535:
+            raise ValueError(f"server port out of range: {port}")
+        if port not in normalized:
+            normalized.append(port)
+    if not normalized:
+        raise ValueError("at least one server port is required")
+    return tuple(normalized)
 
 
 def make_packet_handler(engine: SegmentConsumer):
@@ -111,18 +121,43 @@ def make_packet_handler(engine: SegmentConsumer):
     return handle
 
 
-def replay_pcap_file(path: Path, engine: SegmentConsumer) -> None:
+def iter_pcap_file(path: Path, engine: SegmentConsumer) -> Iterator[None]:
+    """Process one capture packet at a time, yielding after each packet.
+
+    The yield point lets public replay drain decoded events incrementally
+    instead of retaining the entire capture's results in memory.
+    """
     _, _, _, _, PcapReader = import_scapy()
+    from scapy.error import Scapy_Exception  # type: ignore
+
     handler = make_packet_handler(engine)
 
     if not path.is_file():
         raise FileNotFoundError(f"Capture file does not exist: {path}")
 
+    source = None
+    packets = None
     try:
-        with PcapReader(str(path)) as packets:
-            for packet in packets:
-                handler(packet)
-    except (OSError, ValueError) as exc:
+        # Passing our own handle lets us close it even when PcapReader's
+        # constructor rejects the file.  Some Scapy versions otherwise leave
+        # invalid captures locked on Windows.
+        source = path.open("rb")
+        packets = PcapReader(source)
+        for packet in packets:
+            handler(packet)
+            yield None
+    except (OSError, ValueError, Scapy_Exception) as exc:
         raise ValueError(f"Could not read capture {path}: {exc}") from exc
+    finally:
+        if packets is not None:
+            packets.close()
+        if source is not None:
+            source.close()
 
     engine.finish()
+
+
+def replay_pcap_file(path: Path, engine: SegmentConsumer) -> None:
+    """Process an entire capture file eagerly (calibration convenience)."""
+    for _ in iter_pcap_file(path, engine):
+        pass

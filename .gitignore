@@ -8,6 +8,7 @@ tests/baselines/
 
 # Local calibration output
 opcodes_backups/
+*.origin-candidates.json
 
 # Python bytecode and caches
 __pycache__/

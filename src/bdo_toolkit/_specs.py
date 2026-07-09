@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
 from ._protocol import (
     CURRENT_EVENT_SPECS,
-    CURRENT_STORAGE_DELTA_CONTEXT_OFFSET,
+    CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH,
+    CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH,
     CURRENT_STORAGE_DELTA_RECORD_STRIDE,
     LEGACY_EVENT_SPECS,
     EventSpec,
 )
-
-
-class ProfileError(ValueError):
-    """Raised when an opcode profile file cannot be parsed."""
+from .profiles import ProfileError, load_opcode_profile
 
 
 @dataclass(frozen=True)
@@ -32,12 +29,13 @@ def select_event_specs(
     opcodes_path: Path,
     include_legacy: bool = False,
     ignore_opcodes: bool = False,
+    require_profile: bool = False,
 ) -> tuple[tuple[EventSpec, ...], str]:
     """Resolve the event specs to decode with and a human-readable source."""
     profile = (
         LoadedSpecProfile(active=False, specs=(), source="")
         if ignore_opcodes
-        else load_spec_profile(opcodes_path)
+        else load_spec_profile(opcodes_path, missing_ok=not require_profile)
     )
     if profile.active:
         specs = profile.specs
@@ -52,32 +50,33 @@ def select_event_specs(
     return specs, source
 
 
-def load_spec_profile(path: Path) -> LoadedSpecProfile:
+def load_spec_profile(path: Path, *, missing_ok: bool = True) -> LoadedSpecProfile:
     if not path.exists():
-        return LoadedSpecProfile(active=False, specs=(), source=str(path))
+        if missing_ok:
+            return LoadedSpecProfile(active=False, specs=(), source=str(path))
+        raise FileNotFoundError(f"Opcode profile does not exist: {path}")
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except json.JSONDecodeError as exc:
-        raise ProfileError(f"Could not parse opcodes JSON {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ProfileError(f"Opcodes JSON {path} must be a top-level object")
+    profile = load_opcode_profile(path)
 
-    if not bool(data.get("profile_active", False)):
+    if not profile.active:
         return LoadedSpecProfile(active=False, specs=(), source=str(path))
 
     specs: list[EventSpec] = []
-    raw_specs = data.get("specs", {})
-    if isinstance(raw_specs, dict):
-        for event, entries in raw_specs.items():
-            if not isinstance(event, str) or not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
+    decodable_events = {"LOOT_PREVIEW", "INVENTORY_TRANSFER", "STORAGE_ITEM_DELTA"}
+    for event, entries in profile.specs.items():
+        for entry in entries:
+            try:
                 spec = _event_spec_from_entry(event, entry)
-                if spec is not None:
-                    specs.append(spec)
+            except ValueError as exc:
+                raise ProfileError(
+                    f"Invalid {event} spec in {path}: {exc}"
+                ) from exc
+            if spec is not None:
+                specs.append(spec)
+            elif event in decodable_events:
+                raise ProfileError(
+                    f"Invalid {event} spec in {path}: missing or invalid required fields"
+                )
 
     return LoadedSpecProfile(
         active=True,
@@ -118,6 +117,10 @@ def _event_spec_from_entry(
     if event == "INVENTORY_TRANSFER":
         if item_id_offset is None or quantity_offset is None:
             return None
+        inventory_slot_offset = _optional_int(entry.get("inventory_slot_offset"))
+        context_offset = _optional_int(entry.get("context_offset"))
+        item_instance_offset = _optional_int(entry.get("item_instance_offset"))
+        repeat_stride = _infer_repeat_stride(event, entry)
         return EventSpec(
             label="INVENTORY_TRANSFER",
             opcode=opcode,
@@ -127,12 +130,17 @@ def _event_spec_from_entry(
                 length,
                 item_id_offset + 4,
                 quantity_offset + 4,
-                _optional_int(entry.get("item_instance_offset"), width=8),
+                item_instance_offset + 8 if item_instance_offset is not None else None,
+                context_offset + 4 if context_offset is not None else None,
+                inventory_slot_offset + 1 if inventory_slot_offset is not None else None,
             ),
-            inventory_slot_offset=_optional_int(entry.get("inventory_slot_offset")),
-            source_context_offset=_optional_int(entry.get("context_offset")),
-            item_instance_offset=_optional_int(entry.get("item_instance_offset")),
-            repeat_stride=_infer_repeat_stride(event, opcode, entry),
+            inventory_slot_offset=inventory_slot_offset,
+            source_context_offset=context_offset,
+            item_instance_offset=item_instance_offset,
+            repeat_stride=repeat_stride,
+            single_record_message_length=(
+                length if repeat_stride is not None else None
+            ),
         )
 
     if event == "STORAGE_ITEM_DELTA":
@@ -143,14 +151,7 @@ def _event_spec_from_entry(
         if item_id_offset is None or quantity_added_offset is None:
             return None
         context_offset = _optional_int(entry.get("context_offset"))
-        if (
-            context_offset is None
-            and opcode == 0x0E6A
-            and item_id_offset == 37
-            and quantity_added_offset == 41
-            and destination_instance_offset == 72
-        ):
-            context_offset = CURRENT_STORAGE_DELTA_CONTEXT_OFFSET
+        repeat_stride = _infer_repeat_stride(event, entry)
         return EventSpec(
             label="INVENTORY_TO_STORAGE",
             opcode=opcode,
@@ -165,10 +166,14 @@ def _event_spec_from_entry(
                     if destination_instance_offset is not None
                     else None
                 ),
+                context_offset + 4 if context_offset is not None else None,
             ),
             source_context_offset=context_offset,
             storage_instance_offset=destination_instance_offset,
-            repeat_stride=_infer_repeat_stride(event, opcode, entry),
+            repeat_stride=repeat_stride,
+            single_record_message_length=(
+                length if repeat_stride is not None else None
+            ),
             default_context="Storage",
         )
 
@@ -177,7 +182,6 @@ def _event_spec_from_entry(
 
 def _infer_repeat_stride(
     event: str,
-    opcode: int,
     entry: dict[str, object],
 ) -> Optional[int]:
     configured = _optional_int(entry.get("repeat_stride"))
@@ -186,12 +190,19 @@ def _infer_repeat_stride(
     item_id_offset = _optional_int(entry.get("item_id_offset"))
     quantity_offset = _optional_int(entry.get("quantity_offset"))
     item_instance_offset = _optional_int(entry.get("item_instance_offset"))
+    length = _optional_int(entry.get("length"))
     if (
         event == "INVENTORY_TRANSFER"
-        and opcode == 0x0F16
         and item_id_offset == 33
         and quantity_offset == 37
         and item_instance_offset == 68
+        and length is not None
+        and length > CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
+        and (
+            length - CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
+        )
+        % 228
+        == 0
     ):
         return 228
     quantity_added_offset = _optional_int(entry.get("quantity_added_offset"))
@@ -200,16 +211,22 @@ def _infer_repeat_stride(
     )
     if (
         event == "STORAGE_ITEM_DELTA"
-        and opcode == 0x0E6A
         and item_id_offset == 37
         and quantity_added_offset == 41
         and destination_instance_offset == 72
+        and length is not None
+        and length > CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH
+        and (length - CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH)
+        % CURRENT_STORAGE_DELTA_RECORD_STRIDE
+        == 0
     ):
         return CURRENT_STORAGE_DELTA_RECORD_STRIDE
     return None
 
 
 def _parse_opcode(value: object) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
         opcode = value
     elif isinstance(value, str):
@@ -226,10 +243,10 @@ def _parse_opcode(value: object) -> Optional[int]:
 
 
 def _optional_int(value: object, width: int = 0) -> Optional[int]:
-    if not isinstance(value, int):
+    if value is None:
         return None
-    if value < 0:
-        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"expected a non-negative integer, got {value!r}")
     return value + width if width else value
 
 

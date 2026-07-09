@@ -99,7 +99,7 @@ body {
 }
 .side a.nl:hover { background: var(--panel-2); }
 .side a.nl.on { color: var(--accent-ink); border-left-color: var(--accent); background: var(--accent-wash); }
-.side a.nl code { font-family: var(--mono); font-size: 12.5px; }
+.side a.nl code { font-family: var(--mono); font-size: 12.5px; background: none; border: none; padding: 0; color: inherit; }
 .themebtn {
   margin-top: 8px; font-family: var(--mono); font-size: 11px;
   background: none; border: 1px solid var(--line); border-radius: 4px;
@@ -239,6 +239,7 @@ footer {
       <a class="nl" href="#install">Install</a>
       <a class="nl" href="#quickstart">Quick start</a>
       <a class="nl" href="#concepts">Concepts</a>
+      <a class="nl" href="#choosing">Choosing an entry point</a>
     </div>
     <div class="navgroup">
       <div class="nglabel">Decoding</div>
@@ -253,6 +254,10 @@ footer {
       <div class="nglabel">Profiles</div>
       <a class="nl" href="#profiles">Opcode profiles</a>
       <a class="nl" href="#load-opcode-profile"><code>load_opcode_profile()</code></a>
+      <a class="nl" href="#origin-learning">Worker origin overview</a>
+      <a class="nl" href="#origin-classification">Origin classification</a>
+      <a class="nl" href="#origin-learner"><code>OriginLearner</code></a>
+      <a class="nl" href="#origin-promotion">Origin promotion</a>
     </div>
     <div class="navgroup">
       <div class="nglabel">Calibration</div>
@@ -260,6 +265,7 @@ footer {
       <a class="nl" href="#calibrationsession"><code>CalibrationSession</code></a>
       <a class="nl" href="#calibrate-pcap"><code>calibrate_pcap()</code></a>
       <a class="nl" href="#calibrate-live"><code>calibrate_live()</code></a>
+      <a class="nl" href="#calibrate-and-update"><code>calibrate_and_update()</code></a>
       <a class="nl" href="#update-profile"><code>update_profile()</code></a>
       <a class="nl" href="#calibration-types">Result types</a>
     </div>
@@ -345,8 +351,29 @@ footer {
   it via <code>opcode_profile=</code>.</p>
   <h3>Filtering at the edge</h3>
   <p>The engine decodes every known category in one pass; the <code>event_types</code> /
-  <code>sources</code> / <code>item_ids</code> arguments control only what is <em>yielded to
-  your app</em>. Filtering never changes what the engine understands.</p>
+  <code>sources</code> / <code>item_ids</code> / <code>deposit_origins</code> arguments control
+  only what is <em>yielded to your app</em>. Filtering never changes what the engine
+  understands.</p>
+</section>
+
+<section class="section" id="choosing">
+  <h2>Choosing an entry point</h2>
+  <p>The package has two jobs — decoding events, and maintaining the opcode profile that decoding
+  depends on. Every public entry point serves one of them:</p>
+  <div class="tablewrap"><table>
+    <tr><th>You want to…</th><th>Call</th><th>Returns</th><th>Notes</th></tr>
+    <tr><td>Parse a saved capture</td><td class="mono"><a href="#replay-pcap">replay_pcap(path, …)</a></td><td class="mono">Iterator[<a href="#bdoevent">BDOEvent</a>]</td><td>Offline and deterministic — the easiest surface to build and test against.</td></tr>
+    <tr><td>Stream live events in a script</td><td class="mono"><a href="#capture-live">capture_live(…)</a></td><td class="mono">Iterator[BDOEvent]</td><td>Blocking iterator; yields as packets decode.</td></tr>
+    <tr><td>Stream live events in an app/GUI</td><td class="mono">capture_live(…) on a thread</td><td class="mono">Iterator[BDOEvent]</td><td>The iterator is synchronous — see the <a href="#capture-live">threading pattern</a>.</td></tr>
+    <tr><td>Track worker production</td><td class="mono">capture_live(deposit_origins={"worker"})</td><td class="mono">Iterator[BDOEvent]</td><td>Classification is automatic—no learner required. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
+    <tr><td>Recalibrate from a recording</td><td class="mono"><a href="#calibrate-pcap">calibrate_pcap(path, …)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>Deterministic — ideal for tests and support reports.</td></tr>
+    <tr><td>Recalibrate from a terminal</td><td class="mono"><a href="#calibrate-live">calibrate_live(…)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>One blocking call; timer or Ctrl+C to stop.</td></tr>
+    <tr><td>Recalibrate <em>and</em> persist in one call</td><td class="mono"><a href="#calibrate-and-update">calibrate_and_update(path, …)</a></td><td class="mono">(<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | None)</td><td>The post-patch recovery path; profile untouched if nothing was found.</td></tr>
+    <tr><td>Recalibrate inside your app's UI</td><td class="mono"><a href="#calibrationsession">CalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">stop()</span></td><td>Explicit <span class="mono">start()</span>/<span class="mono">stop()</span>; <span class="mono">frames_collected</span> for UI feedback.</td></tr>
+    <tr><td>Persist discovered specs</td><td class="mono"><a href="#update-profile">update_profile(result, path)</a></td><td class="mono"><a href="#profileupdate">ProfileUpdate</a></td><td>Merges with dedupe and backup; <span class="mono">replace=True</span> supersedes stale entries.</td></tr>
+    <tr><td>Inspect a profile</td><td class="mono"><a href="#load-opcode-profile">load_opcode_profile(path)</a></td><td class="mono"><a href="#load-opcode-profile">OpcodeProfile</a></td><td>Metadata and raw specs, no decoding.</td></tr>
+    <tr><td>Audit worker companion families</td><td class="mono"><a href="#origin-learner">OriginLearner / origin-learn</a></td><td class="mono">candidate families</td><td>Optional maintenance tooling. It observes workers already found by the structural classifier.</td></tr>
+  </table></div>
 </section>
 
 <p class="eyebrow">Decoding API</p>
@@ -356,7 +383,8 @@ footer {
   <div class="sig"><span class="f">replay_pcap</span>(path, *, opcode_profile=<span class="k">None</span>, ports=(8884, 8885, 8889),
             include_legacy_opcodes=<span class="k">False</span>, ignore_opcode_profile=<span class="k">False</span>,
             event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
-            quiet=<span class="k">True</span>) → Iterator[BDOEvent]</div>
+            deposit_origins=<span class="k">None</span>, quiet=<span class="k">True</span>,
+            origin_observer=<span class="k">None</span>) → Iterator[<a href="#bdoevent">BDOEvent</a>]</div>
   <p>Replay a <code>.pcap</code>/<code>.pcapng</code> file and yield structured events in
   capture order. Works fully offline; no capture driver needed.</p>
   <div class="note"><span class="tag">Yields</span>
@@ -377,9 +405,11 @@ footer {
     <div class="prow"><div class="pname">ignore_opcode_profile<span class="ptype">bool</span></div>
       <div class="pdesc">Skip the profile entirely and use the built-in current spec table.</div></div>
     <div class="prow"><div class="pname">event_types / sources / item_ids / deposit_origins<span class="ptype">Iterable | None</span></div>
-      <div class="pdesc">Yield only matching events. <code>deposit_origins</code> filters storage deltas by classified origin (<span class="mono">{"worker"}</span>, …). See <a href="#event-types">event types &amp; sources</a>.</div></div>
+      <div class="pdesc">Yield only matching events. <code>deposit_origins</code> filters storage deltas by classified origin (<span class="mono">{"worker"}</span>, …). See <a href="#origin-classification">how origin classification works</a>.</div></div>
     <div class="prow"><div class="pname">quiet<span class="ptype">bool</span></div>
       <div class="pdesc">Retained for backwards compatibility; the engine produces no console output either way.</div></div>
+    <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
+      <div class="pdesc">Optional audit hook; it is not required for classification. Receives each structurally discovered worker companion chain once per storage-delta frame. Use <a href="#origin-learner"><code>OriginLearner.observe</code></a> for in-memory aggregation. No writes occur automatically.</div></div>
   </div>
   <p><strong>Raises</strong> <code>FileNotFoundError</code> if the file does not exist,
   <code>ValueError</code> if it cannot be read as a capture, <code>ProfileError</code> for a
@@ -391,8 +421,9 @@ footer {
   <div class="sig"><span class="f">capture_live</span>(*, opcode_profile=<span class="k">None</span>, interface=<span class="k">None</span>, local_ip=<span class="k">None</span>,
              ports=(8884, 8885, 8889), include_legacy_opcodes=<span class="k">False</span>,
              ignore_opcode_profile=<span class="k">False</span>, event_types=<span class="k">None</span>, sources=<span class="k">None</span>,
-             item_ids=<span class="k">None</span>, capture_seconds=<span class="k">None</span>, no_bpf=<span class="k">False</span>,
-             no_local_ip_filter=<span class="k">False</span>) → Iterator[BDOEvent]</div>
+             item_ids=<span class="k">None</span>, deposit_origins=<span class="k">None</span>, capture_seconds=<span class="k">None</span>,
+             no_bpf=<span class="k">False</span>, no_local_ip_filter=<span class="k">False</span>, event_queue_size=1024,
+             origin_observer=<span class="k">None</span>) → Iterator[<a href="#bdoevent">BDOEvent</a>]</div>
   <p>Start passive live capture and yield events as they are decoded. The iterator blocks
   between events; it ends when <code>capture_seconds</code> elapses or the capture stops.
   Stranded TCP segments are drained on shutdown so end-of-session events are not lost.</p>
@@ -412,11 +443,34 @@ footer {
       <div class="pdesc">Stop automatically after this long. <span class="pdefault">Default: run until the consumer stops iterating.</span></div></div>
     <div class="prow"><div class="pname">no_bpf<span class="ptype">bool</span></div>
       <div class="pdesc">Disable the kernel capture filter and filter in Python instead — a fallback for adapters with broken BPF support.</div></div>
+    <div class="prow"><div class="pname">event_queue_size<span class="ptype">int</span></div>
+      <div class="pdesc">Maximum decoded events buffered for a slow consumer. <span class="pdefault">Default: 1024.</span></div></div>
+    <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
+      <div class="pdesc">Same optional audit hook as <code>replay_pcap()</code>; leaving it as <code>None</code> does not disable classification. See <a href="#origin-learner"><code>OriginLearner</code></a>. Live callbacks run on the capture-processing thread; keep custom callbacks fast and thread-safe.</div></div>
     <div class="prow"><div class="pname">(shared)<span class="ptype">&nbsp;</span></div>
       <div class="pdesc"><code>opcode_profile</code>, <code>ports</code>, <code>include_legacy_opcodes</code>,
       <code>ignore_opcode_profile</code>, and the four filters behave exactly as in
       <a href="#replay-pcap"><code>replay_pcap()</code></a>.</div></div>
   </div>
+  <h3>Using it from an app or GUI</h3>
+  <p>The iterator is synchronous — it blocks between events. Command-line tools consume it
+  directly; an application with its own event loop should run it on a background thread and
+  hand events across a queue:</p>
+<pre><code><span class="k">from</span> queue <span class="k">import</span> Queue
+<span class="k">from</span> threading <span class="k">import</span> Thread
+<span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
+
+events = <span class="f">Queue</span>()
+
+<span class="k">def</span> <span class="f">pump</span>():
+    <span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"item_received"</span>, <span class="s">"storage_delta"</span>}):
+        events.<span class="f">put</span>(event)
+
+<span class="f">Thread</span>(target=pump, daemon=<span class="k">True</span>).<span class="f">start</span>()
+
+<span class="c"># the UI thread drains the queue without ever blocking on the network</span>
+event = events.<span class="f">get</span>()</code></pre>
+  <p><code>BDOEvent</code> is frozen (immutable), so handing events between threads is safe.</p>
   <div class="warn"><span class="tag">Windows</span>
   Live capture needs <a href="https://npcap.com/">Npcap</a> installed and usually an
   Administrator shell. Offline replay does not.</div>
@@ -431,7 +485,7 @@ footer {
   <div class="tablewrap"><table>
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
     <tr><td class="mono">event_type</td><td class="mono">str</td><td>Stable category — see <a href="#event-types">event types</a>.</td></tr>
-    <tr><td class="mono">timestamp</td><td class="mono">float</td><td>Packet epoch time. <span class="mono">timestamp_text</span> property renders <span class="mono">HH:MM:SS.mmm</span>.</td></tr>
+    <tr><td class="mono">timestamp</td><td class="mono">float</td><td>Packet epoch time. <span class="mono">timestamp_iso</span> is deterministic UTC; <span class="mono">timestamp_text</span> is local presentation time.</td></tr>
     <tr><td class="mono">flow</td><td class="mono">Flow</td><td>Server→client network flow. Attributes: <span class="mono">flow.source_ip</span>, <span class="mono">flow.source_port</span>, <span class="mono">flow.destination_ip</span>, <span class="mono">flow.destination_port</span>; <span class="mono">str(flow)</span> renders <span class="mono">"ip:port -&gt; ip:port"</span>, <span class="mono">flow.to_dict()</span> a JSON-safe dict.</td></tr>
     <tr><td class="mono">item_id</td><td class="mono">int</td><td>Raw item id as seen on the wire (may encode enhancement — see below).</td></tr>
     <tr><td class="mono">quantity</td><td class="mono">int</td><td>Item count for this record.</td></tr>
@@ -449,7 +503,7 @@ footer {
     <tr><td class="mono">record_index / record_count</td><td class="mono">int | None</td><td>Set only on multi-record messages: this is record <em>i</em> of <em>n</em> (1-based).</td></tr>
     <tr><td class="mono">record_offset</td><td class="mono">int | None</td><td>Byte offset of the record inside its message.</td></tr>
     <tr><td class="mono">confidence</td><td class="mono">str | None</td><td>Currently always <span class="mono">"observed"</span> — packet knowledge is provisional by design.</td></tr>
-    <tr><td class="mono">deposit_origin</td><td class="mono">str | None</td><td>On <span class="mono">storage_delta</span> events: <span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>, classified from packet structure (a worker deposit is followed by its companion frames; a manual deposit is preceded by a matching inventory stack decrement; missing or ambiguous evidence yields <span class="mono">"unknown"</span>, never a guess). <span class="mono">None</span> on other event types.</td></tr>
+    <tr><td class="mono">deposit_origin</td><td class="mono">str | None</td><td>On <span class="mono">storage_delta</span> events: <span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>. Classification is automatic and does not require <code>OriginLearner</code>. See the <a href="#origin-classification">classification decision table</a>. <span class="mono">None</span> on other event types.</td></tr>
     <tr><td class="mono">extra</td><td class="mono">Mapping</td><td>Provisional fields — access with <span class="mono">event.extra.get(key)</span>. Keys below.</td></tr>
   </table></div>
   <h3>extra keys</h3>
@@ -459,16 +513,18 @@ footer {
     <tr><th>Key</th><th>On</th><th>Meaning</th></tr>
     <tr><td class="mono">stream_sequence</td><td>all</td><td>TCP stream position of the message — stable dedup/anchor key within a flow.</td></tr>
     <tr><td class="mono">storage_delta</td><td class="mono">storage_delta</td><td>Signed storage quantity change for this record.</td></tr>
-    <tr><td class="mono">deposit_origin_evidence</td><td class="mono">storage_delta</td><td>Audit trail for <span class="mono">event.deposit_origin</span>: <span class="mono">{"worker_companions": bool, "matching_decrement": bool}</span>.</td></tr>
+    <tr><td class="mono">deposit_origin_evidence</td><td class="mono">storage_delta</td><td>Audit trail for <span class="mono">event.deposit_origin</span>: <span class="mono">worker_companions</span>, <span class="mono">matching_decrement</span>, and on worker matches a <span class="mono">companion_chain</span> object with observed opcodes/lengths, hashed shared token, token offsets, and <a href="#origin-known-family"><span class="mono">known_family</span></a>.</td></tr>
   </table></div>
   <h3>Methods &amp; properties</h3>
   <div class="params">
     <div class="prow"><div class="pname">to_dict()<span class="ptype">→ dict</span></div>
-      <div class="pdesc">JSON-safe dict. Optional fields are <em>omitted</em> when <code>None</code>; <code>opcode</code> and <code>inventory_slot</code> become hex strings; <code>timestamp_text</code> is included. One event per <code>json.dumps</code> line makes valid JSONL.</div></div>
+      <div class="pdesc">JSON-safe dict. Optional fields are <em>omitted</em> when <code>None</code>; <code>opcode</code> and <code>inventory_slot</code> become hex strings; deterministic UTC <code>timestamp_iso</code> is included. One event per <code>json.dumps</code> line makes valid JSONL.</div></div>
     <div class="prow"><div class="pname">format_human()<span class="ptype">→ str</span></div>
       <div class="pdesc">One-line log rendering: <span class="mono">[23:06:01.086] STORAGE_DELTA source='Batch Storage Deposit' item_id=5960 quantity=1 … deposit_origin=worker</span></div></div>
     <div class="prow"><div class="pname">timestamp_text<span class="ptype">str (property)</span></div>
       <div class="pdesc">The timestamp rendered as <span class="mono">HH:MM:SS.mmm</span> local time.</div></div>
+    <div class="prow"><div class="pname">timestamp_iso<span class="ptype">str (property)</span></div>
+      <div class="pdesc">Deterministic UTC ISO-8601 rendering, also emitted by <code>to_dict()</code>.</div></div>
   </div>
 </section>
 
@@ -490,10 +546,10 @@ footer {
     <tr><td>NPC Shop</td><td>Choose Your Rewards Box</td><td>NPC Sell</td></tr>
     <tr><td class="mono" colspan="3">UNKNOWN(0x…)</td></tr>
   </table></div>
-  <div class="note"><span class="tag">Design note</span>
+  <div class="note"><span class="tag">Unknown sources</span>
   A context value the toolkit has never seen surfaces as <code>UNKNOWN(0x…)</code> — it will
-  <em>not</em> match a filter like <code>sources={"Storage"}</code>. That keeps new protocol
-  behavior visible instead of silently miscategorized. The raw bytes are always in
+  <em>not</em> match a filter like <code>sources={"Storage"}</code>, so new protocol behavior
+  stays visible instead of being silently miscategorized. The raw bytes are always in
   <code>raw_context</code>.</div>
 </section>
 
@@ -536,7 +592,7 @@ writer.<span class="f">write</span>(event)</div>
 
 <section class="section" id="load-opcode-profile">
   <h2 class="api">bdo_toolkit.load_opcode_profile()</h2>
-  <div class="sig"><span class="f">load_opcode_profile</span>(path=<span class="k">None</span>) → OpcodeProfile
+  <div class="sig"><span class="f">load_opcode_profile</span>(path=<span class="k">None</span>) → <a href="#load-opcode-profile">OpcodeProfile</a>
 <span class="f">default_profile_path</span>() → Path</div>
   <p>Inspect a profile without decoding anything — useful for showing profile status in your
   app's UI. <code>OpcodeProfile</code> is a frozen dataclass:</p>
@@ -548,7 +604,153 @@ writer.<span class="f">write</span>(event)</div>
     <tr><td class="mono">updated_at</td><td class="mono">str | None</td><td>ISO timestamp of the last calibration write.</td></tr>
     <tr><td class="mono">calibration_item_id</td><td class="mono">int | None</td><td>Item used for the last calibration (Potato: 7003).</td></tr>
     <tr><td class="mono">specs</td><td class="mono">dict[str, list[dict]]</td><td>Raw spec entries per event category.</td></tr>
+    <tr><td class="mono">origin_companion_families</td><td class="mono">tuple[OriginCompanionFamily, ...]</td><td>Explicitly <a href="#origin-promotion">promoted</a> worker companion families. They control only the <a href="#origin-known-family"><code>known_family</code> audit flag</a>; opcode presence never creates a worker verdict.</td></tr>
   </table></div>
+</section>
+
+<section class="section" id="origin-learning">
+  <h2>Worker-origin classification &amp; learning</h2>
+  <p>This feature has two independent jobs: <strong>classifying a deposit</strong> for an app and
+  <strong>learning opcode-family metadata</strong> for protocol maintenance. Classification is
+  automatic. Learning is optional.</p>
+  <p class="kicker">Jump to:
+    <a href="#origin-classification">classification</a> ·
+    <a href="#origin-known-family"><code>known_family</code></a> ·
+    <a href="#origin-learner">learning</a> ·
+    <a href="#origin-promotion">promotion</a>
+  </p>
+
+  <h3 id="origin-classification">1. Classify deposits (normal app usage)</h3>
+  <div class="note"><span class="tag">The short version</span>
+  You do not need <code>OriginLearner</code>, <code>origin_observer</code>, a candidate file, or
+  promoted companion opcodes. Read <code>event.deposit_origin</code> from a normal
+  <a href="#replay-pcap"><code>replay_pcap()</code></a> or
+  <a href="#capture-live"><code>capture_live()</code></a> call.</div>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
+
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(
+    opcode_profile=<span class="s">"opcodes.local"</span>,
+    event_types={<span class="s">"storage_delta"</span>},
+):
+    <span class="f">print</span>(event.deposit_origin)  <span class="c"># "worker", "manual", or "unknown"</span></code></pre>
+  <p>For a worker deposit, the tracker starts at the exact end of the decoded storage delta,
+  parses the next two contiguous <em>companion frames</em>, and looks for an informative 8-byte
+  token shared by all three frames. That three-frame relationship—not the exact opcode
+  values—is the worker evidence.</p>
+  <p>Without that structure, a calibrated matching source-stack decrement in the immediate
+  pre-delta chain is <code>manual</code>. Incomplete or absent evidence is <code>unknown</code>.</p>
+
+  <h3 id="origin-known-family">Companion frames vs. companion opcode families</h3>
+  <p>The word “companion” appears in both terms, but they play different roles:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Term</th><th>What it means</th><th>Used for the worker verdict?</th></tr>
+    <tr><td>Companion frames</td><td>The two contiguous frames immediately following the storage delta. They must participate in the shared-token structure.</td><td><strong>Yes</strong></td></tr>
+    <tr><td>Companion opcode family</td><td>The observed delta opcode plus the two companion opcodes and companion lengths.</td><td><strong>No</strong>—used for patch auditing and diagnostics</td></tr>
+    <tr><td class="mono">known_family</td><td>Whether that observed opcode/length family was explicitly promoted into the active profile.</td><td><strong>No</strong>—it describes the evidence; it does not change the verdict</td></tr>
+  </table></div>
+
+  <div class="tablewrap"><table>
+    <tr><th>Shared-token structure</th><th>Promoted family match</th><th>Result</th><th>Audit field</th></tr>
+    <tr><td>Present</td><td>Yes</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=True</td></tr>
+    <tr><td>Present</td><td>No</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=False</td></tr>
+    <tr><td>Absent</td><td>Following opcodes look familiar or unfamiliar</td><td>Not a worker from companion evidence; a matching decrement may still produce <code>manual</code>, otherwise <code>unknown</code></td><td>No <code>companion_chain</code>, so no <code>known_family</code> field</td></tr>
+  </table></div>
+
+  <p>On a structural worker match, inspect the diagnostic flag at
+  <code>event.extra["deposit_origin_evidence"]["companion_chain"]["known_family"]</code>.
+  A value of <code>False</code> is useful after a patch: classification still works, while your
+  tooling can report that a new family appeared. This lookup is the opcode-family
+  cross-check—it tells you whether structural evidence agrees with promoted profile metadata,
+  but it never upgrades, downgrades, or vetoes <code>deposit_origin</code>.</p>
+  <div class="note"><span class="tag">Patch behavior</span>
+  Companion opcodes, lengths, and token offsets may rotate. Classification survives as long as
+  the three-frame shared-token relationship remains. A familiar opcode pair without that
+  relationship never produces <code>worker</code>. The detector is recorded as
+  <code>shared-token-chain-v1</code>.</div>
+
+  <h3 id="origin-learner">2. Learn families (optional maintainer workflow)</h3>
+  <p><code>OriginLearner</code> receives observations <em>after</em> the structural classifier
+  finds a worker chain. It groups the observed opcode/length metadata into candidates. It does
+  not classify events and it is not needed by ordinary applications.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Your goal</th><th>Use</th><th>Effect</th></tr>
+    <tr><td>Only classify deposits</td><td>Normal capture/replay; leave <code>origin_observer=None</code></td><td>Events still receive <code>deposit_origin</code></td></tr>
+    <tr><td>Audit families in memory</td><td class="mono">origin_observer=learner.observe</td><td>Populates <code>learner.candidates</code>; no file writes</td></tr>
+    <tr><td>Continue learning across sessions</td><td class="mono">OriginLearner.load(...)</td><td>Reloads prior counts and deduplication IDs</td></tr>
+    <tr><td>Persist observations</td><td class="mono">learner.save(...)</td><td>Writes a candidate JSON file; does not modify the opcode profile</td></tr>
+  </table></div>
+
+  <h3 class="api">OriginLearner</h3>
+  <div class="sig"><span class="f">OriginLearner</span>(min_observations=2)
+learner.<span class="f">observe</span>(observation) → OriginCompanionCandidate
+learner.<span class="f">save</span>(path) → Path
+OriginLearner.<span class="f">load</span>(path, *, min_observations=<span class="k">None</span>) → OriginLearner</div>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> OriginLearner, replay_pcap
+
+learner = <span class="f">OriginLearner</span>(min_observations=<span class="s">2</span>)
+<span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(
+    <span class="s">"worker.pcapng"</span>,
+    opcode_profile=<span class="s">"opcodes.local"</span>,
+    origin_observer=learner.observe,
+):
+    <span class="f">print</span>(event.deposit_origin)
+
+<span class="c"># Explicit opt-in write; normal capture never writes.</span>
+learner.<span class="f">save</span>(<span class="s">"opcodes.origin-candidates.json"</span>)</code></pre>
+  <p><code>min_observations=2</code> means that two independent structural observations of the
+  same family are required before it becomes a confirmed <em>promotion candidate</em>. It does
+  not make the learner run twice, and it is not a worker-classification confidence threshold.</p>
+  <div class="params">
+    <div class="prow"><div class="pname">min_observations<span class="ptype">int</span></div>
+      <div class="pdesc">Independent chains required for a confirmed promotion candidate. This threshold does not affect <code>event.deposit_origin</code>. <span class="pdefault">Default: 2.</span></div></div>
+    <div class="prow"><div class="pname">observe(observation)<span class="ptype">→ OriginCompanionCandidate</span></div>
+      <div class="pdesc">Add one structural observation and return the updated family snapshot. Capture/replay ignores the callback's return value; call it directly if custom tooling needs the snapshot.</div></div>
+    <div class="prow"><div class="pname">candidates<span class="ptype">tuple[OriginCompanionCandidate, ...]</span></div>
+      <div class="pdesc">Every observed family, including candidates below the threshold.</div></div>
+    <div class="prow"><div class="pname">confirmed_candidates<span class="ptype">tuple[OriginCompanionCandidate, ...]</span></div>
+      <div class="pdesc">Families with at least <code>min_observations</code> independent chains. “Confirmed” means eligible for promotion, not “more confidently classified as worker.”</div></div>
+    <div class="prow"><div class="pname">load(path, ...)<span class="ptype">classmethod → OriginLearner</span></div>
+      <div class="pdesc">Reload a candidate file to continue learning across sessions. A missing path creates an empty learner. Pass <code>min_observations=</code> to override the saved threshold.</div></div>
+    <div class="prow"><div class="pname">save(path)<span class="ptype">→ Path</span></div>
+      <div class="pdesc">Atomically write candidate history and deduplication IDs. Saving does not update the opcode profile and does not change <code>known_family</code>.</div></div>
+    <div class="prow"><div class="pname">to_dict()<span class="ptype">dict</span></div>
+      <div class="pdesc">Candidate-file form. Raw shared tokens are never stored; only short BLAKE2 digests and opaque observation IDs are retained. Replaying the same capture does not inflate counts.</div></div>
+  </div>
+
+  <h3 class="api">CompanionObservation / OriginCompanionCandidate</h3>
+  <div class="tablewrap"><table>
+    <tr><th>Type</th><th>Important fields</th><th>Meaning</th></tr>
+    <tr><td class="mono">CompanionObservation</td><td class="mono">timestamp, flow, stream_sequence, delta_opcode, delta_length, companion_opcodes, companion_lengths, token_digest, token_offsets, family_key, observation_id</td><td>One structurally matched three-frame chain, delivered to <code>origin_observer</code> once per storage-delta frame (not once per batch record). <code>to_dict()</code> returns a JSON-safe audit record.</td></tr>
+    <tr><td class="mono">OriginCompanionCandidate</td><td class="mono">delta_opcode, companion_opcodes, companion_lengths, observations, distinct_tokens, delta_lengths, delta_token_offsets, first_token_offsets, second_token_offsets, first_seen, last_seen, family_key</td><td>Aggregated family snapshot. <code>confirmed(min_observations)</code> tests promotion eligibility; <code>to_dict(min_observations)</code> returns the persisted form.</td></tr>
+  </table></div>
+
+  <h3 class="api" id="origin-promotion">3. promote_origin_candidates() (explicit review step)</h3>
+  <div class="sig"><span class="f">promote_origin_candidates</span>(candidates_path, profile_path, *, min_observations=<span class="k">None</span>,
+                          backup=<span class="k">True</span>) → OriginPromotion</div>
+  <p>Explicitly merge confirmed families into <code>origin_companion_families</code> in the same
+  normal opcode profile you pass as <code>opcode_profile=</code>. Promotion makes later structural
+  matches report <code>known_family=True</code>; it does not enable or strengthen worker
+  classification. The profile is strictly validated, backed up, and atomically replaced.
+  Re-promoting the same family is a no-op (<code>result.written == False</code>).
+  <code>OriginPromotion</code> exposes <code>path</code>, <code>added</code>,
+  <code>backup_path</code>, and <code>written</code>.</p>
+  <div class="params">
+    <div class="prow"><div class="pname">candidates_path<span class="ptype">str | Path</span></div>
+      <div class="pdesc">Candidate JSON previously written by <code>OriginLearner.save()</code> or <code>origin-learn</code>.</div></div>
+    <div class="prow"><div class="pname">profile_path<span class="ptype">str | Path</span></div>
+      <div class="pdesc">Your normal local opcode profile, such as <code>opcodes.local</code>—not a separate origin profile.</div></div>
+    <div class="prow"><div class="pname">min_observations<span class="ptype">int | None</span></div>
+      <div class="pdesc">Override the threshold stored in the candidate file. <span class="pdefault">Default: use the saved threshold.</span></div></div>
+    <div class="prow"><div class="pname">backup<span class="ptype">bool</span></div>
+      <div class="pdesc">Create a timestamped profile backup before a write. <span class="pdefault">Default: True.</span></div></div>
+  </div>
+
+<pre><code><span class="c"># Replay one or more recordings; omit --pcap to listen live until Ctrl+C.</span>
+bdo-toolkit origin-learn --profile opcodes.local \
+  --pcap worker-single.pcapng --pcap worker-multi.pcapng
+
+<span class="c"># Separate explicit state change.</span>
+bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.local</code></pre>
 </section>
 
 <p class="eyebrow">Calibration</p>
@@ -559,6 +761,21 @@ writer.<span class="f">write</span>(event)</div>
   <code>7003</code>), move an exact quantity between inventory and storage — while the toolkit
   captures. It then searches every frame for that item id, scores candidate record layouts, and
   promotes the plausible ones into opcode specs.</p>
+  <ol>
+    <li><strong>Pick a known action</strong> — an exact item and quantity you control, e.g. move
+    3 Potatoes to storage and back.</li>
+    <li><strong>Capture it</strong> — a recorded pcap
+    (<a href="#calibrate-pcap"><code>calibrate_pcap</code></a>), a blocking live capture
+    (<a href="#calibrate-live"><code>calibrate_live</code></a>), or a
+    <a href="#calibrationsession"><code>CalibrationSession</code></a> driven by your UI.</li>
+    <li><strong>Inspect the result</strong> — <code>print(result.summary())</code> for the
+    human-readable report, or the discovered
+    <a href="#messagespec"><code>MessageSpec</code></a> entries plus per-candidate
+    diagnostics in <code>ignored</code> and <code>evidence</code>.</li>
+    <li><strong>Persist a local profile</strong> —
+    <a href="#update-profile"><code>update_profile()</code></a>, then pass
+    <code>opcode_profile=</code> to the decoding APIs.</li>
+  </ol>
   <p><strong>Auto (the default) detects transfer direction from packet structure</strong>, so you
   don't declare which action is which — you move the item to storage and back (either order) and
   the toolkit classifies each leg itself. Direction is decided from the packet's own structure
@@ -567,7 +784,7 @@ writer.<span class="f">write</span>(event)</div>
   in the record means it is <em>entering storage</em> (a storage delta, which also covers worker
   deposits and multi-record unstackable moves). A nearby item-id reference frame is a fallback
   signal for older captures. Each candidate's classification is reported in
-  <a href="#calibration-types"><code>result.evidence</code></a>.</p>
+  <a href="#directionevidence"><code>result.evidence</code></a>.</p>
   <div class="tablewrap"><table>
     <tr><th>action</th><th>You perform</th><th>Discovers</th></tr>
     <tr><td class="mono">auto <span class="pdefault">(default)</span></td><td>Move the item to storage and back</td><td class="mono">Both transfer families, direction auto-classified</td></tr>
@@ -608,7 +825,7 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <div class="params">
     <div class="prow"><div class="pname">start()<span class="ptype">→ None</span></div>
       <div class="pdesc">Begin passive background capture; returns immediately. Raises <code>RuntimeError</code> if already running.</div></div>
-    <div class="prow"><div class="pname">stop()<span class="ptype">→ CalibrationResult</span></div>
+    <div class="prow"><div class="pname">stop()<span class="ptype">→ <a href="#calibrationresult">CalibrationResult</a></span></div>
       <div class="pdesc">End capture, drain pending TCP segments, score frames, return the result. Raises <code>RuntimeError</code> if the session was never started — a usage bug fails loudly instead of returning an empty result that looks like "nothing found".</div></div>
     <div class="prow"><div class="pname">running<span class="ptype">bool (property)</span></div>
       <div class="pdesc">Whether a capture is currently active.</div></div>
@@ -628,10 +845,10 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <h2 class="api">calibration.calibrate_pcap()</h2>
   <div class="sig"><span class="f">calibrate_pcap</span>(path, *, item_id, quantity=<span class="k">None</span>, action=<span class="s">"auto"</span>,
                ports=(8884, 8885, 8889), context_frames=5,
-               min_confidence=0.80) → CalibrationResult</div>
+               min_confidence=0.80) → <a href="#calibrationresult">CalibrationResult</a></div>
   <p>Calibrate offline from a pre-recorded capture of the known action. Same parameters as the
   session, plus the capture <code>path</code>. Fully deterministic — ideal for testing your
-  recalibration flow. Returns a <a href="#calibration-types"><code>CalibrationResult</code></a>;
+  recalibration flow. Returns a <a href="#calibrationresult"><code>CalibrationResult</code></a>;
   every attribute of it and of the specs it contains is documented under
   <a href="#calibration-types">result types</a>.</p>
 </section>
@@ -641,7 +858,7 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <div class="sig"><span class="f">calibrate_live</span>(*, item_id, capture_seconds=<span class="k">None</span>, quantity=<span class="k">None</span>,
                action=<span class="s">"auto"</span>, ports=(8884, 8885, 8889), interface=<span class="k">None</span>,
                local_ip=<span class="k">None</span>, context_frames=5,
-               min_confidence=0.80) → CalibrationResult</div>
+               min_confidence=0.80) → <a href="#calibrationresult">CalibrationResult</a></div>
   <p>Blocking convenience wrapper around <code>CalibrationSession</code> for console scripts.
   With <code>capture_seconds</code> it stops on a timer; without, it listens until
   <kbd>Ctrl+C</kbd> — which is treated as <em>"action performed, calibrate now"</em>, not as an
@@ -649,10 +866,33 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <a href="#calibrationsession"><code>CalibrationSession</code></a> instead.</p>
 </section>
 
+<section class="section" id="calibrate-and-update">
+  <h2 class="api">calibration.calibrate_and_update()</h2>
+  <div class="sig"><span class="f">calibrate_and_update</span>(profile_path, *, item_id, pcap=<span class="k">None</span>,
+                     capture_seconds=<span class="k">None</span>, quantity=<span class="k">None</span>, action=<span class="s">"auto"</span>,
+                     ports=(8884, 8885, 8889), interface=<span class="k">None</span>, local_ip=<span class="k">None</span>,
+                     context_frames=5, min_confidence=0.80, replace=<span class="k">True</span>,
+                     backup=<span class="k">True</span>) → (<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | <span class="k">None</span>)</div>
+  <p>Calibrate and persist in one call — a facade over the two-step API for the common
+  post-patch flow. With <code>pcap</code> it replays a recording; otherwise it captures live
+  exactly like <a href="#calibrate-live"><code>calibrate_live</code></a> (timer or
+  <kbd>Ctrl+C</kbd>). If nothing plausible was found, the profile file is <em>left untouched</em>
+  and the update slot is <code>None</code>:</p>
+<pre><code><span class="k">from</span> bdo_toolkit.calibration <span class="k">import</span> calibrate_and_update
+
+result, update = <span class="f">calibrate_and_update</span>(<span class="s">"opcodes.local"</span>, item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>)
+<span class="f">print</span>(result.<span class="f">summary</span>())
+<span class="k">if</span> update <span class="k">is not</span> <span class="k">None</span>:
+    <span class="f">print</span>(update.<span class="f">summary</span>())</code></pre>
+  <p>Unlike <code>update_profile()</code>, <code>replace</code> defaults to <code>True</code>
+  here, so a recalibration supersedes stale profile entries instead of merging with them. To
+  inspect or filter specs before anything is written, use the two-step API instead.</p>
+</section>
+
 <section class="section" id="update-profile">
   <h2 class="api">calibration.update_profile() / reset_profile()</h2>
   <div class="sig"><span class="f">update_profile</span>(result, path, *, action=<span class="s">"auto"</span>, replace=<span class="k">False</span>,
-               backup=<span class="k">True</span>) → ProfileUpdate
+               backup=<span class="k">True</span>) → <a href="#profileupdate">ProfileUpdate</a>
 <span class="f">reset_profile</span>(path, calibration_item_id=7003, *, backup=<span class="k">True</span>) → Path | <span class="k">None</span></div>
   <p><code>update_profile</code> merges promoted specs into a local profile file (creating it if
   needed) and marks it active. Duplicate specs are skipped via structural dedupe keys, so
@@ -663,7 +903,7 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <p><code>reset_profile</code> writes an empty active profile — a clean slate before a full
   recalibration.</p>
   <p><code>update_profile</code> returns a
-  <a href="#calibration-types"><code>ProfileUpdate</code></a> describing exactly what the write
+  <a href="#profileupdate"><code>ProfileUpdate</code></a> describing exactly what the write
   did — log it so recalibration is auditable.</p>
 </section>
 
@@ -671,20 +911,41 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <h2>Result types</h2>
   <p>Everything calibration returns is a frozen dataclass — fields are plain attributes:</p>
 <pre><code>result = <span class="f">calibrate_pcap</span>(<span class="s">"move_both_ways.pcapng"</span>, item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>)
-<span class="f">print</span>(result.frames_scanned)
-<span class="k">for</span> spec <span class="k">in</span> result.specs:
+<span class="f">print</span>(result.<span class="f">summary</span>())               <span class="c"># human-readable report</span>
+
+<span class="k">if</span> {<span class="s">"STORAGE_ITEM_DELTA"</span>, <span class="s">"SOURCE_STACK_DECREMENT"</span>} &lt;= result.events_found:
+    ...                                  <span class="c"># both deposit-family specs were found</span>
+
+<span class="k">for</span> spec <span class="k">in</span> result.specs:               <span class="c"># raw attributes</span>
     <span class="f">print</span>(spec.event, <span class="f">hex</span>(spec.opcode), spec.length, spec.score)
 <span class="k">for</span> ev <span class="k">in</span> result.evidence:
     <span class="f">print</span>(<span class="f">hex</span>(ev.opcode), ev.detected_family, ev.context_label, ev.storage_context)</code></pre>
-  <h3 class="api">CalibrationResult</h3>
+  <h3 class="api" id="calibrationresult">CalibrationResult</h3>
   <div class="tablewrap"><table>
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
-    <tr><td class="mono">specs</td><td class="mono">tuple[OpcodeSpec, ...]</td><td>Promoted opcode specs. Empty tuple = nothing plausible found.</td></tr>
+    <tr><td class="mono">specs</td><td class="mono">tuple[<a href="#messagespec">MessageSpec</a>, ...]</td><td>Promoted message specs — every attribute is documented under <a href="#messagespec"><code>MessageSpec</code></a> below. Empty tuple: nothing plausible was found.</td></tr>
     <tr><td class="mono">ignored</td><td class="mono">tuple[str, ...]</td><td>Rejected candidates with reasons (<span class="mono">low-confidence</span>, <span class="mono">quantity-only</span>, …) — show these when calibration fails.</td></tr>
     <tr><td class="mono">frames_scanned</td><td class="mono">int</td><td>Total frames analyzed.</td></tr>
-    <tr><td class="mono">evidence</td><td class="mono">tuple[DirectionEvidence, ...]</td><td>Per-candidate direction classification — which family each record was assigned and which structural features fired.</td></tr>
+    <tr><td class="mono">evidence</td><td class="mono">tuple[<a href="#directionevidence">DirectionEvidence</a>, ...]</td><td>Per-candidate direction classification — which family each record was assigned and which structural features fired.</td></tr>
   </table></div>
-  <h3 class="api">DirectionEvidence</h3>
+  <p>Accessors derived from these fields:</p>
+  <div class="params">
+    <div class="prow"><div class="pname">summary()<span class="ptype">→ str</span></div>
+      <div class="pdesc">Human-readable multi-line report — frames scanned, promoted specs with opcodes, detected directions, ignored count. Print or log it as-is.</div></div>
+    <div class="prow"><div class="pname">events_found<span class="ptype">frozenset[str] (property)</span></div>
+      <div class="pdesc">Event names that got at least one promoted spec. Supports readable completeness checks: <span class="mono">{"STORAGE_ITEM_DELTA"} &lt;= result.events_found</span>.</div></div>
+    <div class="prow"><div class="pname">specs_by_event()<span class="ptype">→ dict[str, tuple[<a href="#messagespec">MessageSpec</a>, ...]]</span></div>
+      <div class="pdesc">Promoted specs grouped by event name. Values are tuples — a capture can promote more than one candidate layout per event.</div></div>
+    <div class="prow"><div class="pname">detected_directions()<span class="ptype">→ frozenset[str]</span></div>
+      <div class="pdesc">Directions confirmed by structure, as labels: <span class="mono">"inventory-&gt;storage"</span> / <span class="mono">"storage-&gt;inventory"</span>.</div></div>
+    <div class="prow"><div class="pname">to_json_dict()<span class="ptype">→ dict</span></div>
+      <div class="pdesc">The full result — specs, ignored, evidence — as JSON-ready data, suitable for logs and bug reports.</div></div>
+  </div>
+  <div class="note"><span class="tag">Note</span>
+  There is no single success flag. A capture can promote some events and miss others, so test
+  <code>events_found</code> for the events your app needs, e.g.
+  <code>"STORAGE_ITEM_DELTA" in result.events_found</code>.</div>
+  <h3 class="api" id="directionevidence">DirectionEvidence</h3>
   <p>Why a candidate was placed in (or excluded from) a transfer family — one per candidate
   record, on <code>result.evidence</code>:</p>
   <div class="tablewrap"><table>
@@ -696,7 +957,9 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
     <tr><td class="mono">storage_context</td><td class="mono">bool</td><td>Intrinsic storage-delta signal: a storage reason code at the known context offset.</td></tr>
     <tr><td class="mono">reference_frame</td><td class="mono">bool</td><td>Windowed fallback signal: a small nearby frame carries the raw item id.</td></tr>
   </table></div>
-  <h3 class="api">OpcodeSpec</h3>
+  <p><code>to_json_dict()</code> serializes one evidence entry;
+  <code>result.to_json_dict()</code> already includes them all.</p>
+  <h3 class="api" id="messagespec">MessageSpec</h3>
   <p>One discovered opcode spec — the unit that <code>update_profile()</code> writes into a
   profile file. Offsets are byte positions inside the message; any offset the calibration could
   not locate is <code>None</code>:</p>
@@ -714,7 +977,7 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
     <tr><td class="mono">destination_instance_offset</td><td class="mono">int | None</td><td>Offset of the destination storage instance (storage deltas).</td></tr>
     <tr><td class="mono">context_offset</td><td class="mono">int | None</td><td>Offset of the 4-byte source-context / reason field.</td></tr>
     <tr><td class="mono">inventory_slot_offset</td><td class="mono">int | None</td><td>Offset of the inventory slot byte, when the layout exposes one.</td></tr>
-    <tr><td class="mono">repeat_stride</td><td class="mono">int | None</td><td>Byte stride between records in multi-record messages (e.g. 228 for receipts, 226 for storage deltas).</td></tr>
+    <tr><td class="mono">repeat_stride</td><td class="mono">int | None</td><td>Calibrated byte stride between records in multi-record messages. This is profile-specific and may change after a patch.</td></tr>
     <tr><td class="mono">confidence</td><td class="mono">str</td><td>Label such as <span class="mono">"calibrated-high"</span> / <span class="mono">"calibrated-medium"</span>.</td></tr>
     <tr><td class="mono">score</td><td class="mono">float | None</td><td>Numeric calibration confidence, 0-1.</td></tr>
     <tr><td class="mono">source</td><td class="mono">str</td><td>How the spec was produced, e.g. <span class="mono">"calibrate inventory-to-storage item_id=7003 qty=3"</span>.</td></tr>
@@ -726,14 +989,18 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
     <div class="prow"><div class="pname">dedupe_key()<span class="ptype">→ tuple</span></div>
       <div class="pdesc">Structural identity used to skip duplicates when merging into a profile.</div></div>
   </div>
-  <h3 class="api">ProfileUpdate</h3>
+  <h3 class="api" id="profileupdate">ProfileUpdate</h3>
   <div class="tablewrap"><table>
     <tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
     <tr><td class="mono">path</td><td class="mono">Path</td><td>The profile file that was written.</td></tr>
-    <tr><td class="mono">added</td><td class="mono">tuple[OpcodeSpec, ...]</td><td>Specs newly merged in (empty = everything was already present).</td></tr>
+    <tr><td class="mono">added</td><td class="mono">tuple[<a href="#messagespec">MessageSpec</a>, ...]</td><td>Specs newly merged in (empty = everything was already present).</td></tr>
     <tr><td class="mono">replaced_events</td><td class="mono">tuple[str, ...]</td><td>Event categories cleared first by <span class="mono">replace=True</span>.</td></tr>
     <tr><td class="mono">backup_path</td><td class="mono">Path | None</td><td>Where the previous file was backed up (<span class="mono">None</span> if there was nothing to back up or <span class="mono">backup=False</span>).</td></tr>
   </table></div>
+  <div class="params">
+    <div class="prow"><div class="pname">summary()<span class="ptype">→ str</span></div>
+      <div class="pdesc">Human-readable report of what the write did — path, backup, replaced events, added specs. Print or log it as-is.</div></div>
+  </div>
 </section>
 
 <p class="eyebrow">Command line</p>
@@ -756,13 +1023,21 @@ bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
 bdo-toolkit calibrate --pcap move_both_ways.pcapng --item-id 7003 --qty 3
 
 <span class="c"># start over with an empty active profile</span>
-bdo-toolkit reset-profile opcodes.json</code></pre>
+bdo-toolkit reset-profile opcodes.json
+
+<span class="c"># learn unknown worker companion metadata from captures (or live without --pcap)</span>
+bdo-toolkit origin-learn --profile opcodes.local --pcap worker-one.pcapng --pcap worker-two.pcapng
+
+<span class="c"># explicitly promote confirmed metadata; classification does not require promotion</span>
+bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.local</code></pre>
   <div class="tablewrap"><table>
     <tr><th>Command</th><th>Purpose</th><th>Key flags</th></tr>
     <tr><td class="mono">replay &lt;pcap&gt;</td><td>Decode a capture file</td><td class="mono">--jsonl --profile --event-type --source --item-id --ports --include-legacy-opcodes --ignore-profile</td></tr>
     <tr><td class="mono">live</td><td>Decode live traffic</td><td class="mono">replay flags + --iface --capture-seconds</td></tr>
     <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --replace --verbose</td></tr>
     <tr><td class="mono">reset-profile &lt;path&gt;</td><td>Write an empty active profile</td><td class="mono">--calibration-item-id</td></tr>
+    <tr><td class="mono">origin-learn</td><td>Optionally <a href="#origin-learner">aggregate structural worker companion candidates</a></td><td class="mono">--profile (required) --pcap (repeatable) --candidates --min-observations --iface --capture-seconds</td></tr>
+    <tr><td class="mono">origin-promote &lt;candidates&gt;</td><td><a href="#origin-promotion">Mark reviewed families as known</a> in the normal opcode profile</td><td class="mono">--profile (required) --min-observations</td></tr>
   </table></div>
   <p class="kicker">Events go to stdout; status lines go to stderr — safe to pipe
   <code>--jsonl</code> output directly into other tools.</p>
@@ -774,7 +1049,7 @@ bdo-toolkit reset-profile opcodes.json</code></pre>
     <tr><th>Exception</th><th>Raised when</th></tr>
     <tr><td class="mono">FileNotFoundError</td><td>The capture file passed to <span class="mono">replay_pcap</span>/<span class="mono">calibrate_pcap</span> does not exist.</td></tr>
     <tr><td class="mono">ValueError</td><td>The file exists but cannot be read as a pcap/pcapng.</td></tr>
-    <tr><td class="mono">bdo_toolkit._specs.ProfileError</td><td>An opcode profile file is not valid JSON or not an object. Subclass of <span class="mono">ValueError</span>, so catching that suffices.</td></tr>
+    <tr><td class="mono">bdo_toolkit.ProfileError</td><td>An opcode profile or origin-candidate file has invalid JSON/schema. Subclass of <span class="mono">ValueError</span>.</td></tr>
     <tr><td class="mono">RuntimeError</td><td>scapy is not installed (capture/replay), or a <span class="mono">CalibrationSession</span> is started twice / stopped before starting.</td></tr>
   </table></div>
 </section>
@@ -837,4 +1112,3 @@ bdo-toolkit reset-profile opcodes.json</code></pre>
 </script>
 </body>
 </html>
-

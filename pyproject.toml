@@ -9,18 +9,34 @@ description = "Passive, read-only BDO packet parsing toolkit for app developers.
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "scapy",
+  "scapy>=2.5",
 ]
 license = { text = "MIT" }
 authors = [
   { name = "BDO Toolkit contributors" },
 ]
 keywords = ["bdo", "packets", "parse", "pcap", "passive"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 dev = [
   "pytest",
+  "pytest-cov",
+  "mypy",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ychwu/bdo-toolkit"
+Documentation = "https://ychwu.github.io/bdo-toolkit/"
+Repository = "https://github.com/ychwu/bdo-toolkit.git"
+Issues = "https://github.com/ychwu/bdo-toolkit/issues"
 
 [project.scripts]
 bdo-toolkit = "bdo_toolkit.cli:main"
@@ -33,4 +49,3 @@ testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 bdo_toolkit = ["py.typed", "data/*.json"]
-

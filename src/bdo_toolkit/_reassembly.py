@@ -8,6 +8,8 @@ from typing import Callable, Optional, Protocol
 from ._protocol import (
     GAP_RESET_SECONDS,
     MAX_PENDING_SEGMENTS,
+    TCP_SEQUENCE_HALF_RANGE,
+    TCP_SEQUENCE_MODULUS,
     FlowKey,
     PacketContext,
 )
@@ -49,7 +51,9 @@ class TCPFlowState:
             return
 
         if self.next_sequence is None:
-            self.next_sequence = sequence
+            self.next_sequence = sequence & 0xFFFFFFFF
+        else:
+            sequence = _unwrap_tcp_sequence(sequence, self.next_sequence)
 
         assert self.next_sequence is not None
 
@@ -191,16 +195,31 @@ class FlowManager:
 
         state = self._flows[flow]
         if payload:
+            # SYN consumes one sequence number before any TCP Fast Open data.
+            payload_sequence = (sequence + (1 if syn else 0)) & 0xFFFFFFFF
             state.add_segment(
-                sequence=sequence,
+                sequence=payload_sequence,
                 payload=payload,
                 context=PacketContext(timestamp=timestamp, flow=flow),
             )
 
         if rst or fin:
-            # Processed any final payload first; then discard closed-flow state.
+            # Processed any final payload first. Drain complete frames stranded
+            # behind a capture gap before discarding the closed-flow state.
+            state.finish()
             self._flows.pop(flow, None)
 
     def finish(self) -> None:
         for state in self._flows.values():
             state.finish()
+
+
+def _unwrap_tcp_sequence(sequence: int, reference: int) -> int:
+    """Map a 32-bit TCP sequence to the nearest absolute value to reference."""
+    raw = sequence & 0xFFFFFFFF
+    candidate = (reference & ~(TCP_SEQUENCE_MODULUS - 1)) | raw
+    if candidate - reference > TCP_SEQUENCE_HALF_RANGE:
+        candidate -= TCP_SEQUENCE_MODULUS
+    elif reference - candidate > TCP_SEQUENCE_HALF_RANGE:
+        candidate += TCP_SEQUENCE_MODULUS
+    return candidate

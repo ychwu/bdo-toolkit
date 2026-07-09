@@ -6,10 +6,9 @@ opcode generations, batch deposits fall in the storage-delta family, and auto
 calibration never silently mislabels a wrong-direction capture.
 """
 
-from pathlib import Path
-
 import pytest
 
+from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit.calibration import (
     DirectionMismatchError,
     calibrate_pcap,
@@ -19,10 +18,8 @@ from bdo_toolkit.calibration import (
 )
 from bdo_toolkit._protocol import MAX_PLAUSIBLE_ITEM_ID
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURE_DIR.exists() or not any(FIXTURE_DIR.glob("*.pcapng")),
+    not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
 
@@ -62,7 +59,7 @@ WORKER_DEPOSITS = [
 
 def _classify_primary_record(fixture, item_id):
     """Find the big record frame for item_id and classify its family."""
-    frames = collect_frames_pcap(FIXTURE_DIR / fixture)
+    frames = collect_frames_pcap(fixture_path(fixture))
     item_bytes = item_id.to_bytes(4, "little")
     for frame in frames:
         at = 0
@@ -98,7 +95,7 @@ def test_direction_classifier_matches_labels(fixture, item_id, expected):
 def test_auto_calibration_on_single_direction_capture_is_clean():
     # A storage->inventory capture must yield ONLY receipt-family specs, never
     # a wrong-direction STORAGE_ITEM_DELTA promoted from the receipt frame.
-    result = calibrate_pcap(FIXTURE_DIR / "new_potato.pcapng", item_id=7003, quantity=10)
+    result = calibrate_pcap(fixture_path("new_potato.pcapng"), item_id=7003, quantity=10)
     events = {spec.event for spec in result.specs}
     assert "INVENTORY_TRANSFER" in events
     assert "STORAGE_ITEM_DELTA" not in events
@@ -107,7 +104,7 @@ def test_auto_calibration_on_single_direction_capture_is_clean():
 @requires_fixtures
 def test_auto_calibration_on_inventory_to_storage_capture_is_clean():
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato_3_tostorage.pcapng", item_id=7003, quantity=3
+        fixture_path("new_potato_3_tostorage.pcapng"), item_id=7003, quantity=3
     )
     events = {spec.event for spec in result.specs}
     assert "STORAGE_ITEM_DELTA" in events
@@ -121,7 +118,7 @@ def test_auto_calibration_multi_record_deposit_without_reference_frame():
     # into_storage via the intrinsic offset-8 context, and the written spec
     # must decode all records. (Bug: auto returned no specs.)
     result = calibrate_pcap(
-        FIXTURE_DIR / "1000306_qty5_unstackable_i2s.pcapng", item_id=1000306, quantity=5
+        fixture_path("1000306_qty5_unstackable_i2s.pcapng"), item_id=1000306, quantity=5
     )
     delta = next(s for s in result.specs if s.event == "STORAGE_ITEM_DELTA")
     assert delta.length == 261 and delta.repeat_stride == 226
@@ -135,7 +132,7 @@ def test_explicit_wrong_direction_raises_mismatch():
     # capture is storage-to-inventory. Must refuse, not write garbage.
     with pytest.raises(DirectionMismatchError):
         calibrate_pcap(
-            FIXTURE_DIR / "new_potato.pcapng",
+            fixture_path("new_potato.pcapng"),
             item_id=7003,
             quantity=10,
             action="inventory-to-storage",
@@ -148,7 +145,7 @@ def test_explicit_wrong_direction_raises_mismatch_symmetrically():
     # an inventory-to-storage capture refuses instead of returning empty.
     with pytest.raises(DirectionMismatchError):
         calibrate_pcap(
-            FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+            fixture_path("new_potato_3_tostorage.pcapng"),
             item_id=7003,
             quantity=3,
             action="storage-to-inventory",
@@ -331,7 +328,7 @@ def test_multi_record_reference_frame_up_to_mid_gap_length():
 
 @requires_fixtures
 def test_evidence_records_classification():
-    result = calibrate_pcap(FIXTURE_DIR / "new_potato.pcapng", item_id=7003, quantity=10)
+    result = calibrate_pcap(fixture_path("new_potato.pcapng"), item_id=7003, quantity=10)
     families = {e.detected_family for e in result.evidence}
     assert "into_inventory" in families
     # The receipt frame carries a context label and no reference frame.
@@ -344,8 +341,8 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     """Stitch a storage->inventory and an inventory->storage capture into one
     frame stream (what the guided two-move flow produces) and confirm auto
     calibration recovers both families' opcodes."""
-    s2i = collect_frames_pcap(FIXTURE_DIR / "new_potato.pcapng")
-    i2s = collect_frames_pcap(FIXTURE_DIR / "new_potato_3_tostorage.pcapng")
+    s2i = collect_frames_pcap(fixture_path("new_potato.pcapng"))
+    i2s = collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
 
     from bdo_toolkit.calibration import calibrate_frames
 

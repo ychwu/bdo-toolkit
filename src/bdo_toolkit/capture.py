@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from collections import deque
+import ipaddress
+import math
 import time
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
+from threading import Event
 from typing import Callable, Iterable, Iterator, Optional
 
 from ._capture_backend import (
     build_bpf_filter,
     detect_default_capture_target,
     import_scapy,
+    iter_pcap_file,
     make_packet_handler,
-    replay_pcap_file,
+    validate_server_ports,
 )
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
@@ -21,10 +26,15 @@ from ._protocol import (
     DEPOSIT_DECREMENT_FALLBACK_OPCODES,
     LootEvent,
 )
-from ._specs import ProfileError, _parse_opcode, select_event_specs
+from ._specs import _parse_opcode, select_event_specs
 from .events import BDOEvent
 from .filters import EventFilter
-from .profiles import default_profile_path, load_opcode_profile
+from .origin_learning import CompanionObservation
+from .profiles import (
+    OriginCompanionFamily,
+    default_profile_path,
+    load_opcode_profile,
+)
 
 
 def _decrement_specs(
@@ -36,7 +46,7 @@ def _decrement_specs(
     if not ignore_opcode_profile:
         try:
             profile = load_opcode_profile(profile_path)
-        except (OSError, ValueError, ProfileError):
+        except (OSError, ValueError):
             return tuple(specs)
         for entry in profile.specs.get("SOURCE_STACK_DECREMENT", []):
             opcode = _parse_opcode(entry.get("opcode"))
@@ -49,6 +59,18 @@ def _decrement_specs(
                     )
                 )
     return tuple(specs)
+
+
+def _origin_companion_families(
+    profile_path: Path,
+    ignore_opcode_profile: bool,
+) -> tuple[OriginCompanionFamily, ...]:
+    if ignore_opcode_profile:
+        return ()
+    try:
+        return load_opcode_profile(profile_path).origin_companion_families
+    except (OSError, ValueError):
+        return ()
 
 
 class _EventCollector:
@@ -70,6 +92,7 @@ class _EventCollector:
         opcode_profile: str | Path | None = None,
         include_legacy_opcodes: bool = False,
         ignore_opcode_profile: bool = False,
+        origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
     ) -> None:
         profile_path = (
             Path(opcode_profile) if opcode_profile is not None else default_profile_path()
@@ -78,14 +101,20 @@ class _EventCollector:
             opcodes_path=profile_path,
             include_legacy=include_legacy_opcodes,
             ignore_opcodes=ignore_opcode_profile,
+            require_profile=opcode_profile is not None,
         )
-        self.events: list[BDOEvent] = []
+        self._events: deque[BDOEvent] = deque()
         self.event_filter = event_filter
         self.on_event = on_event
         self.profile_source = profile_source
         self._tracker = DepositOriginTracker(
             decrement_specs=_decrement_specs(profile_path, ignore_opcode_profile),
             emit=self._deliver,
+            origin_observer=origin_observer,
+            known_companion_families=_origin_companion_families(
+                profile_path,
+                ignore_opcode_profile,
+            ),
         )
         self.engine = PacketEngine(
             server_ports=server_ports,
@@ -106,9 +135,15 @@ class _EventCollector:
     def _deliver(self, event: BDOEvent) -> None:
         if self.event_filter is not None and not self.event_filter.allows(event):
             return
-        self.events.append(event)
         if self.on_event is not None:
             self.on_event(event)
+        else:
+            self._events.append(event)
+
+    def drain_events(self) -> Iterator[BDOEvent]:
+        """Yield and remove all currently delivered events."""
+        while self._events:
+            yield self._events.popleft()
 
     def flush_stale(self, now: float) -> None:
         self._tracker.flush_stale(now)
@@ -151,6 +186,7 @@ def replay_pcap(
     item_ids: Optional[Iterable[int]] = None,
     deposit_origins: Optional[Iterable[str]] = None,
     quiet: bool = True,
+    origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
 ) -> Iterator[BDOEvent]:
     """Replay a pcap/pcapng file and yield structured events.
 
@@ -158,8 +194,9 @@ def replay_pcap(
     produces no console output either way.
     """
 
+    validated_ports = validate_server_ports(ports)
     collector = _EventCollector(
-        server_ports=ports,
+        server_ports=validated_ports,
         event_filter=_event_filter(
             event_types=event_types,
             sources=sources,
@@ -169,10 +206,12 @@ def replay_pcap(
         opcode_profile=opcode_profile,
         include_legacy_opcodes=include_legacy_opcodes,
         ignore_opcode_profile=ignore_opcode_profile,
+        origin_observer=origin_observer,
     )
-    replay_pcap_file(Path(path), collector.engine)
+    for _ in iter_pcap_file(Path(path), collector.engine):
+        yield from collector.drain_events()
     collector.finalize()
-    yield from collector.events
+    yield from collector.drain_events()
 
 
 def capture_live(
@@ -190,6 +229,8 @@ def capture_live(
     capture_seconds: Optional[float] = None,
     no_bpf: bool = False,
     no_local_ip_filter: bool = False,
+    event_queue_size: int = 1024,
+    origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
 ) -> Iterator[BDOEvent]:
     """Start passive live capture and yield structured events.
 
@@ -197,31 +238,72 @@ def capture_live(
     optional filters control what reaches the application.
     """
 
+    validated_ports = validate_server_ports(ports)
+    _validate_capture_seconds(capture_seconds)
+    if isinstance(event_queue_size, bool) or not isinstance(event_queue_size, int):
+        raise ValueError("event_queue_size must be an integer")
+    if event_queue_size <= 0:
+        raise ValueError("event_queue_size must be greater than zero")
+    if local_ip is not None:
+        try:
+            local_ip = str(ipaddress.IPv4Address(local_ip))
+        except ipaddress.AddressValueError as exc:
+            raise ValueError(f"local_ip must be an IPv4 address: {local_ip!r}") from exc
+
     IP, TCP, _, _, _ = import_scapy()
     from scapy.sendrecv import AsyncSniffer  # type: ignore
 
-    queue: Queue[BDOEvent] = Queue()
+    queue: Queue[BDOEvent] = Queue(maxsize=event_queue_size)
+    stop_requested = Event()
+    finalizing = Event()
+    tail_events: deque[BDOEvent] = deque()
+
+    def enqueue(event: BDOEvent) -> None:
+        # During shutdown the sniffer is joined before the generator can drain
+        # its queue. Route final events to a short-lived tail instead of
+        # deadlocking on a full bounded queue.
+        if finalizing.is_set():
+            tail_events.append(event)
+            return
+        while not stop_requested.is_set():
+            try:
+                queue.put(event, timeout=0.2)
+                return
+            except Full:
+                if finalizing.is_set():
+                    tail_events.append(event)
+                    return
+                continue
+
     collector = _EventCollector(
-        server_ports=ports,
+        server_ports=validated_ports,
         event_filter=_event_filter(
             event_types=event_types,
             sources=sources,
             item_ids=item_ids,
             deposit_origins=deposit_origins,
         ),
-        on_event=queue.put,
+        on_event=enqueue,
         opcode_profile=opcode_profile,
         include_legacy_opcodes=include_legacy_opcodes,
         ignore_opcode_profile=ignore_opcode_profile,
+        origin_observer=origin_observer,
     )
 
-    detected_target = detect_default_capture_target()
-    capture_interface = interface or detected_target.interface
+    detected_target = None
+    if interface is None:
+        detected_target = detect_default_capture_target()
+        capture_interface = detected_target.interface
+    else:
+        capture_interface = interface
     capture_local_ip = local_ip
     if capture_local_ip is None and interface is None and not no_local_ip_filter:
+        assert detected_target is not None
         capture_local_ip = detected_target.local_ip
 
-    bpf_filter = None if no_bpf else build_bpf_filter(ports, capture_local_ip)
+    bpf_filter = (
+        None if no_bpf else build_bpf_filter(validated_ports, capture_local_ip)
+    )
     lfilter = None
     if no_bpf:
         lfilter = lambda packet: (  # noqa: E731
@@ -241,8 +323,27 @@ def capture_live(
         prn=make_packet_handler(collector.engine),
         store=False,
     )
-    live_capture.start()
+    try:
+        live_capture.start()
+    except BaseException:
+        if live_capture.running:
+            live_capture.stop()
+        raise
     started_at = time.monotonic()
+    cleaned_up = False
+
+    def cleanup() -> None:
+        nonlocal cleaned_up
+        if cleaned_up:
+            return
+        cleaned_up = True
+        finalizing.set()
+        stop_requested.set()
+        if live_capture.running:
+            live_capture.stop()
+        collector.engine.finish()
+        collector.finalize()
+
     try:
         while True:
             if capture_seconds is not None:
@@ -258,13 +359,21 @@ def capture_live(
     finally:
         # No yields in here: a consumer that stops iterating early closes the
         # generator, and yielding during that close is a RuntimeError.
-        if live_capture.running:
-            live_capture.stop()
-        collector.engine.finish()
-        collector.finalize()
-    # Normal end of capture: deliver storage deltas finalized during cleanup.
+        cleanup()
+    # Normal end of capture: deliver events queued before shutdown, followed
+    # by storage deltas and drained TCP events finalized during cleanup.
     while True:
         try:
             yield queue.get_nowait()
         except Empty:
             break
+    yield from tail_events
+
+
+def _validate_capture_seconds(value: Optional[float]) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("capture_seconds must be a number or None")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError("capture_seconds must be finite and non-negative")

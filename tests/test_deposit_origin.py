@@ -6,19 +6,16 @@ synthetic tests pin the fail-closed rules that no capture currently
 exercises.
 """
 
-from pathlib import Path
-
 import pytest
 
+from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit import replay_pcap
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURE_DIR.exists() or not any(FIXTURE_DIR.glob("*.pcapng")),
+    not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
 
@@ -39,7 +36,7 @@ MANUAL_FIXTURES = [
 def _origins(fixture):
     return [
         (event.deposit_origin, event.extra.get("deposit_origin_evidence"))
-        for event in replay_pcap(FIXTURE_DIR / fixture)
+        for event in replay_pcap(fixture_path(fixture))
         if event.event_type == "storage_delta"
     ]
 
@@ -51,7 +48,11 @@ def test_worker_deposits_classify_as_worker(fixture):
     assert results, f"no storage_delta events decoded from {fixture}"
     for origin, evidence in results:
         assert origin == "worker"
-        assert evidence == {"worker_companions": True, "matching_decrement": False}
+        assert evidence["worker_companions"] is True
+        assert evidence["matching_decrement"] is False
+        chain = evidence["companion_chain"]
+        assert chain["detection"] == "shared-token-chain-v1"
+        assert chain["known_family"] is False
 
 
 @requires_fixtures
@@ -91,14 +92,42 @@ def _frame(opcode, seq, timestamp=1000.0, body=b"", length=None):
     )
 
 
-def _storage_event(item_id=7002, quantity=25, seq=1000, timestamp=1000.0):
+def _storage_event(
+    item_id=7002,
+    quantity=25,
+    seq=1000,
+    timestamp=1000.0,
+    message_length=5,
+):
     return BDOEvent(
         event_type="storage_delta",
         timestamp=timestamp,
         flow=Flow("10.0.0.1", 8889, "10.0.0.2", 50000),
         item_id=item_id,
         quantity=quantity,
+        message_length=message_length,
         extra={"stream_sequence": seq},
+    )
+
+
+def _worker_chain(delta_seq=1000, delta_opcode=0x0E6A, first=0x1558, second=0x1168):
+    token = bytes.fromhex("07feabbfc91b8e00")
+    delta = bytearray(80)
+    delta[0:2] = (80).to_bytes(2, "little")
+    delta[3:5] = delta_opcode.to_bytes(2, "little")
+    delta[18:26] = token
+    first_message = bytearray(58)
+    first_message[0:2] = (58).to_bytes(2, "little")
+    first_message[3:5] = first.to_bytes(2, "little")
+    first_message[36:44] = token
+    second_message = bytearray(23)
+    second_message[0:2] = (23).to_bytes(2, "little")
+    second_message[3:5] = second.to_bytes(2, "little")
+    second_message[5:13] = token
+    return (
+        BDOFrame(0, bytes(delta), PacketContext(1000.0, FLOW), delta_seq),
+        BDOFrame(1, bytes(first_message), PacketContext(1000.0, FLOW), delta_seq + 80),
+        BDOFrame(2, bytes(second_message), PacketContext(1000.0, FLOW), delta_seq + 138),
     )
 
 
@@ -137,16 +166,16 @@ def test_companions_outrank_a_spurious_decrement_match():
             stream_sequence=900,
         )
     )
-    tracker.observe_frame(_frame(0x0E6A, seq=1000))
-    tracker.register(_storage_event(quantity=1, seq=1000))
-    tracker.observe_frame(_frame(0x1558, seq=1100))
-    tracker.observe_frame(_frame(0x1168, seq=1200))
+    delta, first, second = _worker_chain()
+    tracker.observe_frame(delta)
+    tracker.register(_storage_event(quantity=1, seq=1000, message_length=80))
+    tracker.observe_frame(first)
+    tracker.observe_frame(second)
     tracker.finalize_all()
     assert emitted[0].deposit_origin == "worker"
-    assert emitted[0].extra["deposit_origin_evidence"] == {
-        "worker_companions": True,
-        "matching_decrement": True,
-    }
+    evidence = emitted[0].extra["deposit_origin_evidence"]
+    assert evidence["worker_companions"] is True
+    assert evidence["matching_decrement"] is True
 
 
 def test_multi_record_worker_batch_agrees_across_records():
@@ -167,12 +196,17 @@ def test_multi_record_worker_batch_agrees_across_records():
             stream_sequence=900,
         )
     )
-    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    delta, first, second = _worker_chain()
+    tracker.observe_frame(delta)
     # Both records share the frame's stream_sequence.
-    tracker.register(_storage_event(item_id=4409, quantity=1, seq=1000))
-    tracker.register(_storage_event(item_id=4004, quantity=25, seq=1000))
-    tracker.observe_frame(_frame(0x1558, seq=1100))
-    tracker.observe_frame(_frame(0x1168, seq=1200))
+    tracker.register(
+        _storage_event(item_id=4409, quantity=1, seq=1000, message_length=80)
+    )
+    tracker.register(
+        _storage_event(item_id=4004, quantity=25, seq=1000, message_length=80)
+    )
+    tracker.observe_frame(first)
+    tracker.observe_frame(second)
     tracker.finalize_all()
     origins = [e.deposit_origin for e in emitted]
     assert origins == ["worker", "worker"]
@@ -183,11 +217,41 @@ def test_companions_already_in_segment_finalize_immediately():
     # same TCP segment are visible at registration time.
     emitted = []
     tracker = _tracker(emitted)
-    tracker.observe_frame(_frame(0x0E6A, seq=1000))
-    tracker.observe_frame(_frame(0x1558, seq=1100))
-    tracker.observe_frame(_frame(0x1168, seq=1200))
-    tracker.register(_storage_event(seq=1000))
+    delta, first, second = _worker_chain()
+    tracker.observe_frame(delta)
+    tracker.observe_frame(first)
+    tracker.observe_frame(second)
+    tracker.register(_storage_event(seq=1000, message_length=80))
     assert emitted and emitted[0].deposit_origin == "worker"
+
+
+def test_unknown_companion_opcodes_are_discovered_once_for_multi_record_batch():
+    emitted = []
+    observations = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(),
+        emit=emitted.append,
+        origin_observer=observations.append,
+    )
+    delta, first, second = _worker_chain(
+        delta_opcode=0x0D7E,
+        first=0x0F7E,
+        second=0x0DE1,
+    )
+    tracker.observe_frame(delta)
+    tracker.register(
+        _storage_event(item_id=5004, quantity=6, seq=1000, message_length=80)
+    )
+    tracker.register(
+        _storage_event(item_id=4604, quantity=25, seq=1000, message_length=80)
+    )
+    tracker.observe_frame(first)
+    tracker.observe_frame(second)
+    tracker.finalize_all()
+
+    assert [event.deposit_origin for event in emitted] == ["worker", "worker"]
+    assert len(observations) == 1
+    assert observations[0].companion_opcodes == (0x0F7E, 0x0DE1)
 
 
 def test_stale_pending_deposit_flushes_as_unknown():
@@ -212,7 +276,7 @@ def test_lookahead_window_expires_after_unrelated_frames():
 
 @requires_fixtures
 def test_format_human_shows_deposit_origin():
-    events = list(replay_pcap(FIXTURE_DIR / "worker_4607.pcapng"))
+    events = list(replay_pcap(fixture_path("worker_4607.pcapng")))
     line = events[0].format_human()
     assert "deposit_origin=worker" in line
 
@@ -221,8 +285,8 @@ def test_format_human_shows_deposit_origin():
 def test_deposit_origins_filter_is_first_class():
     # The dev-facing worker-tracker one-liner: filter at the API, applied
     # AFTER classification so the verdict is already on the event.
-    manual = FIXTURE_DIR / "1000306_qty5_unstackable_i2s.pcapng"
-    worker = FIXTURE_DIR / "worker_4607.pcapng"
+    manual = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    worker = fixture_path("worker_4607.pcapng")
 
     assert list(replay_pcap(manual, deposit_origins={"worker"})) == []
     assert len(list(replay_pcap(manual, deposit_origins={"manual"}))) == 5

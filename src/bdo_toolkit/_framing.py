@@ -8,9 +8,6 @@ from typing import Callable
 
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
-    CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH,
-    CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH,
-    CURRENT_STORAGE_DELTA_RECORD_STRIDE,
     MAX_PLAUSIBLE_ITEM_ID,
     MAX_TARGET_MESSAGE_LENGTH,
     BDOFrame,
@@ -231,25 +228,16 @@ class TargetMessageScanner:
     @staticmethod
     def _message_length_matches_spec(spec: EventSpec, message_length: int) -> bool:
         if (
-            spec.label == "INVENTORY_TRANSFER"
-            and spec.repeat_stride == 228
-            and spec.item_offset == 33
-            and spec.quantity_offset == 37
-            and spec.item_instance_offset == 68
+            spec.repeat_stride is not None
+            and spec.single_record_message_length is not None
         ):
-            record_bytes = (
-                message_length - CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
+            extra_records_length = (
+                message_length - spec.single_record_message_length
             )
-            return record_bytes > 0 and record_bytes % spec.repeat_stride == 0
-        if (
-            spec.label == "INVENTORY_TO_STORAGE"
-            and spec.repeat_stride == CURRENT_STORAGE_DELTA_RECORD_STRIDE
-            and spec.item_offset == 37
-            and spec.quantity_offset == 41
-            and spec.storage_instance_offset == 72
-        ):
-            record_bytes = message_length - CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH
-            return record_bytes > 0 and record_bytes % spec.repeat_stride == 0
+            return (
+                extra_records_length >= 0
+                and extra_records_length % spec.repeat_stride == 0
+            )
         return True
 
     def _decode_events_from_message(

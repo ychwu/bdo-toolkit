@@ -25,24 +25,50 @@ the original research prototype.
 from __future__ import annotations
 
 import datetime as dt
+import ipaddress
 import json
+import math
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
-from ._capture_backend import replay_pcap_file
+from ._capture_backend import replay_pcap_file, validate_server_ports
 from ._framing import FrameCollectorScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
-    CURRENT_STORAGE_DELTA_CONTEXT_OFFSET,
+    CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH,
+    CURRENT_STORAGE_DELTA_RECORD_STRIDE,
     DEFAULT_SERVER_PORTS,
     LOOT_PREVIEW_SENTINEL_INSTANCE,
+    MAX_PLAUSIBLE_ITEM_ID,
     SOURCE_CONTEXT_LABELS,
     STORAGE_DELTA_CONTEXTS,
     BDOFrame,
 )
 from ._reassembly import FlowManager
-from ._specs import ProfileError
+from .profiles import ProfileError, _validate_profile_entry, load_opcode_profile
+
+__all__ = [
+    "CALIBRATION_ACTIONS",
+    "CalibrationResult",
+    "CalibrationSession",
+    "DirectionEvidence",
+    "DirectionMismatchError",
+    "MessageSpec",
+    "ProfileError",
+    "ProfileUpdate",
+    "calibrate_and_update",
+    "calibrate_frames",
+    "calibrate_live",
+    "calibrate_pcap",
+    "collect_frames_pcap",
+    "detect_transfer_family",
+    "reset_profile",
+    "update_profile",
+]
 
 CALIBRATION_ACTIONS = (
     "loot-preview",
@@ -61,7 +87,7 @@ OPCODE_PROFILE_EVENTS = (
 
 
 @dataclass(frozen=True)
-class OpcodeSpec:
+class MessageSpec:
     event: str
     opcode: int
     length: Optional[int]
@@ -80,6 +106,65 @@ class OpcodeSpec:
     observed_at: Optional[str] = None
     score: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        if self.event not in OPCODE_PROFILE_EVENTS:
+            raise ValueError(f"unknown profile event {self.event!r}")
+        if isinstance(self.opcode, bool) or not isinstance(self.opcode, int):
+            raise ValueError("opcode must be an integer")
+        if not 0 <= self.opcode <= 0xFFFF:
+            raise ValueError("opcode must be a uint16")
+        if self.length is not None and (
+            isinstance(self.length, bool)
+            or not isinstance(self.length, int)
+            or not 5 <= self.length <= 0xFFFF
+        ):
+            raise ValueError("length must be None or an integer from 5 to 65535")
+        for name in (
+            "item_id_offset",
+            "quantity_offset",
+            "item_instance_offset",
+            "context_offset",
+            "inventory_slot_offset",
+            "source_instance_offset",
+            "quantity_removed_offset",
+            "quantity_added_offset",
+            "destination_instance_offset",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be None or a non-negative integer")
+        if self.repeat_stride is not None and (
+            isinstance(self.repeat_stride, bool)
+            or not isinstance(self.repeat_stride, int)
+            or self.repeat_stride <= 0
+        ):
+            raise ValueError("repeat_stride must be None or a positive integer")
+        if self.score is not None and (
+            isinstance(self.score, bool)
+            or not isinstance(self.score, (int, float))
+            or not math.isfinite(self.score)
+            or not 0 <= self.score <= 1
+        ):
+            raise ValueError("score must be None or a finite number from 0 to 1")
+        if self.length is not None:
+            field_widths = {
+                "item_id_offset": 4,
+                "quantity_offset": 4,
+                "item_instance_offset": 8,
+                "context_offset": 4,
+                "inventory_slot_offset": 1,
+                "source_instance_offset": 8,
+                "quantity_removed_offset": 4,
+                "quantity_added_offset": 4,
+                "destination_instance_offset": 8,
+            }
+            for name, width in field_widths.items():
+                value = getattr(self, name)
+                if value is not None and value + width > self.length:
+                    raise ValueError(f"{name} extends beyond the declared length")
+
     def dedupe_key(self) -> tuple[object, ...]:
         return (
             self.event,
@@ -88,6 +173,8 @@ class OpcodeSpec:
             self.item_id_offset,
             self.quantity_offset,
             self.item_instance_offset,
+            self.context_offset,
+            self.inventory_slot_offset,
             self.source_instance_offset,
             self.quantity_removed_offset,
             self.quantity_added_offset,
@@ -148,15 +235,99 @@ class DirectionEvidence:
     context_label: bool
     storage_context: bool = False
 
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "action": self.action,
+            "opcode": f"0x{self.opcode:04X}",
+            "detected_family": self.detected_family,
+            "reference_frame": self.reference_frame,
+            "context_label": self.context_label,
+            "storage_context": self.storage_context,
+        }
+
+
+_FAMILY_LABELS = {
+    "into_inventory": "storage->inventory",
+    "into_storage": "inventory->storage",
+}
+
 
 @dataclass(frozen=True)
 class CalibrationResult:
-    """Promoted opcode specs plus diagnostics for rejected candidates."""
+    """Promoted message specs plus diagnostics for rejected candidates.
 
-    specs: tuple[OpcodeSpec, ...]
+    The fields are the raw record; ``events_found`` / ``specs_by_event()`` /
+    ``summary()`` / ``to_json_dict()`` are pure, read-only views of them.
+    There is deliberately no boolean ``ok``: success is per-event (a capture
+    can promote STORAGE_ITEM_DELTA yet miss its companion specs), so check
+    ``events_found`` against the events you need instead.
+    """
+
+    specs: tuple[MessageSpec, ...]
     ignored: tuple[str, ...]
     frames_scanned: int
     evidence: tuple[DirectionEvidence, ...] = ()
+    calibration_item_id: Optional[int] = None
+
+    @property
+    def events_found(self) -> frozenset[str]:
+        """Event names that got at least one promoted spec.
+
+        Supports readable completeness checks::
+
+            {"STORAGE_ITEM_DELTA", "SOURCE_STACK_DECREMENT"} <= result.events_found
+        """
+        return frozenset(spec.event for spec in self.specs)
+
+    def specs_by_event(self) -> dict[str, tuple[MessageSpec, ...]]:
+        """Promoted specs grouped by event name.
+
+        Values are tuples because a capture can promote more than one
+        candidate layout for the same event.
+        """
+        grouped: dict[str, list[MessageSpec]] = {}
+        for spec in self.specs:
+            grouped.setdefault(spec.event, []).append(spec)
+        return {event: tuple(specs) for event, specs in grouped.items()}
+
+    def detected_directions(self) -> frozenset[str]:
+        """Transfer directions confirmed by structure, as human-readable labels
+        (``"inventory->storage"`` / ``"storage->inventory"``)."""
+        return frozenset(
+            _FAMILY_LABELS[e.detected_family]
+            for e in self.evidence
+            if e.detected_family in _FAMILY_LABELS
+        )
+
+    def summary(self) -> str:
+        """Human-readable multi-line report; print or log it as-is."""
+        lines = [f"scanned {self.frames_scanned} frames"]
+        if self.specs:
+            found = ", ".join(
+                f"{spec.event} (0x{spec.opcode:04X})" for spec in self.specs
+            )
+            lines.append(f"promoted {len(self.specs)} spec(s): {found}")
+        else:
+            lines.append("no message specs promoted")
+        directions = self.detected_directions()
+        if directions:
+            lines.append(f"detected direction(s): {', '.join(sorted(directions))}")
+        if self.ignored:
+            lines.append(
+                f"ignored {len(self.ignored)} candidate(s) (see .ignored for reasons)"
+            )
+        return "\n".join(lines)
+
+    def to_json_dict(self) -> dict[str, object]:
+        """The whole result as JSON-ready data — the shape to attach to bug
+        reports or logs. Mirrors ``MessageSpec.to_json_dict()`` for specs."""
+        return {
+            "frames_scanned": self.frames_scanned,
+            "calibration_item_id": self.calibration_item_id,
+            "specs": [spec.to_json_dict() for spec in self.specs],
+            "ignored": list(self.ignored),
+            "evidence": [e.to_json_dict() for e in self.evidence],
+        }
 
 
 @dataclass(frozen=True)
@@ -164,9 +335,29 @@ class ProfileUpdate:
     """Outcome of merging calibration specs into a profile file."""
 
     path: Path
-    added: tuple[OpcodeSpec, ...]
+    added: tuple[MessageSpec, ...]
     replaced_events: tuple[str, ...]
     backup_path: Optional[Path]
+    written: bool = True
+
+    def summary(self) -> str:
+        """Human-readable multi-line report; print or log it as-is."""
+        if not self.written:
+            return (
+                f"no new specs added; no profile changes; "
+                f"{self.path} was not written"
+            )
+        lines = [f"wrote {self.path}"]
+        if self.backup_path is not None:
+            lines.append(f"backup at {self.backup_path}")
+        if self.replaced_events:
+            lines.append(f"replaced {', '.join(self.replaced_events)}")
+        if self.added:
+            for spec in self.added:
+                lines.append(f"added {spec.event} opcode=0x{spec.opcode:04X}")
+        else:
+            lines.append("no new specs added (all were already present)")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -190,15 +381,56 @@ class _CalibratedItemRecord:
     reasons: tuple[str, ...]
 
 
+def _validate_calibration_options(
+    *,
+    item_id: int,
+    quantity: Optional[int],
+    action: str,
+    context_frames: int,
+    min_confidence: float,
+) -> None:
+    if isinstance(item_id, bool) or not isinstance(item_id, int):
+        raise ValueError("item_id must be an integer")
+    if not 1 <= item_id <= MAX_PLAUSIBLE_ITEM_ID:
+        raise ValueError(
+            f"item_id must be between 1 and {MAX_PLAUSIBLE_ITEM_ID}"
+        )
+    if quantity is not None and (
+        isinstance(quantity, bool)
+        or not isinstance(quantity, int)
+        or not 1 <= quantity <= 0xFFFFFFFF
+    ):
+        raise ValueError("quantity must be None or a positive uint32")
+    if action != "auto" and action not in CALIBRATION_ACTIONS:
+        raise ValueError(
+            f"unknown calibration action {action!r}; "
+            f"expected one of {CALIBRATION_ACTIONS} or 'auto'"
+        )
+    if (
+        isinstance(context_frames, bool)
+        or not isinstance(context_frames, int)
+        or context_frames <= 0
+    ):
+        raise ValueError("context_frames must be a positive integer")
+    if (
+        isinstance(min_confidence, bool)
+        or not isinstance(min_confidence, (int, float))
+        or not math.isfinite(min_confidence)
+        or not 0 <= min_confidence <= 1
+    ):
+        raise ValueError("min_confidence must be a finite number from 0 to 1")
+
+
 def collect_frames_pcap(
     path: str | Path,
     *,
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
 ) -> list[BDOFrame]:
     """Reassemble a pcap and return every generic BDO frame."""
+    validated_ports = validate_server_ports(ports)
     frames: list[BDOFrame] = []
     manager = FlowManager(
-        server_ports=ports,
+        server_ports=validated_ports,
         scanner_factory=lambda: FrameCollectorScanner(frames.append),
     )
     replay_pcap_file(Path(path), manager)
@@ -214,12 +446,14 @@ def calibrate_frames(
     context_frames: int = 5,
     min_confidence: float = 0.80,
 ) -> CalibrationResult:
-    """Score collected frames and promote plausible opcode specs."""
-    if action != "auto" and action not in CALIBRATION_ACTIONS:
-        raise ValueError(
-            f"unknown calibration action {action!r}; "
-            f"expected one of {CALIBRATION_ACTIONS} or 'auto'"
-        )
+    """Score collected frames and promote plausible message specs."""
+    _validate_calibration_options(
+        item_id=item_id,
+        quantity=quantity,
+        action=action,
+        context_frames=context_frames,
+        min_confidence=min_confidence,
+    )
 
     options = _Options(
         item_id=item_id,
@@ -230,12 +464,13 @@ def calibrate_frames(
     )
     ignored: list[str] = []
     evidence: list[DirectionEvidence] = []
-    specs: list[OpcodeSpec] = []
+    specs: list[MessageSpec] = []
 
     # Auto covers both transfer directions and classifies each from structure,
     # so the user need only move an item storage->inventory and back (in either
     # order). Direction is never taken on faith. Loot preview needs a gathering
     # action, so it stays an explicit, optional mode.
+    actions: tuple[str, ...]
     if action == "auto":
         actions = ("storage-to-inventory", "inventory-to-storage")
         strict = False
@@ -260,10 +495,11 @@ def calibrate_frames(
             )
 
     return CalibrationResult(
-        specs=tuple(_dedupe_opcode_specs(specs)),
+        specs=tuple(_dedupe_message_specs(specs)),
         ignored=tuple(ignored),
         frames_scanned=len(frames),
         evidence=tuple(evidence),
+        calibration_item_id=item_id,
     )
 
 
@@ -277,7 +513,14 @@ def calibrate_pcap(
     context_frames: int = 5,
     min_confidence: float = 0.80,
 ) -> CalibrationResult:
-    """Calibrate opcode specs from a pcap of a known in-game action."""
+    """Calibrate message specs from a pcap of a known in-game action."""
+    _validate_calibration_options(
+        item_id=item_id,
+        quantity=quantity,
+        action=action,
+        context_frames=context_frames,
+        min_confidence=min_confidence,
+    )
     frames = collect_frames_pcap(path, ports=ports)
     return calibrate_frames(
         frames,
@@ -324,21 +567,35 @@ class CalibrationSession:
         context_frames: int = 5,
         min_confidence: float = 0.80,
     ) -> None:
+        _validate_calibration_options(
+            item_id=item_id,
+            quantity=quantity,
+            action=action,
+            context_frames=context_frames,
+            min_confidence=min_confidence,
+        )
+        if local_ip is not None:
+            try:
+                local_ip = str(ipaddress.IPv4Address(local_ip))
+            except ipaddress.AddressValueError as exc:
+                raise ValueError(
+                    f"local_ip must be an IPv4 address: {local_ip!r}"
+                ) from exc
         self._item_id = item_id
         self._quantity = quantity
         self._action = action
-        self._ports = ports
+        self._ports = validate_server_ports(ports)
         self._interface = interface
         self._local_ip = local_ip
         self._context_frames = context_frames
         self._min_confidence = min_confidence
         self._frames: list[BDOFrame] = []
         self._manager: Optional[FlowManager] = None
-        self._capture = None
+        self._capture: Any = None
 
     @property
     def running(self) -> bool:
-        return self._capture is not None
+        return self._capture is not None and bool(self._capture.running)
 
     @property
     def frames_collected(self) -> int:
@@ -365,10 +622,15 @@ class CalibrationSession:
             scanner_factory=lambda: FrameCollectorScanner(self._frames.append),
         )
 
-        detected_target = detect_default_capture_target()
-        capture_interface = self._interface or detected_target.interface
+        detected_target = None
+        if self._interface is None:
+            detected_target = detect_default_capture_target()
+            capture_interface = detected_target.interface
+        else:
+            capture_interface = self._interface
         capture_local_ip = self._local_ip
         if capture_local_ip is None and self._interface is None:
+            assert detected_target is not None
             capture_local_ip = detected_target.local_ip
 
         capture = AsyncSniffer(
@@ -377,7 +639,13 @@ class CalibrationSession:
             prn=make_packet_handler(self._manager),
             store=False,
         )
-        capture.start()
+        try:
+            capture.start()
+        except BaseException:
+            if capture.running:
+                capture.stop()
+            self._manager = None
+            raise
         self._capture = capture
 
     def stop(self) -> CalibrationResult:
@@ -437,6 +705,14 @@ def calibrate_live(
     """
     import time
 
+    if capture_seconds is not None and (
+        isinstance(capture_seconds, bool)
+        or not isinstance(capture_seconds, (int, float))
+        or not math.isfinite(capture_seconds)
+        or capture_seconds < 0
+    ):
+        raise ValueError("capture_seconds must be finite and non-negative")
+
     session = CalibrationSession(
         item_id=item_id,
         quantity=quantity,
@@ -447,27 +723,28 @@ def calibrate_live(
         context_frames=context_frames,
         min_confidence=min_confidence,
     )
-    session.start()
-    try:
-        if capture_seconds is not None:
-            time.sleep(capture_seconds)
-        else:
-            while True:
-                time.sleep(0.2)
-    except KeyboardInterrupt:
-        # Ctrl+C ends the listening window; the collected frames still get
-        # calibrated, matching the legacy stop-to-finish workflow.
-        pass
-    return session.stop()
+    with session:
+        try:
+            if capture_seconds is not None:
+                time.sleep(capture_seconds)
+            else:
+                while True:
+                    time.sleep(0.2)
+        except KeyboardInterrupt:
+            # Ctrl+C ends the listening window; the collected frames still get
+            # calibrated, matching the legacy stop-to-finish workflow.
+            pass
+        return session.stop()
 
 
 def update_profile(
-    result: CalibrationResult | Iterable[OpcodeSpec],
+    result: CalibrationResult | Iterable[MessageSpec],
     path: str | Path,
     *,
     action: str = "auto",
     replace: bool = False,
     backup: bool = True,
+    calibration_item_id: Optional[int] = None,
 ) -> ProfileUpdate:
     """Merge promoted specs into a local opcode profile file.
 
@@ -475,8 +752,34 @@ def update_profile(
     cleared first, so a recalibration fully supersedes stale entries. The
     previous file is backed up next to it unless ``backup=False``.
     """
-    specs = tuple(result.specs if isinstance(result, CalibrationResult) else result)
+    if action != "auto" and action not in CALIBRATION_ACTIONS:
+        raise ValueError(
+            f"unknown calibration action {action!r}; "
+            f"expected one of {CALIBRATION_ACTIONS} or 'auto'"
+        )
+    if isinstance(result, CalibrationResult):
+        specs = tuple(result.specs)
+        if calibration_item_id is None:
+            calibration_item_id = result.calibration_item_id
+    else:
+        specs = tuple(result)
+    if any(not isinstance(spec, MessageSpec) for spec in specs):
+        raise TypeError("update_profile expects MessageSpec objects")
     profile_path = Path(path)
+    if not specs:
+        return ProfileUpdate(
+            path=profile_path,
+            added=(),
+            replaced_events=(),
+            backup_path=None,
+            written=False,
+        )
+    if calibration_item_id is not None and (
+        isinstance(calibration_item_id, bool)
+        or not isinstance(calibration_item_id, int)
+        or not 1 <= calibration_item_id <= 0xFFFFFFFF
+    ):
+        raise ValueError("calibration_item_id must be None or a positive uint32")
     data = _load_profile_data(profile_path)
 
     replaced_events: tuple[str, ...] = ()
@@ -486,7 +789,7 @@ def update_profile(
             data["specs"][event] = []
 
     existing_keys = _profile_dedupe_keys(data)
-    added: list[OpcodeSpec] = []
+    added: list[MessageSpec] = []
     for spec in specs:
         key = spec.dedupe_key()
         if key in existing_keys:
@@ -496,17 +799,29 @@ def update_profile(
         existing_keys.add(key)
         added.append(spec)
 
+    if not added and not replaced_events:
+        return ProfileUpdate(
+            path=profile_path,
+            added=(),
+            replaced_events=(),
+            backup_path=None,
+            written=False,
+        )
+
     data["profile_active"] = True
-    data["updated_at"] = dt.datetime.now().isoformat(timespec="seconds")
+    data["updated_at"] = _utc_now_text()
+    if calibration_item_id is not None:
+        data["calibration_item_id"] = calibration_item_id
 
     backup_path = None
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
     if backup and profile_path.exists():
         backup_path = _backup_path(profile_path)
-        backup_path.write_bytes(profile_path.read_bytes())
+        shutil.copy2(profile_path, backup_path)
 
-    profile_path.write_text(
+    _atomic_write_text(
+        profile_path,
         json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
     return ProfileUpdate(
@@ -517,6 +832,85 @@ def update_profile(
     )
 
 
+def calibrate_and_update(
+    profile_path: str | Path,
+    *,
+    item_id: int,
+    pcap: Optional[str | Path] = None,
+    capture_seconds: Optional[float] = None,
+    quantity: Optional[int] = None,
+    action: str = "auto",
+    ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
+    interface: Optional[str] = None,
+    local_ip: Optional[str] = None,
+    context_frames: int = 5,
+    min_confidence: float = 0.80,
+    replace: bool = True,
+    backup: bool = True,
+) -> tuple[CalibrationResult, Optional[ProfileUpdate]]:
+    """Calibrate and persist in one call — a facade over the two-step API.
+
+    With ``pcap`` set the capture is replayed from disk; otherwise a live
+    capture runs (``capture_seconds`` timer, or Ctrl+C to stop, exactly like
+    :func:`calibrate_live`). If calibration promoted specs they are merged
+    into ``profile_path`` and both objects come back; if it found nothing the
+    profile file is left untouched and the update slot is ``None``::
+
+        result, update = calibrate_and_update("opcodes.local", item_id=7003)
+        print(result.summary())
+        if update is not None:
+            print(update.summary())
+
+    Unlike :func:`update_profile`, ``replace`` defaults to ``True`` here: the
+    one-call path exists for post-patch recalibration, where superseding the
+    stale entries is what you want. Devs who need to inspect or filter specs
+    before persisting should stay on the two-step API.
+    """
+    if pcap is not None:
+        for name, value in (
+            ("capture_seconds", capture_seconds),
+            ("interface", interface),
+            ("local_ip", local_ip),
+        ):
+            if value is not None:
+                raise ValueError(
+                    f"{name} applies to live calibration only; omit it with pcap"
+                )
+        result = calibrate_pcap(
+            pcap,
+            item_id=item_id,
+            quantity=quantity,
+            action=action,
+            ports=ports,
+            context_frames=context_frames,
+            min_confidence=min_confidence,
+        )
+    else:
+        result = calibrate_live(
+            item_id=item_id,
+            capture_seconds=capture_seconds,
+            quantity=quantity,
+            action=action,
+            ports=ports,
+            interface=interface,
+            local_ip=local_ip,
+            context_frames=context_frames,
+            min_confidence=min_confidence,
+        )
+
+    if not result.specs:
+        return result, None
+
+    update = update_profile(
+        result,
+        profile_path,
+        action=action,
+        replace=replace,
+        backup=backup,
+    )
+    return result, update
+
+
 def reset_profile(
     path: str | Path,
     calibration_item_id: int = 7003,
@@ -524,22 +918,29 @@ def reset_profile(
     backup: bool = True,
 ) -> Optional[Path]:
     """Write an empty active profile, returning the backup path if any."""
+    if (
+        isinstance(calibration_item_id, bool)
+        or not isinstance(calibration_item_id, int)
+        or not 1 <= calibration_item_id <= 0xFFFFFFFF
+    ):
+        raise ValueError("calibration_item_id must be a positive uint32")
     profile_path = Path(path)
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
     backup_path = None
     if backup and profile_path.exists():
         backup_path = _backup_path(profile_path)
-        backup_path.write_bytes(profile_path.read_bytes())
+        shutil.copy2(profile_path, backup_path)
 
     data = {
         "version": 1,
-        "updated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "updated_at": _utc_now_text(),
         "calibration_item_id": calibration_item_id,
         "profile_active": True,
         "specs": {event: [] for event in OPCODE_PROFILE_EVENTS},
     }
-    profile_path.write_text(
+    _atomic_write_text(
+        profile_path,
         json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return backup_path
 
@@ -607,20 +1008,9 @@ def _has_item_reference_frame(
     return False
 
 
-def _has_storage_delta_context(frame: BDOFrame) -> bool:
-    """A storage-delta reason code at the known current-gen context offset.
-
-    Every current-generation storage delta (0x0E6A) carries `05000000`
-    (single/manual-style) or `20000000` (batch-style) at offset 8, with zero
-    collisions on any receipt frame in the labeled set. This is an INTRINSIC
-    into_storage signal, symmetric with the into_inventory context label, and
-    it does not depend on a companion reference frame, so it classifies multi-record
-    unstackable deposits, which carry no reference frame.
-    """
-    end = CURRENT_STORAGE_DELTA_CONTEXT_OFFSET + 4
-    if end > len(frame.message):
-        return False
-    return bytes(frame.message[CURRENT_STORAGE_DELTA_CONTEXT_OFFSET:end]) in STORAGE_DELTA_CONTEXTS
+def _has_storage_delta_context(frame: BDOFrame, before_offset: int) -> bool:
+    """Whether an observed storage reason code precedes the item record."""
+    return _discover_storage_context_offset(frame, before_offset) is not None
 
 
 def detect_transfer_family(
@@ -657,7 +1047,7 @@ def detect_transfer_family(
         frames, record_frame, item_id, context_frames
     )
     context_label = _has_context_label_before(record_frame, item_offset)
-    storage_context = _has_storage_delta_context(record_frame)
+    storage_context = _has_storage_delta_context(record_frame, item_offset)
 
     if context_label and storage_context:
         family: Optional[str] = None  # contradictory intrinsic signals: refuse
@@ -698,6 +1088,7 @@ def _select_records_by_family(
     expected = _EXPECTED_FAMILY[action]
     matched: list[_CalibratedItemRecord] = []
     opposite: Optional[str] = None
+    contradictory_intrinsics = False
     for record in records:
         family, reference_frame, context_label, storage_context = detect_transfer_family(
             frames, record.frame, record.item_offset, record.item_id, context_frames
@@ -712,11 +1103,26 @@ def _select_records_by_family(
                 storage_context=storage_context,
             )
         )
-        if family == expected or (allow_unclassified and family is None):
+        contradictory = family is None and context_label and storage_context
+        contradictory_intrinsics = contradictory_intrinsics or contradictory
+        genuinely_unclassified = (
+            family is None
+            and not context_label
+            and not storage_context
+            and not reference_frame
+        )
+        if family == expected or (
+            allow_unclassified and genuinely_unclassified
+        ):
             matched.append(record)
         elif family is not None:
             opposite = family
 
+    if not matched and contradictory_intrinsics and strict:
+        raise DirectionMismatchError(
+            f"declared action {action!r} but the capture contains a candidate "
+            "with contradictory intrinsic direction signals; refusing to guess"
+        )
     if not matched and opposite is not None and strict:
         observed = (
             "storage-to-inventory"
@@ -739,7 +1145,7 @@ def _calibrate_loot_preview(
     frames: list[BDOFrame],
     options: _Options,
     ignored: list[str],
-) -> list[OpcodeSpec]:
+) -> list[MessageSpec]:
     records = _find_calibration_item_records(frames, options, "loot-preview", ignored)
     preview_records = [
         record
@@ -752,7 +1158,7 @@ def _calibrate_loot_preview(
 
     best = max(preview_records, key=lambda record: record.confidence)
     return [
-        OpcodeSpec(
+        MessageSpec(
             event="LOOT_PREVIEW",
             opcode=best.frame.opcode,
             length=best.frame.length,
@@ -773,7 +1179,7 @@ def _calibrate_storage_to_inventory(
     ignored: list[str],
     evidence: list[DirectionEvidence],
     strict: bool,
-) -> list[OpcodeSpec]:
+) -> list[MessageSpec]:
     records = _find_calibration_item_records(
         frames,
         options,
@@ -821,10 +1227,13 @@ def _calibrate_storage_to_inventory(
     # frame (unstackables): the recorded length acts as a minimum at load
     # time, so the observed multi-record length would block single transfers.
     single_record_length, observed_stride = _record_frame_shape(
-        best.frame, best.item_id
+        best.frame,
+        best.item_id,
+        best.item_offset,
+        best.instance_offset,
     )
     specs = [
-        OpcodeSpec(
+        MessageSpec(
             event="INVENTORY_TRANSFER",
             opcode=best.frame.opcode,
             length=single_record_length,
@@ -853,7 +1262,7 @@ def _calibrate_inventory_to_storage(
     ignored: list[str],
     evidence: list[DirectionEvidence],
     strict: bool,
-) -> list[OpcodeSpec]:
+) -> list[MessageSpec]:
     records = _find_calibration_item_records(
         frames,
         options,
@@ -883,7 +1292,7 @@ def _calibrate_inventory_to_storage(
     best = max(
         storage_records, key=lambda record: (record.confidence, -record.item_offset)
     )
-    specs: list[OpcodeSpec] = []
+    specs: list[MessageSpec] = []
     source_stack = _discover_source_stack_decrement(frames, best, options)
     if source_stack is not None:
         specs.append(source_stack)
@@ -896,17 +1305,30 @@ def _calibrate_inventory_to_storage(
     # the observed stride so a multi-record storage delta (unstackable
     # deposits) decodes all records under the written profile.
     single_record_length, observed_stride = _record_frame_shape(
-        best.frame, best.item_id
+        best.frame,
+        best.item_id,
+        best.item_offset,
+        best.instance_offset,
+    )
+    storage_context_offset = _discover_storage_context_offset(
+        best.frame,
+        best.item_offset,
+    )
+    repeat_stride = observed_stride or _discover_storage_repeat_stride(
+        best.frame,
+        best.item_offset,
+        best.instance_offset,
     )
     specs.append(
-        OpcodeSpec(
+        MessageSpec(
             event="STORAGE_ITEM_DELTA",
             opcode=best.frame.opcode,
             length=single_record_length,
             item_id_offset=best.item_offset,
             quantity_added_offset=best.item_offset + 4,
             destination_instance_offset=best.instance_offset,
-            repeat_stride=observed_stride,
+            context_offset=storage_context_offset,
+            repeat_stride=repeat_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "inventory-to-storage"),
             observed_at=_iso_timestamp(best.frame.context.timestamp),
@@ -1094,7 +1516,12 @@ def _sum_plausible_item_record_quantities(
     )
 
 
-def _record_frame_shape(frame: BDOFrame, item_id: int) -> tuple[int, Optional[int]]:
+def _record_frame_shape(
+    frame: BDOFrame,
+    item_id: int,
+    item_offset: int,
+    instance_offset: Optional[int],
+) -> tuple[int, Optional[int]]:
     """``(single_record_length, stride)`` for a repeated-record frame.
 
     A frame carrying N watched-item records at a uniform stride (unstackables
@@ -1103,11 +1530,13 @@ def _record_frame_shape(frame: BDOFrame, item_id: int) -> tuple[int, Optional[in
     minimum message length, so writing the observed multi-record length would
     produce a profile that cannot decode ordinary single transfers.
 
-    Limitation: only records of the watched item are counted, so a mixed-item
-    multi-record frame (e.g. a worker deposit batching different items) does
-    not normalize; calibrate with a dedicated item move, not ambient traffic.
+    Full transfer-record markers are used first so mixed-item batches can be
+    normalized too. Repeated watched-item offsets remain as a fallback for
+    older layouts without those markers.
     """
-    offsets = _plausible_record_offsets(frame, item_id.to_bytes(4, "little"))
+    offsets = _full_transfer_record_offsets(frame, item_offset, instance_offset)
+    if len(offsets) < 2:
+        offsets = _plausible_record_offsets(frame, item_id.to_bytes(4, "little"))
     if len(offsets) < 2:
         return frame.length, None
     deltas = {b - a for a, b in zip(offsets, offsets[1:])}
@@ -1117,11 +1546,55 @@ def _record_frame_shape(frame: BDOFrame, item_id: int) -> tuple[int, Optional[in
     return frame.length - (len(offsets) - 1) * stride, stride
 
 
+def _full_transfer_record_offsets(
+    frame: BDOFrame,
+    item_offset: int,
+    instance_offset: Optional[int],
+) -> list[int]:
+    """Locate structurally complete item records, including mixed-item batches."""
+    if instance_offset is None:
+        return []
+    instance_delta = instance_offset - item_offset
+    if instance_delta < 8:
+        return []
+    return [
+        offset
+        for offset in range(item_offset, len(frame.message))
+        if _looks_like_transfer_record(frame, offset, instance_delta)
+    ]
+
+
+def _looks_like_transfer_record(
+    frame: BDOFrame,
+    item_offset: int,
+    instance_delta: int,
+) -> bool:
+    required_end = item_offset + max(20, instance_delta + 8)
+    if required_end > len(frame.message):
+        return False
+    item_id = int.from_bytes(frame.message[item_offset : item_offset + 4], "little")
+    quantity = int.from_bytes(
+        frame.message[item_offset + 4 : item_offset + 8], "little"
+    )
+    instance = bytes(
+        frame.message[
+            item_offset + instance_delta : item_offset + instance_delta + 8
+        ]
+    )
+    return (
+        0 < item_id <= MAX_PLAUSIBLE_ITEM_ID
+        and 0 < quantity <= 1_000_000
+        and _is_plausible_instance(instance)
+        and frame.message[item_offset + 8 : item_offset + 12] == b"\x00" * 4
+        and frame.message[item_offset + 12 : item_offset + 20] == b"\xff" * 8
+    )
+
+
 def _discover_source_container_decrement(
     frames: list[BDOFrame],
     receipt: _CalibratedItemRecord,
     options: _Options,
-) -> Optional[OpcodeSpec]:
+) -> Optional[MessageSpec]:
     item_bytes = receipt.item_id.to_bytes(4, "little")
     quantity_bytes = receipt.quantity.to_bytes(4, "little")
 
@@ -1168,7 +1641,7 @@ def _discover_source_container_decrement(
         if context_offset is None:
             continue
 
-        return OpcodeSpec(
+        return MessageSpec(
             event="SOURCE_CONTAINER_DECREMENT",
             opcode=frame.opcode,
             length=frame.length,
@@ -1187,7 +1660,7 @@ def _discover_source_stack_decrement(
     frames: list[BDOFrame],
     storage_delta: _CalibratedItemRecord,
     options: _Options,
-) -> Optional[OpcodeSpec]:
+) -> Optional[MessageSpec]:
     item_bytes = storage_delta.item_id.to_bytes(4, "little")
     quantity = options.quantity if options.quantity is not None else storage_delta.quantity
     quantity_bytes = quantity.to_bytes(4, "little")
@@ -1204,7 +1677,7 @@ def _discover_source_stack_decrement(
             instance = frame.message[instance_offset:quantity_offset]
             if not _is_plausible_instance(instance):
                 continue
-            return OpcodeSpec(
+            return MessageSpec(
                 event="SOURCE_STACK_DECREMENT",
                 opcode=frame.opcode,
                 length=frame.length,
@@ -1222,18 +1695,18 @@ def _discover_source_item_reference(
     frames: list[BDOFrame],
     storage_delta: _CalibratedItemRecord,
     options: _Options,
-) -> Optional[OpcodeSpec]:
+) -> Optional[MessageSpec]:
     item_bytes = storage_delta.item_id.to_bytes(4, "little")
 
     for frame in reversed(_context_before(frames, storage_delta.frame, options.context_frames)):
-        if not 20 <= frame.length <= 35:
+        if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
             continue
         item_offset = frame.message.find(item_bytes)
         if item_offset < 0:
             continue
         if _looks_like_full_item_record(frame, item_offset):
             continue
-        return OpcodeSpec(
+        return MessageSpec(
             event="SOURCE_ITEM_REFERENCE",
             opcode=frame.opcode,
             length=frame.length,
@@ -1251,6 +1724,8 @@ def _context_before(
     target_frame: BDOFrame,
     context_frames: int,
 ) -> list[BDOFrame]:
+    if context_frames <= 0:
+        return []
     try:
         index = frames.index(target_frame)
     except ValueError:
@@ -1283,6 +1758,23 @@ def _discover_context_offset(frame: BDOFrame, before_offset: int) -> Optional[in
     return best_offset
 
 
+def _discover_storage_context_offset(
+    frame: BDOFrame,
+    before_offset: int,
+) -> Optional[int]:
+    """Find the nearest observed storage reason code before an item record."""
+    best_offset = None
+    for context_bytes in STORAGE_DELTA_CONTEXTS:
+        search_at = 0
+        while True:
+            offset = frame.message.find(context_bytes, search_at, before_offset)
+            if offset < 0:
+                break
+            best_offset = offset if best_offset is None else max(best_offset, offset)
+            search_at = offset + 1
+    return best_offset
+
+
 def _discover_inventory_slot_offset(frame: BDOFrame, item_offset: int) -> Optional[int]:
     if frame.opcode == 0x19E9 and item_offset > 0:
         return item_offset - 1
@@ -1292,10 +1784,23 @@ def _discover_inventory_slot_offset(frame: BDOFrame, item_offset: int) -> Option
 def _discover_repeat_stride(frame: BDOFrame, item_offset: int) -> Optional[int]:
     if item_offset != 33:
         return None
-    if frame.length <= 255:
+    record_bytes = frame.length - CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
+    if record_bytes > 0 and record_bytes % 228 == 0:
         return 228
-    if (frame.length - 27) % 228 == 0:
-        return 228
+    return None
+
+
+def _discover_storage_repeat_stride(
+    frame: BDOFrame,
+    item_offset: int,
+    instance_offset: Optional[int],
+) -> Optional[int]:
+    """Recognize the observed storage wrapper shape without trusting opcode."""
+    if item_offset != 37 or instance_offset != 72:
+        return None
+    record_bytes = frame.length - 35
+    if record_bytes > 0 and record_bytes % CURRENT_STORAGE_DELTA_RECORD_STRIDE == 0:
+        return CURRENT_STORAGE_DELTA_RECORD_STRIDE
     return None
 
 
@@ -1322,8 +1827,8 @@ def _find_all(haystack: bytes, needle: bytes) -> list[int]:
         search_at = offset + 1
 
 
-def _dedupe_opcode_specs(specs: Iterable[OpcodeSpec]) -> list[OpcodeSpec]:
-    output: list[OpcodeSpec] = []
+def _dedupe_message_specs(specs: Iterable[MessageSpec]) -> list[MessageSpec]:
+    output: list[MessageSpec] = []
     seen: set[tuple[object, ...]] = set()
     for spec in specs:
         key = spec.dedupe_key()
@@ -1347,12 +1852,24 @@ def _calibration_source(options: _Options, action: str) -> str:
 
 
 def _iso_timestamp(timestamp: float) -> str:
-    return dt.datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
+    return (
+        dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _utc_now_text() -> str:
+    return (
+        dt.datetime.now(tz=dt.timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def _events_for_action(
     action: str,
-    specs: Iterable[OpcodeSpec] = (),
+    specs: Iterable[MessageSpec] = (),
 ) -> tuple[str, ...]:
     if action == "loot-preview":
         return ("LOOT_PREVIEW",)
@@ -1368,31 +1885,66 @@ def _events_for_action(
     return discovered or OPCODE_PROFILE_EVENTS
 
 
-def _load_profile_data(path: Path) -> dict:
+def _load_profile_data(path: Path) -> dict[str, Any]:
     if path.exists():
+        # Validate every supported top-level section, including explicitly
+        # promoted origin companion families, before preserving the file.
+        load_opcode_profile(path)
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeError) as exc:
             raise ProfileError(f"Could not parse opcodes JSON {path}: {exc}") from exc
         if not isinstance(data, dict):
             raise ProfileError(f"Opcodes JSON {path} must be a top-level object")
     else:
         data = {}
 
-    specs = data.get("specs")
+    version = data.get("version")
+    if version is None:
+        version = 1
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ProfileError(f"version in {path} must be a positive integer")
+    active = data.get("profile_active", False)
+    if not isinstance(active, bool):
+        raise ProfileError(f"profile_active in {path} must be a boolean")
+    updated_at = data.get("updated_at")
+    if updated_at is not None and not isinstance(updated_at, str):
+        raise ProfileError(f"updated_at in {path} must be a string")
+    calibration_item_id = data.get("calibration_item_id")
+    if calibration_item_id is not None and (
+        isinstance(calibration_item_id, bool)
+        or not isinstance(calibration_item_id, int)
+        or not 1 <= calibration_item_id <= 0xFFFFFFFF
+    ):
+        raise ProfileError(
+            f"calibration_item_id in {path} must be a positive uint32"
+        )
+
+    specs = data.get("specs", {})
     if not isinstance(specs, dict):
-        specs = {}
+        raise ProfileError(f"specs in {path} must be an object")
+    for event, entries in specs.items():
+        if not isinstance(event, str):
+            raise ProfileError(f"spec event names in {path} must be strings")
+        if not isinstance(entries, list):
+            raise ProfileError(f"specs[{event!r}] in {path} must be a list")
+        if any(not isinstance(entry, dict) for entry in entries):
+            raise ProfileError(
+                f"every specs[{event!r}] entry in {path} must be an object"
+            )
+        for index, entry in enumerate(entries):
+            _validate_profile_entry(path, event, index, entry)
     for event in OPCODE_PROFILE_EVENTS:
         specs.setdefault(event, [])
 
-    data["version"] = int(data.get("version", 1))
-    data["profile_active"] = bool(data.get("profile_active", False))
+    data["version"] = version
+    data["profile_active"] = active
     data["specs"] = specs
-    data.setdefault("updated_at", dt.datetime.now().isoformat(timespec="seconds"))
+    data.setdefault("updated_at", _utc_now_text())
     return data
 
 
-def _profile_dedupe_keys(data: dict) -> set[tuple[object, ...]]:
+def _profile_dedupe_keys(data: dict[str, Any]) -> set[tuple[object, ...]]:
     specs = data.get("specs", {})
     if not isinstance(specs, dict):
         return set()
@@ -1404,12 +1956,7 @@ def _profile_dedupe_keys(data: dict) -> set[tuple[object, ...]]:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            opcode_value = entry.get("opcode")
-            opcode = (
-                int(opcode_value, 16)
-                if isinstance(opcode_value, str)
-                else opcode_value
-            )
+            opcode = _profile_opcode(entry.get("opcode"), event)
             keys.add(
                 (
                     event,
@@ -1418,6 +1965,8 @@ def _profile_dedupe_keys(data: dict) -> set[tuple[object, ...]]:
                     entry.get("item_id_offset"),
                     entry.get("quantity_offset"),
                     entry.get("item_instance_offset"),
+                    entry.get("context_offset"),
+                    entry.get("inventory_slot_offset"),
                     entry.get("source_instance_offset"),
                     entry.get("quantity_removed_offset"),
                     entry.get("quantity_added_offset"),
@@ -1431,4 +1980,51 @@ def _profile_dedupe_keys(data: dict) -> set[tuple[object, ...]]:
 def _backup_path(path: Path) -> Path:
     backup_dir = path.parent / "opcodes_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    return backup_dir / f"{path.name}.bak.{dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+    stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    candidate = backup_dir / f"{path.name}.bak.{stamp}"
+    suffix = 1
+    while candidate.exists():
+        candidate = backup_dir / f"{path.name}.bak.{stamp}.{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _profile_opcode(value: object, event: str) -> int:
+    if isinstance(value, bool):
+        raise ProfileError(f"invalid opcode for {event}: {value!r}")
+    if isinstance(value, int):
+        opcode = value
+    elif isinstance(value, str):
+        try:
+            opcode = int(value, 16 if value.lower().startswith("0x") else 10)
+        except ValueError as exc:
+            raise ProfileError(f"invalid opcode for {event}: {value!r}") from exc
+    else:
+        raise ProfileError(f"invalid opcode for {event}: {value!r}")
+    if not 0 <= opcode <= 0xFFFF:
+        raise ProfileError(f"opcode for {event} must be a uint16")
+    return opcode
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Atomically replace a UTF-8 text file in its destination directory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()

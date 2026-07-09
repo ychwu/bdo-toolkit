@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import hashlib
 from typing import Callable, Iterable, Optional
 
 from ._framing import FrameCollectorScanner, TargetMessageScanner
@@ -45,11 +46,12 @@ class _TeeScanner:
 
 def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
     """Normalize a decoded protocol record into the stable app-facing event."""
-    base_item_id, enhancement_level, enhancement = split_item_id_enhancement(
+    decoded_base_item_id, enhancement_level, enhancement = split_item_id_enhancement(
         event.item_id
     )
-    if enhancement_level is None:
-        base_item_id = None
+    base_item_id: Optional[int] = (
+        decoded_base_item_id if enhancement_level is not None else None
+    )
 
     extra = {}
     if event.stream_sequence is not None:
@@ -183,7 +185,7 @@ class PacketEngine:
             event.stream_sequence,
             event.opcode,
             event.record_offset,
-            raw_message,
+            hashlib.blake2b(raw_message, digest_size=16).digest(),
         )
         if key in self._seen_event_keys:
             return True

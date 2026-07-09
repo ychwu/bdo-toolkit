@@ -1,25 +1,22 @@
 """Print every decoded event from a pcap as a human-readable log.
 
-Usage: python examples/simple_log.py [path/to/session.pcapng]
+Usage: python examples/simple_log.py path/to/session.pcapng
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 from pathlib import Path
 
 from bdo_toolkit import ConsoleEventWriter, replay_pcap
 
 
-DEFAULT_PCAP = (
-    Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "new_potato.pcapng"
-)
-
-
 def main() -> None:
-    pcap = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PCAP
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("pcap", type=Path, help="capture file to decode")
+    args = parser.parse_args()
     writer = ConsoleEventWriter()
-    for event in replay_pcap(pcap):
+    for event in replay_pcap(args.pcap):
         writer.write(event)
 
 

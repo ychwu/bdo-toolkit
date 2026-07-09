@@ -17,21 +17,20 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 DEFAULT_SERVER_PORTS = (8884, 8885, 8889)
-MAX_TARGET_MESSAGE_LENGTH = 4096
+# The frame header carries a uint16 length.  The older 4096-byte ceiling
+# silently rejected otherwise-valid storage batches at 18 records
+# (35 + 18 * 226 = 4103 bytes), so accept the full wire range and rely on the
+# structural guards in the scanners to reject false candidates.
+MAX_TARGET_MESSAGE_LENGTH = 0xFFFF
 BASE_ITEM_ID_MASK = 0x00FFFFFF
 MAX_ENHANCEMENT_LEVEL = 20
 MAX_PLAUSIBLE_ITEM_ID = (MAX_ENHANCEMENT_LEVEL << 24) | BASE_ITEM_ID_MASK
 MAX_PENDING_SEGMENTS = 128
 GAP_RESET_SECONDS = 1.5
 DEDUP_HISTORY_LIMIT = 4096
+TCP_SEQUENCE_MODULUS = 1 << 32
+TCP_SEQUENCE_HALF_RANGE = TCP_SEQUENCE_MODULUS >> 1
 LOOT_PREVIEW_SENTINEL_INSTANCE = b"\xff" * 8
-
-# Companion frames observed immediately after every known worker storage
-# deposit (n=4 captures, BOTH storage-delta context modes 05/20, qty 1..25,
-# single and multi record) and near zero manual deposits. Raw current-gen
-# opcodes with unknown semantics: provisional and patch-fragile — used only
-# as one of two corroborating deposit-origin signals, never alone as fact.
-WORKER_DEPOSIT_COMPANION_OPCODES = (0x1558, 0x1168)
 
 # Source-stack-decrement family fallbacks when the active profile carries no
 # calibrated SOURCE_STACK_DECREMENT entries (current-gen, legacy).
@@ -106,6 +105,7 @@ class EventSpec:
     item_instance_offset: Optional[int] = None
     storage_instance_offset: Optional[int] = None
     repeat_stride: Optional[int] = None
+    single_record_message_length: Optional[int] = None
     default_context: Optional[str] = None
 
     @property
@@ -114,6 +114,23 @@ class EventSpec:
         return b"\x00" + self.opcode.to_bytes(2, "little")
 
     def __post_init__(self) -> None:
+        if not self.label:
+            raise ValueError("event spec label must not be empty")
+        if (
+            isinstance(self.opcode, bool)
+            or not isinstance(self.opcode, int)
+            or not 0 <= self.opcode <= 0xFFFF
+        ):
+            raise ValueError(f"{self.label} opcode must be a uint16")
+        if self.item_offset < 0:
+            raise ValueError(f"{self.label} item_offset must be >= 0")
+        if self.quantity_offset < 0:
+            raise ValueError(f"{self.label} quantity_offset must be >= 0")
+        if not 5 <= self.min_message_length <= MAX_TARGET_MESSAGE_LENGTH:
+            raise ValueError(
+                f"{self.label} min_message_length must be between 5 and "
+                f"{MAX_TARGET_MESSAGE_LENGTH}"
+            )
         if self.inventory_slot_offset is not None and self.inventory_slot_offset < 0:
             raise ValueError(f"{self.label} inventory_slot_offset must be >= 0")
         if self.source_context_offset is not None:
@@ -127,6 +144,27 @@ class EventSpec:
             raise ValueError(f"{self.label} item_instance_offset must be >= 0")
         if self.repeat_stride is not None and self.repeat_stride <= 0:
             raise ValueError(f"{self.label} repeat_stride must be > 0")
+        if self.single_record_message_length is not None:
+            if (
+                isinstance(self.single_record_message_length, bool)
+                or not isinstance(self.single_record_message_length, int)
+            ):
+                raise ValueError(
+                    f"{self.label} single_record_message_length must be an integer"
+                )
+            if self.repeat_stride is None:
+                raise ValueError(
+                    f"{self.label} single_record_message_length requires repeat_stride"
+                )
+            if not (
+                self.min_message_length
+                <= self.single_record_message_length
+                <= MAX_TARGET_MESSAGE_LENGTH
+            ):
+                raise ValueError(
+                    f"{self.label} single_record_message_length must be between "
+                    "min_message_length and 65535"
+                )
 
 
 CURRENT_EVENT_SPECS: tuple[EventSpec, ...] = (
@@ -147,6 +185,9 @@ CURRENT_EVENT_SPECS: tuple[EventSpec, ...] = (
         source_context_offset=23,
         item_instance_offset=68,
         repeat_stride=228,
+        single_record_message_length=(
+            CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH + 228
+        ),
     ),
     EventSpec(
         label="INVENTORY_TO_STORAGE",
@@ -157,6 +198,10 @@ CURRENT_EVENT_SPECS: tuple[EventSpec, ...] = (
         source_context_offset=CURRENT_STORAGE_DELTA_CONTEXT_OFFSET,
         storage_instance_offset=72,
         repeat_stride=CURRENT_STORAGE_DELTA_RECORD_STRIDE,
+        single_record_message_length=(
+            CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH
+            + CURRENT_STORAGE_DELTA_RECORD_STRIDE
+        ),
         default_context="Storage",
     ),
 )

@@ -1,0 +1,196 @@
+"""Convenience accessors on calibration result types, and the one-call facade.
+
+Everything here is synthetic — no private captures required.
+"""
+
+import json
+
+import pytest
+
+from bdo_toolkit import calibration
+from bdo_toolkit.calibration import (
+    CalibrationResult,
+    DirectionEvidence,
+    MessageSpec,
+    calibrate_and_update,
+    update_profile,
+)
+
+
+def _spec(event: str, opcode: int, **kwargs) -> MessageSpec:
+    return MessageSpec(event=event, opcode=opcode, length=226, **kwargs)
+
+
+def _result(*specs: MessageSpec, **kwargs) -> CalibrationResult:
+    return CalibrationResult(
+        specs=specs,
+        ignored=kwargs.get("ignored", ()),
+        frames_scanned=kwargs.get("frames_scanned", 42),
+        evidence=kwargs.get("evidence", ()),
+    )
+
+
+class TestCalibrationResultAccessors:
+    def test_events_found_supports_completeness_checks(self):
+        result = _result(
+            _spec("STORAGE_ITEM_DELTA", 0x0E6A),
+            _spec("SOURCE_STACK_DECREMENT", 0x1A32),
+        )
+
+        assert result.events_found == {
+            "STORAGE_ITEM_DELTA",
+            "SOURCE_STACK_DECREMENT",
+        }
+        assert {"STORAGE_ITEM_DELTA"} <= result.events_found
+        assert not {"INVENTORY_TRANSFER"} <= result.events_found
+
+    def test_events_found_is_empty_frozenset_when_nothing_promoted(self):
+        assert _result().events_found == frozenset()
+
+    def test_specs_by_event_groups_and_keeps_multiple_candidates(self):
+        first = _spec("STORAGE_ITEM_DELTA", 0x0E6A)
+        second = _spec("STORAGE_ITEM_DELTA", 0x0E6B)
+        other = _spec("SOURCE_ITEM_REFERENCE", 0x13A5)
+        result = _result(first, second, other)
+
+        grouped = result.specs_by_event()
+        assert grouped["STORAGE_ITEM_DELTA"] == (first, second)
+        assert grouped["SOURCE_ITEM_REFERENCE"] == (other,)
+
+    def test_summary_names_events_opcodes_and_diagnostics(self):
+        result = _result(
+            _spec("STORAGE_ITEM_DELTA", 0x0E6A),
+            ignored=("candidate at offset 12 failed quantity check",),
+            evidence=(
+                DirectionEvidence(
+                    action="auto",
+                    opcode=0x0E6A,
+                    detected_family="into_storage",
+                    reference_frame=True,
+                    context_label=False,
+                    storage_context=True,
+                ),
+            ),
+        )
+
+        text = result.summary()
+        assert "scanned 42 frames" in text
+        assert "STORAGE_ITEM_DELTA (0x0E6A)" in text
+        assert "inventory->storage" in text
+        assert "ignored 1 candidate(s)" in text
+
+    def test_summary_says_so_when_nothing_promoted(self):
+        assert "no message specs promoted" in _result().summary()
+
+    def test_to_json_dict_is_json_serializable_and_complete(self):
+        result = _result(
+            _spec("STORAGE_ITEM_DELTA", 0x0E6A),
+            ignored=("reason",),
+            evidence=(
+                DirectionEvidence(
+                    action="auto",
+                    opcode=0x0E6A,
+                    detected_family=None,
+                    reference_frame=False,
+                    context_label=False,
+                ),
+            ),
+        )
+
+        data = json.loads(json.dumps(result.to_json_dict()))
+        assert data["frames_scanned"] == 42
+        assert data["specs"][0]["event"] == "STORAGE_ITEM_DELTA"
+        assert data["specs"][0]["opcode"] == "0x0E6A"
+        assert data["ignored"] == ["reason"]
+        assert data["evidence"][0]["opcode"] == "0x0E6A"
+        assert data["evidence"][0]["detected_family"] is None
+
+
+class TestProfileUpdateSummary:
+    def test_summary_reports_path_backup_and_added_specs(self, tmp_path):
+        profile = tmp_path / "opcodes.json"
+        update_profile([_spec("STORAGE_ITEM_DELTA", 0x0E6A)], profile)
+
+        update = update_profile([_spec("INVENTORY_TRANSFER", 0x0F16)], profile)
+        text = update.summary()
+        assert str(profile) in text
+        assert "backup at" in text
+        assert "added INVENTORY_TRANSFER opcode=0x0F16" in text
+
+    def test_summary_says_so_when_everything_was_already_present(self, tmp_path):
+        profile = tmp_path / "opcodes.json"
+        spec = _spec("STORAGE_ITEM_DELTA", 0x0E6A)
+        update_profile([spec], profile)
+
+        update = update_profile([spec], profile)
+        assert "no new specs added" in update.summary()
+
+
+class TestCalibrateAndUpdate:
+    def test_pcap_path_calibrates_and_persists_in_one_call(
+        self, tmp_path, monkeypatch
+    ):
+        canned = _result(_spec("STORAGE_ITEM_DELTA", 0x0E6A))
+        monkeypatch.setattr(
+            calibration, "calibrate_pcap", lambda *args, **kwargs: canned
+        )
+        profile = tmp_path / "opcodes.json"
+
+        result, update = calibrate_and_update(
+            profile, item_id=7003, pcap="capture.pcapng"
+        )
+
+        assert result is canned
+        assert update is not None
+        assert [s.event for s in update.added] == ["STORAGE_ITEM_DELTA"]
+        written = json.loads(profile.read_text(encoding="utf-8"))
+        assert written["specs"]["STORAGE_ITEM_DELTA"][0]["opcode"] == "0x0E6A"
+
+    def test_empty_result_leaves_profile_untouched(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            calibration, "calibrate_pcap", lambda *args, **kwargs: _result()
+        )
+        profile = tmp_path / "opcodes.json"
+
+        result, update = calibrate_and_update(
+            profile, item_id=7003, pcap="capture.pcapng"
+        )
+
+        assert result.specs == ()
+        assert update is None
+        assert not profile.exists()
+
+    def test_replace_defaults_to_true_for_recalibration(
+        self, tmp_path, monkeypatch
+    ):
+        profile = tmp_path / "opcodes.json"
+        update_profile([_spec("STORAGE_ITEM_DELTA", 0x9999)], profile)
+
+        canned = _result(_spec("STORAGE_ITEM_DELTA", 0x0E6A))
+        monkeypatch.setattr(
+            calibration, "calibrate_pcap", lambda *args, **kwargs: canned
+        )
+        _, update = calibrate_and_update(
+            profile, item_id=7003, pcap="capture.pcapng"
+        )
+
+        assert update is not None
+        assert "STORAGE_ITEM_DELTA" in update.replaced_events
+        written = json.loads(profile.read_text(encoding="utf-8"))
+        opcodes = [s["opcode"] for s in written["specs"]["STORAGE_ITEM_DELTA"]]
+        assert opcodes == ["0x0E6A"]  # stale 0x9999 superseded, not merged
+
+    @pytest.mark.parametrize(
+        "live_only_kwarg",
+        [{"capture_seconds": 5.0}, {"interface": "eth0"}, {"local_ip": "10.0.0.5"}],
+    )
+    def test_live_only_arguments_are_rejected_with_pcap(
+        self, tmp_path, live_only_kwarg
+    ):
+        with pytest.raises(ValueError, match="live calibration only"):
+            calibrate_and_update(
+                tmp_path / "opcodes.json",
+                item_id=7003,
+                pcap="capture.pcapng",
+                **live_only_kwarg,
+            )

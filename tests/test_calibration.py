@@ -1,10 +1,10 @@
 """Calibration tests mirroring the legacy prototype's expected discoveries."""
 
 import json
-from pathlib import Path
 
 import pytest
 
+from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit.calibration import (
     calibrate_pcap,
     reset_profile,
@@ -12,10 +12,8 @@ from bdo_toolkit.calibration import (
 )
 from bdo_toolkit._specs import load_spec_profile
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURE_DIR.exists() or not any(FIXTURE_DIR.glob("*.pcapng")),
+    not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
 
@@ -30,7 +28,7 @@ def _specs_by_event(result):
 @requires_fixtures
 def test_calibration_discovers_current_patch_loot_preview():
     result = calibrate_pcap(
-        FIXTURE_DIR / "loot_window_potato_3_new.pcapng",
+        fixture_path("loot_window_potato_3_new.pcapng"),
         item_id=7003,
         quantity=3,
         action="loot-preview",
@@ -47,7 +45,7 @@ def test_calibration_discovers_current_patch_loot_preview():
 @requires_fixtures
 def test_calibration_discovers_current_storage_to_inventory():
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato.pcapng",
+        fixture_path("new_potato.pcapng"),
         item_id=7003,
         quantity=10,
         action="storage-to-inventory",
@@ -70,7 +68,7 @@ def test_calibration_discovers_current_storage_to_inventory():
 @requires_fixtures
 def test_calibration_storage_to_inventory_with_changed_source_instance():
     result = calibrate_pcap(
-        FIXTURE_DIR / "potato_qty6.pcapng",
+        fixture_path("potato_qty6.pcapng"),
         item_id=7003,
         quantity=6,
         action="storage-to-inventory",
@@ -86,7 +84,7 @@ def test_calibration_storage_to_inventory_with_changed_source_instance():
 @requires_fixtures
 def test_calibration_accepts_total_quantity_for_unstackable_multi_record_transfer():
     result = calibrate_pcap(
-        FIXTURE_DIR / "hit_1_5_unstackable.pcapng",
+        fixture_path("hit_1_5_unstackable.pcapng"),
         item_id=1000306,
         quantity=5,
         action="storage-to-inventory",
@@ -109,7 +107,7 @@ def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path)
     from bdo_toolkit import replay_pcap
 
     result = calibrate_pcap(
-        FIXTURE_DIR / "hit_1_5_unstackable.pcapng",
+        fixture_path("hit_1_5_unstackable.pcapng"),
         item_id=1000306,
         quantity=5,
         action="storage-to-inventory",
@@ -118,9 +116,9 @@ def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path)
     update_profile(result, profile_path, action="storage-to-inventory", backup=False)
 
     multi = list(
-        replay_pcap(FIXTURE_DIR / "hit_1_5_unstackable.pcapng", opcode_profile=profile_path)
+        replay_pcap(fixture_path("hit_1_5_unstackable.pcapng"), opcode_profile=profile_path)
     )
-    single = list(replay_pcap(FIXTURE_DIR / "new_potato.pcapng", opcode_profile=profile_path))
+    single = list(replay_pcap(fixture_path("new_potato.pcapng"), opcode_profile=profile_path))
     assert len(multi) == 5
     assert [(e.item_id, e.quantity) for e in single] == [(7003, 10)]
 
@@ -133,7 +131,7 @@ def test_storage_to_inventory_calibration_rejects_storage_delta_family():
 
     with pytest.raises(DirectionMismatchError, match="inventory-to-storage"):
         calibrate_pcap(
-            FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+            fixture_path("new_potato_3_tostorage.pcapng"),
             item_id=7003,
             quantity=3,
             action="storage-to-inventory",
@@ -143,7 +141,7 @@ def test_storage_to_inventory_calibration_rejects_storage_delta_family():
 @requires_fixtures
 def test_calibration_discovers_current_inventory_to_storage():
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+        fixture_path("new_potato_3_tostorage.pcapng"),
         item_id=7003,
         quantity=3,
         action="inventory-to-storage",
@@ -168,7 +166,7 @@ def test_calibration_discovers_current_inventory_to_storage():
 @requires_fixtures
 def test_calibration_still_discovers_old_inventory_to_storage():
     result = calibrate_pcap(
-        FIXTURE_DIR / "potato_leaving_inventory_qty20.pcapng",
+        fixture_path("potato_leaving_inventory_qty20.pcapng"),
         item_id=7003,
         quantity=20,
         action="inventory-to-storage",
@@ -206,7 +204,7 @@ def test_update_profile_merges_and_backs_up(tmp_path):
     )
 
     result = calibrate_pcap(
-        FIXTURE_DIR / "loot_window_potato_3_new.pcapng",
+        fixture_path("loot_window_potato_3_new.pcapng"),
         item_id=7003,
         quantity=3,
         action="loot-preview",
@@ -264,7 +262,7 @@ def test_update_profile_replace_clears_stale_action_specs(tmp_path):
     )
 
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato.pcapng",
+        fixture_path("new_potato.pcapng"),
         item_id=7003,
         quantity=10,
         action="storage-to-inventory",
@@ -295,7 +293,7 @@ def test_calibrated_profile_round_trips_into_decoder_specs(tmp_path):
 
     profile_path = tmp_path / "opcodes.json"
     result = calibrate_pcap(
-        FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+        fixture_path("new_potato_3_tostorage.pcapng"),
         item_id=7003,
         quantity=3,
         action="inventory-to-storage",
@@ -304,7 +302,7 @@ def test_calibrated_profile_round_trips_into_decoder_specs(tmp_path):
 
     events = list(
         replay_pcap(
-            FIXTURE_DIR / "new_potato_3_tostorage.pcapng",
+            fixture_path("new_potato_3_tostorage.pcapng"),
             opcode_profile=profile_path,
         )
     )

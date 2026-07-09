@@ -1,15 +1,12 @@
 ﻿"""Public API tests ported from the legacy repo's toolkit test suite."""
 
-from pathlib import Path
-
 import pytest
 
+from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit import load_opcode_profile, replay_pcap
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURE_DIR.exists() or not any(FIXTURE_DIR.glob("*.pcapng")),
+    not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
 
@@ -25,7 +22,7 @@ def test_default_profile_loads_from_package_data():
 @requires_fixtures
 def test_replay_batch_storage_deposit_as_structured_events():
     events = list(
-        replay_pcap(FIXTURE_DIR / "5960_qty1_and_4015_qty1_multi.pcapng")
+        replay_pcap(fixture_path("5960_qty1_and_4015_qty1_multi.pcapng"))
     )
 
     assert len(events) == 2
@@ -46,7 +43,7 @@ def test_replay_batch_storage_deposit_as_structured_events():
 
 @requires_fixtures
 def test_replay_filters_by_event_type_and_source():
-    fixture = FIXTURE_DIR / "5960_qty1_and_4015_qty1_multi.pcapng"
+    fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
 
     assert list(replay_pcap(fixture, event_types={"item_received"})) == []
     worker_events = list(replay_pcap(fixture, sources={"Batch Storage Deposit"}))
@@ -57,7 +54,7 @@ def test_replay_filters_by_event_type_and_source():
 @requires_fixtures
 def test_manual_bulk_deposit_uses_batch_storage_label_not_worker():
     events = list(
-        replay_pcap(FIXTURE_DIR / "1000306_qty5_unstackable_i2s.pcapng")
+        replay_pcap(fixture_path("1000306_qty5_unstackable_i2s.pcapng"))
     )
 
     assert len(events) == 5
@@ -67,7 +64,7 @@ def test_manual_bulk_deposit_uses_batch_storage_label_not_worker():
 
 @requires_fixtures
 def test_event_to_dict_round_trips_extra_fields():
-    fixture = FIXTURE_DIR / "5960_qty1_and_4015_qty1_multi.pcapng"
+    fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
     event = next(iter(replay_pcap(fixture)))
     data = event.to_dict()
 

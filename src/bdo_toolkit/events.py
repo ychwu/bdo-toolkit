@@ -10,7 +10,42 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Mapping, Optional
+
+
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_value(item) for item in value)
+    return value
+
+
+def _thaw_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_value(item) for item in value]
+    if isinstance(value, frozenset):
+        return [_thaw_value(item) for item in value]
+    return value
+
+
+def _hashable_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return frozenset(
+            (key, _hashable_value(item)) for key, item in value.items()
+        )
+    if isinstance(value, (tuple, list)):
+        return tuple(_hashable_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_hashable_value(item) for item in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -67,15 +102,27 @@ class BDOEvent:
     deposit_origin: Optional[str] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extra", _freeze_value(self.extra))
+
     @property
     def timestamp_text(self) -> str:
         return dt.datetime.fromtimestamp(self.timestamp).strftime("%H:%M:%S.%f")[:-3]
+
+    @property
+    def timestamp_iso(self) -> str:
+        """Deterministic UTC ISO-8601 timestamp for serialization."""
+        return (
+            dt.datetime.fromtimestamp(self.timestamp, tz=dt.timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
 
     def to_dict(self) -> dict[str, Any]:
         output: dict[str, Any] = {
             "event_type": self.event_type,
             "timestamp": self.timestamp,
-            "timestamp_text": self.timestamp_text,
+            "timestamp_iso": self.timestamp_iso,
             "flow": self.flow.to_dict(),
             "item_id": self.item_id,
             "quantity": self.quantity,
@@ -106,8 +153,16 @@ class BDOEvent:
             if value is not None:
                 output[key] = value
         if self.extra:
-            output["extra"] = dict(self.extra)
+            output["extra"] = _thaw_value(self.extra)
         return output
+
+    def __hash__(self) -> int:
+        values = tuple(
+            getattr(self, field_info.name)
+            for field_info in dataclasses.fields(self)
+            if field_info.name != "extra"
+        )
+        return hash((values, _hashable_value(self.extra)))
 
     def format_human(self) -> str:
         parts = [

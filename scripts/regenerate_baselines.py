@@ -26,15 +26,17 @@ BASELINE_DIR = REPO_ROOT / "tests" / "baselines"
 def main() -> int:
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     total = 0
-    for pcap in sorted(FIXTURE_DIR.glob("*.pcapng")):
+    fixtures = sorted(FIXTURE_DIR.rglob("*.pcapng"))
+    for pcap in fixtures:
         events = list(replay_pcap(pcap))
-        out = BASELINE_DIR / (pcap.stem + ".jsonl")
+        out = (BASELINE_DIR / pcap.relative_to(FIXTURE_DIR)).with_suffix(".jsonl")
+        out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", encoding="utf-8", newline="\n") as fh:
             for event in events:
                 fh.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
         total += len(events)
-        print(f"{pcap.name}: {len(events)} events")
-    print(f"regenerated {total} events across {len(list(FIXTURE_DIR.glob('*.pcapng')))} fixtures")
+        print(f"{pcap.relative_to(FIXTURE_DIR)}: {len(events)} events")
+    print(f"regenerated {total} events across {len(fixtures)} fixtures")
     return 0
 
 

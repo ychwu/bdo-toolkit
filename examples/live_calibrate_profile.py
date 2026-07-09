@@ -32,30 +32,12 @@ def main() -> None:
         print(f"collected {session.frames_collected} frames")
         result = session.stop()
 
-    print(f"scanned {result.frames_scanned} frames")
-
-    detected = sorted(
-        {
-            "storage->inventory" if e.detected_family == "into_inventory"
-            else "inventory->storage"
-            for e in result.evidence
-            if e.detected_family is not None
-        }
-    )
-    if detected:
-        print("detected direction(s):", ", ".join(detected))
-
+    print(result.summary())
     if not result.specs:
-        raise SystemExit("no opcode specs discovered")
-
-    for spec in result.specs:
-        fields = spec.to_json_dict()
-        print(f"{fields['event']} opcode={fields['opcode']} length={fields['length']}")
+        raise SystemExit(1)
 
     update = update_profile(result, PROFILE, replace=True)
-    print(f"wrote {update.path}")
-    if update.backup_path is not None:
-        print(f"backup at {update.backup_path}")
+    print(update.summary())
 
 
 if __name__ == "__main__":

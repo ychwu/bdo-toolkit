@@ -14,12 +14,16 @@ from pathlib import Path
 
 import pytest
 
+from fixture_paths import (
+    BASELINE_DIR,
+    FIXTURE_DIR,
+    all_baseline_jsonl,
+    all_fixture_pcaps,
+    baseline_path_for_fixture,
+)
 from bdo_toolkit import replay_pcap
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
-BASELINE_DIR = Path(__file__).resolve().parent / "baselines"
-
-FIXTURES = sorted(FIXTURE_DIR.glob("*.pcapng"))
+FIXTURES = all_fixture_pcaps()
 
 pytestmark = pytest.mark.skipif(
     not FIXTURES,
@@ -29,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.parametrize("pcap", FIXTURES, ids=lambda path: path.stem)
 def test_fixture_matches_baseline(pcap: Path):
-    baseline_path = BASELINE_DIR / (pcap.stem + ".jsonl")
+    baseline_path = baseline_path_for_fixture(pcap)
     assert baseline_path.exists(), f"missing baseline for {pcap.name}"
 
     expected = [
@@ -43,6 +47,10 @@ def test_fixture_matches_baseline(pcap: Path):
 
 
 def test_all_baselines_have_fixtures():
-    fixture_stems = {path.stem for path in FIXTURES}
-    baseline_stems = {path.stem for path in BASELINE_DIR.glob("*.jsonl")}
-    assert baseline_stems <= fixture_stems
+    fixture_paths = {
+        path.relative_to(FIXTURE_DIR).with_suffix(".jsonl") for path in FIXTURES
+    }
+    baseline_paths = {
+        path.relative_to(BASELINE_DIR) for path in all_baseline_jsonl()
+    }
+    assert baseline_paths <= fixture_paths

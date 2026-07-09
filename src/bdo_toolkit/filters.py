@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Iterable, Optional, TypeVar
 
 from .events import BDOEvent
 
 
-def _freeze(values: Optional[Iterable[object]]) -> Optional[frozenset[object]]:
+T = TypeVar("T")
+
+
+def _freeze(values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
     if values is None:
         return None
+    if isinstance(values, (str, bytes)):
+        raise TypeError("filter values must be an iterable of values, not a string")
     return frozenset(values)
 
 
