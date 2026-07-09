@@ -17,9 +17,10 @@ from bdo_toolkit import replay_pcap, capture_live
 for event in replay_pcap("session.pcapng", sources={"Mob Drop"}):
     print(event.item_id, event.quantity)
 
-for event in capture_live(event_types={"storage_delta"}):
-    if event.extra.get("deposit_origin") == "worker":   # worker vs manual vs unknown,
-        print(event.to_dict())                          # classified from packet structure
+# a worker-production tracker in one filter — deposit_origin is classified
+# from packet structure as "worker" / "manual" / "unknown"
+for event in capture_live(event_types={"storage_delta"}, deposit_origins={"worker"}):
+    print(event.item_id, event.quantity, event.timestamp)
 ```
 
 `"Batch Storage Deposit"` is not worker-only. It is a batch-style storage delta

@@ -7,58 +7,58 @@
 <meta name="description" content="API reference for bdo-toolkit: passive, read-only BDO packet telemetry for Python. Pcap replay, live capture, structured item events, opcode profile calibration.">
 <style>
 :root {
-  --ground: #f4f6f5;
+  --ground: #f5f6f8;
   --panel: #ffffff;
-  --panel-2: #eef1f0;
-  --ink: #1b2423;
-  --dim: #5c6d68;
-  --line: #dbe2df;
-  --accent: #0e7c6b;
-  --accent-ink: #0a5f52;
-  --accent-wash: #e2efec;
+  --panel-2: #eef0f4;
+  --ink: #1d2330;
+  --dim: #5f6980;
+  --line: #dde1e8;
+  --accent: #4a5ac2;
+  --accent-ink: #3543a8;
+  --accent-wash: #e9ebf9;
   --warn-wash: #f7efdd;
   --warn-edge: #b7852c;
   --warn-ink: #7a5a1d;
-  --code-ground: #16201e;
-  --code-ink: #d7e4e0;
-  --code-dim: #7c948d;
-  --code-str: #a3d9b1;
-  --code-kw: #8ecbbf;
+  --code-ground: #161a24;
+  --code-ink: #d7dde8;
+  --code-dim: #8a93a8;
+  --code-str: #8fc7e8;
+  --code-kw: #96a3ec;
   --code-fn: #e8d59a;
   --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   --sans: "Segoe UI Variable Text", "Segoe UI", "Avenir Next", Seravek, system-ui, -apple-system, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: #0e1413;
-    --panel: #131b1a;
-    --panel-2: #1a2422;
-    --ink: #dde7e3;
-    --dim: #8da39c;
-    --line: #253230;
-    --accent: #3ecfae;
-    --accent-ink: #5eddc0;
-    --accent-wash: #14261f;
+    --ground: #0f1218;
+    --panel: #141824;
+    --panel-2: #1a1f2c;
+    --ink: #dde2ec;
+    --dim: #8b94a8;
+    --line: #262c3a;
+    --accent: #8b98f2;
+    --accent-ink: #aab4ff;
+    --accent-wash: #191e33;
     --warn-wash: #241d10;
     --warn-edge: #b7852c;
     --warn-ink: #d9b36a;
-    --code-ground: #0a100f;
-    --code-ink: #cfdeda;
+    --code-ground: #0d1017;
+    --code-ink: #d0d6e2;
   }
 }
 :root[data-theme="light"] {
-  --ground: #f4f6f5; --panel: #ffffff; --panel-2: #eef1f0;
-  --ink: #1b2423; --dim: #5c6d68; --line: #dbe2df;
-  --accent: #0e7c6b; --accent-ink: #0a5f52; --accent-wash: #e2efec;
+  --ground: #f5f6f8; --panel: #ffffff; --panel-2: #eef0f4;
+  --ink: #1d2330; --dim: #5f6980; --line: #dde1e8;
+  --accent: #4a5ac2; --accent-ink: #3543a8; --accent-wash: #e9ebf9;
   --warn-wash: #f7efdd; --warn-edge: #b7852c; --warn-ink: #7a5a1d;
-  --code-ground: #16201e; --code-ink: #d7e4e0;
+  --code-ground: #161a24; --code-ink: #d7dde8;
 }
 :root[data-theme="dark"] {
-  --ground: #0e1413; --panel: #131b1a; --panel-2: #1a2422;
-  --ink: #dde7e3; --dim: #8da39c; --line: #253230;
-  --accent: #3ecfae; --accent-ink: #5eddc0; --accent-wash: #14261f;
+  --ground: #0f1218; --panel: #141824; --panel-2: #1a1f2c;
+  --ink: #dde2ec; --dim: #8b94a8; --line: #262c3a;
+  --accent: #8b98f2; --accent-ink: #aab4ff; --accent-wash: #191e33;
   --warn-wash: #241d10; --warn-edge: #b7852c; --warn-ink: #d9b36a;
-  --code-ground: #0a100f; --code-ink: #cfdeda;
+  --code-ground: #0d1017; --code-ink: #d0d6e2;
 }
 
 * { box-sizing: border-box; }
@@ -230,7 +230,7 @@ footer {
 
 <aside class="side">
   <a class="brand" href="#top">bdo-<span class="tk">toolkit</span></a>
-  <div class="ver">v0.1.0 Â· MIT Â· Python â‰¥3.10</div>
+  <div class="ver">v0.1.0 · MIT · Python ≥3.10</div>
   <button class="themebtn" id="themeToggle" type="button">theme: auto</button>
   <nav aria-label="Reference navigation">
     <div class="navgroup">
@@ -283,12 +283,12 @@ footer {
 
   <div class="pipeline" role="img" aria-label="Pipeline: packet capture or pcap replay, into TCP reassembly and frame decoding, out as structured BDOEvent objects">
     <span class="node">live capture / .pcapng</span>
-    <span class="arrow">â”€â”€â–¶</span>
-    <span class="node">reassemble Â· decode</span>
-    <span class="arrow">â”€â”€â–¶</span>
+    <span class="arrow">──▶</span>
+    <span class="node">reassemble · decode</span>
+    <span class="arrow">──▶</span>
     <span class="node hot">BDOEvent stream</span>
   </div>
-  <span class="guarantee">passive Â· read-only Â· never sends or modifies traffic</span>
+  <span class="guarantee">passive · read-only · never sends or modifies traffic</span>
 
   <p style="margin-top:20px">The toolkit observes server-to-client traffic only. It contains no code
   path that injects, modifies, delays, or replays packets to game servers, and no gameplay
@@ -359,6 +359,12 @@ footer {
             quiet=<span class="k">True</span>) → Iterator[BDOEvent]</div>
   <p>Replay a <code>.pcap</code>/<code>.pcapng</code> file and yield structured events in
   capture order. Works fully offline; no capture driver needed.</p>
+  <div class="note"><span class="tag">Yields</span>
+  <a href="#bdoevent"><code>BDOEvent</code></a> objects. Every field is a plain attribute —
+  most used: <code>event.item_id</code> · <code>event.quantity</code> ·
+  <code>event.source</code> · <code>event.event_type</code> · <code>event.timestamp</code> ·
+  <code>event.deposit_origin</code> (storage deltas). Full field table under
+  <a href="#bdoevent"><code>BDOEvent</code></a>.</div>
   <div class="params">
     <div class="prow"><div class="pname">path<span class="ptype">str | Path</span></div>
       <div class="pdesc">Capture file to decode.</div></div>
@@ -370,8 +376,8 @@ footer {
       <div class="pdesc">Also decode legacy opcodes observed in older captures — useful when replaying old recordings.</div></div>
     <div class="prow"><div class="pname">ignore_opcode_profile<span class="ptype">bool</span></div>
       <div class="pdesc">Skip the profile entirely and use the built-in current spec table.</div></div>
-    <div class="prow"><div class="pname">event_types / sources / item_ids<span class="ptype">Iterable | None</span></div>
-      <div class="pdesc">Yield only matching events. See <a href="#event-types">event types &amp; sources</a>.</div></div>
+    <div class="prow"><div class="pname">event_types / sources / item_ids / deposit_origins<span class="ptype">Iterable | None</span></div>
+      <div class="pdesc">Yield only matching events. <code>deposit_origins</code> filters storage deltas by classified origin (<span class="mono">{"worker"}</span>, …). See <a href="#event-types">event types &amp; sources</a>.</div></div>
     <div class="prow"><div class="pname">quiet<span class="ptype">bool</span></div>
       <div class="pdesc">Retained for backwards compatibility; the engine produces no console output either way.</div></div>
   </div>
@@ -390,6 +396,13 @@ footer {
   <p>Start passive live capture and yield events as they are decoded. The iterator blocks
   between events; it ends when <code>capture_seconds</code> elapses or the capture stops.
   Stranded TCP segments are drained on shutdown so end-of-session events are not lost.</p>
+<pre><code><span class="c"># a worker-production tracker is a one-liner filter:</span>
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"storage_delta"</span>}, deposit_origins={<span class="s">"worker"</span>}):
+    <span class="c"># every BDOEvent field is a plain attribute:</span>
+    track_worker_yield(event.item_id, event.quantity, event.timestamp)</code></pre>
+  <div class="note"><span class="tag">Yields</span>
+  <a href="#bdoevent"><code>BDOEvent</code></a> objects — the identical shape
+  <code>replay_pcap()</code> yields, so app code is capture-source agnostic.</div>
   <div class="params">
     <div class="prow"><div class="pname">interface<span class="ptype">str | None</span></div>
       <div class="pdesc">Capture interface name. <span class="pdefault">Default: auto-detected from the default route.</span></div></div>
@@ -401,7 +414,7 @@ footer {
       <div class="pdesc">Disable the kernel capture filter and filter in Python instead — a fallback for adapters with broken BPF support.</div></div>
     <div class="prow"><div class="pname">(shared)<span class="ptype">&nbsp;</span></div>
       <div class="pdesc"><code>opcode_profile</code>, <code>ports</code>, <code>include_legacy_opcodes</code>,
-      <code>ignore_opcode_profile</code>, and the three filters behave exactly as in
+      <code>ignore_opcode_profile</code>, and the four filters behave exactly as in
       <a href="#replay-pcap"><code>replay_pcap()</code></a>.</div></div>
   </div>
   <div class="warn"><span class="tag">Windows</span>
@@ -412,12 +425,14 @@ footer {
 <section class="section" id="bdoevent">
   <h2 class="api">bdo_toolkit.BDOEvent</h2>
   <p>One decoded gameplay item event. Frozen dataclass — safe to store, hash by identity,
-  and pass between threads.</p>
+  and pass between threads. Every field below is a plain attribute
+  (<code>event.item_id</code>, <code>event.quantity</code>, …); optional fields are
+  <code>None</code> when the packet did not carry them.</p>
   <div class="tablewrap"><table>
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
     <tr><td class="mono">event_type</td><td class="mono">str</td><td>Stable category — see <a href="#event-types">event types</a>.</td></tr>
     <tr><td class="mono">timestamp</td><td class="mono">float</td><td>Packet epoch time. <span class="mono">timestamp_text</span> property renders <span class="mono">HH:MM:SS.mmm</span>.</td></tr>
-    <tr><td class="mono">flow</td><td class="mono">Flow</td><td>Server→client network flow: <span class="mono">source_ip/port</span>, <span class="mono">destination_ip/port</span>.</td></tr>
+    <tr><td class="mono">flow</td><td class="mono">Flow</td><td>Server→client network flow. Attributes: <span class="mono">flow.source_ip</span>, <span class="mono">flow.source_port</span>, <span class="mono">flow.destination_ip</span>, <span class="mono">flow.destination_port</span>; <span class="mono">str(flow)</span> renders <span class="mono">"ip:port -&gt; ip:port"</span>, <span class="mono">flow.to_dict()</span> a JSON-safe dict.</td></tr>
     <tr><td class="mono">item_id</td><td class="mono">int</td><td>Raw item id as seen on the wire (may encode enhancement — see below).</td></tr>
     <tr><td class="mono">quantity</td><td class="mono">int</td><td>Item count for this record.</td></tr>
     <tr><td class="mono">source</td><td class="mono">str | None</td><td>Human label for where the item came from (<span class="mono">"Mob Drop"</span>, <span class="mono">"Batch Storage Deposit"</span>, …). Unrecognized contexts surface as <span class="mono">UNKNOWN(0x…)</span> rather than silently matching a known source.</td></tr>
@@ -434,14 +449,26 @@ footer {
     <tr><td class="mono">record_index / record_count</td><td class="mono">int | None</td><td>Set only on multi-record messages: this is record <em>i</em> of <em>n</em> (1-based).</td></tr>
     <tr><td class="mono">record_offset</td><td class="mono">int | None</td><td>Byte offset of the record inside its message.</td></tr>
     <tr><td class="mono">confidence</td><td class="mono">str | None</td><td>Currently always <span class="mono">"observed"</span> — packet knowledge is provisional by design.</td></tr>
-    <tr><td class="mono">extra</td><td class="mono">Mapping</td><td>Provisional fields that may change: <span class="mono">stream_sequence</span> (TCP position), <span class="mono">storage_delta</span> (signed storage change); on storage_delta events also <span class="mono">deposit_origin</span> (<span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>, classified from packet structure — a manual deposit is preceded by a matching inventory stack decrement, a worker deposit by its companion frames; contradictory or missing evidence yields <span class="mono">"unknown"</span> rather than a guess) and <span class="mono">deposit_origin_evidence</span> (the two signals, for auditability).</td></tr>
+    <tr><td class="mono">deposit_origin</td><td class="mono">str | None</td><td>On <span class="mono">storage_delta</span> events: <span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>, classified from packet structure (a worker deposit is followed by its companion frames; a manual deposit is preceded by a matching inventory stack decrement; missing or ambiguous evidence yields <span class="mono">"unknown"</span>, never a guess). <span class="mono">None</span> on other event types.</td></tr>
+    <tr><td class="mono">extra</td><td class="mono">Mapping</td><td>Provisional fields — access with <span class="mono">event.extra.get(key)</span>. Keys below.</td></tr>
   </table></div>
-  <h3>Methods</h3>
+  <h3>extra keys</h3>
+  <p>Provisional fields live here first (the additive-schema rule) — read them with
+  <code>event.extra.get(...)</code> since not every event carries every key:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Key</th><th>On</th><th>Meaning</th></tr>
+    <tr><td class="mono">stream_sequence</td><td>all</td><td>TCP stream position of the message — stable dedup/anchor key within a flow.</td></tr>
+    <tr><td class="mono">storage_delta</td><td class="mono">storage_delta</td><td>Signed storage quantity change for this record.</td></tr>
+    <tr><td class="mono">deposit_origin_evidence</td><td class="mono">storage_delta</td><td>Audit trail for <span class="mono">event.deposit_origin</span>: <span class="mono">{"worker_companions": bool, "matching_decrement": bool}</span>.</td></tr>
+  </table></div>
+  <h3>Methods &amp; properties</h3>
   <div class="params">
     <div class="prow"><div class="pname">to_dict()<span class="ptype">→ dict</span></div>
       <div class="pdesc">JSON-safe dict. Optional fields are <em>omitted</em> when <code>None</code>; <code>opcode</code> and <code>inventory_slot</code> become hex strings; <code>timestamp_text</code> is included. One event per <code>json.dumps</code> line makes valid JSONL.</div></div>
     <div class="prow"><div class="pname">format_human()<span class="ptype">→ str</span></div>
       <div class="pdesc">One-line log rendering: <span class="mono">[23:06:01.086] STORAGE_DELTA source='Batch Storage Deposit' item_id=5960 quantity=1 … deposit_origin=worker</span></div></div>
+    <div class="prow"><div class="pname">timestamp_text<span class="ptype">str (property)</span></div>
+      <div class="pdesc">The timestamp rendered as <span class="mono">HH:MM:SS.mmm</span> local time.</div></div>
   </div>
 </section>
 
@@ -451,7 +478,7 @@ footer {
     <tr><th>event_type</th><th>Meaning</th></tr>
     <tr><td class="mono">loot_preview</td><td>A previewed/offered item record — currently gathering-focused.</td></tr>
     <tr><td class="mono">item_received</td><td>Inventory receipt or update: mob drops, gathering, storage pulls.</td></tr>
-    <tr><td class="mono">storage_delta</td><td>Item added to storage — manual deposits and worker deposits; <span class="mono">extra["deposit_origin"]</span> tells them apart (worker / manual / unknown).</td></tr>
+    <tr><td class="mono">storage_delta</td><td>Item added to storage — manual deposits and worker deposits; <span class="mono">event.deposit_origin</span> tells them apart (worker / manual / unknown).</td></tr>
   </table></div>
   <p>Known <code>source</code> labels, decoded from the message's context bytes:</p>
   <div class="tablewrap"><table>
@@ -472,12 +499,16 @@ footer {
 
 <section class="section" id="eventfilter">
   <h2 class="api">bdo_toolkit.EventFilter</h2>
-  <div class="sig"><span class="f">EventFilter.from_values</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>) → EventFilter
+  <div class="sig"><span class="f">EventFilter.from_values</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
+                        deposit_origins=<span class="k">None</span>) → EventFilter
 <span class="f">filter.allows</span>(event) → bool</div>
   <p>The same filtering used by the <code>event_types</code>/<code>sources</code>/<code>item_ids</code>
   arguments, as a standalone object — build one when your app filters events itself (for example,
   fan one decoded stream out to multiple consumers). A criterion left as <code>None</code>
   matches everything; set criteria must <em>all</em> match.</p>
+  <p>Attributes mirror the constructor: <code>filter.event_types</code>,
+  <code>filter.sources</code>, <code>filter.item_ids</code>, <code>filter.deposit_origins</code> —
+  each a <code>frozenset</code> or <code>None</code>.</p>
 </section>
 
 <section class="section" id="writers">
@@ -600,7 +631,9 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
                min_confidence=0.80) → CalibrationResult</div>
   <p>Calibrate offline from a pre-recorded capture of the known action. Same parameters as the
   session, plus the capture <code>path</code>. Fully deterministic — ideal for testing your
-  recalibration flow.</p>
+  recalibration flow. Returns a <a href="#calibration-types"><code>CalibrationResult</code></a>;
+  every attribute of it and of the specs it contains is documented under
+  <a href="#calibration-types">result types</a>.</p>
 </section>
 
 <section class="section" id="calibrate-live">
@@ -629,10 +662,20 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   <code>backup=False</code>.</p>
   <p><code>reset_profile</code> writes an empty active profile — a clean slate before a full
   recalibration.</p>
+  <p><code>update_profile</code> returns a
+  <a href="#calibration-types"><code>ProfileUpdate</code></a> describing exactly what the write
+  did — log it so recalibration is auditable.</p>
 </section>
 
 <section class="section" id="calibration-types">
   <h2>Result types</h2>
+  <p>Everything calibration returns is a frozen dataclass — fields are plain attributes:</p>
+<pre><code>result = <span class="f">calibrate_pcap</span>(<span class="s">"move_both_ways.pcapng"</span>, item_id=<span class="s">7003</span>, quantity=<span class="s">3</span>)
+<span class="f">print</span>(result.frames_scanned)
+<span class="k">for</span> spec <span class="k">in</span> result.specs:
+    <span class="f">print</span>(spec.event, <span class="f">hex</span>(spec.opcode), spec.length, spec.score)
+<span class="k">for</span> ev <span class="k">in</span> result.evidence:
+    <span class="f">print</span>(<span class="f">hex</span>(ev.opcode), ev.detected_family, ev.context_label, ev.storage_context)</code></pre>
   <h3 class="api">CalibrationResult</h3>
   <div class="tablewrap"><table>
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
@@ -642,22 +685,55 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
     <tr><td class="mono">evidence</td><td class="mono">tuple[DirectionEvidence, ...]</td><td>Per-candidate direction classification — which family each record was assigned and which structural features fired.</td></tr>
   </table></div>
   <h3 class="api">DirectionEvidence</h3>
-  <p>Why a candidate was placed in (or excluded from) a transfer family:
-  <code>action</code>, <code>opcode</code>, <code>detected_family</code>
-  (<span class="mono">"into_inventory"</span>, <span class="mono">"into_storage"</span>, or
-  <code>None</code> when neither feature fires), and the two feature booleans
-  <code>reference_frame</code>, <code>context_label</code>, and <code>storage_context</code>. Use it to audit or display why
-  auto calibration classified a capture the way it did.</p>
+  <p>Why a candidate was placed in (or excluded from) a transfer family — one per candidate
+  record, on <code>result.evidence</code>:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">action</td><td class="mono">str</td><td>Which calibration recipe evaluated this candidate.</td></tr>
+    <tr><td class="mono">opcode</td><td class="mono">int</td><td>The candidate frame's opcode.</td></tr>
+    <tr><td class="mono">detected_family</td><td class="mono">str | None</td><td><span class="mono">"into_inventory"</span>, <span class="mono">"into_storage"</span>, or <span class="mono">None</span> when no feature fires (or the intrinsic features contradict).</td></tr>
+    <tr><td class="mono">context_label</td><td class="mono">bool</td><td>Intrinsic receipt signal: a known source-context label sits before the record.</td></tr>
+    <tr><td class="mono">storage_context</td><td class="mono">bool</td><td>Intrinsic storage-delta signal: a storage reason code at the known context offset.</td></tr>
+    <tr><td class="mono">reference_frame</td><td class="mono">bool</td><td>Windowed fallback signal: a small nearby frame carries the raw item id.</td></tr>
+  </table></div>
   <h3 class="api">OpcodeSpec</h3>
-  <p>One discovered spec: <code>event</code>, <code>opcode</code>, <code>length</code>, the byte
-  offsets that were located (<code>item_id_offset</code>, <code>quantity_offset</code>,
-  <code>item_instance_offset</code>, <code>context_offset</code>, <code>repeat_stride</code>, …),
-  plus <code>confidence</code>, <code>score</code>, and <code>observed_at</code>.
-  <code>to_json_dict()</code> renders the profile-file form.</p>
+  <p>One discovered opcode spec — the unit that <code>update_profile()</code> writes into a
+  profile file. Offsets are byte positions inside the message; any offset the calibration could
+  not locate is <code>None</code>:</p>
+  <div class="tablewrap"><table>
+    <tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">event</td><td class="mono">str</td><td>Profile event category: <span class="mono">LOOT_PREVIEW</span>, <span class="mono">INVENTORY_TRANSFER</span>, <span class="mono">STORAGE_ITEM_DELTA</span>, <span class="mono">SOURCE_CONTAINER_DECREMENT</span>, <span class="mono">SOURCE_STACK_DECREMENT</span>, <span class="mono">SOURCE_ITEM_REFERENCE</span>.</td></tr>
+    <tr><td class="mono">opcode</td><td class="mono">int</td><td>Message opcode (render with <span class="mono">hex(spec.opcode)</span>; <span class="mono">to_json_dict()</span> writes the <span class="mono">"0x0E6A"</span> form).</td></tr>
+    <tr><td class="mono">length</td><td class="mono">int | None</td><td>Observed single-record message length — acts as a minimum at decode time. Multi-record calibrations are normalized to the single-record length automatically.</td></tr>
+    <tr><td class="mono">item_id_offset</td><td class="mono">int | None</td><td>Byte offset of the 4-byte little-endian item id.</td></tr>
+    <tr><td class="mono">quantity_offset</td><td class="mono">int | None</td><td>Offset of the quantity (receipts and previews).</td></tr>
+    <tr><td class="mono">quantity_added_offset</td><td class="mono">int | None</td><td>Offset of the added quantity (storage deltas).</td></tr>
+    <tr><td class="mono">quantity_removed_offset</td><td class="mono">int | None</td><td>Offset of the removed quantity (decrement frames).</td></tr>
+    <tr><td class="mono">item_instance_offset</td><td class="mono">int | None</td><td>Offset of the 8-byte per-item instance id.</td></tr>
+    <tr><td class="mono">source_instance_offset</td><td class="mono">int | None</td><td>Offset of the source container/stack instance (decrement frames).</td></tr>
+    <tr><td class="mono">destination_instance_offset</td><td class="mono">int | None</td><td>Offset of the destination storage instance (storage deltas).</td></tr>
+    <tr><td class="mono">context_offset</td><td class="mono">int | None</td><td>Offset of the 4-byte source-context / reason field.</td></tr>
+    <tr><td class="mono">inventory_slot_offset</td><td class="mono">int | None</td><td>Offset of the inventory slot byte, when the layout exposes one.</td></tr>
+    <tr><td class="mono">repeat_stride</td><td class="mono">int | None</td><td>Byte stride between records in multi-record messages (e.g. 228 for receipts, 226 for storage deltas).</td></tr>
+    <tr><td class="mono">confidence</td><td class="mono">str</td><td>Label such as <span class="mono">"calibrated-high"</span> / <span class="mono">"calibrated-medium"</span>.</td></tr>
+    <tr><td class="mono">score</td><td class="mono">float | None</td><td>Numeric calibration confidence, 0-1.</td></tr>
+    <tr><td class="mono">source</td><td class="mono">str</td><td>How the spec was produced, e.g. <span class="mono">"calibrate inventory-to-storage item_id=7003 qty=3"</span>.</td></tr>
+    <tr><td class="mono">observed_at</td><td class="mono">str | None</td><td>ISO timestamp of the frame the spec was calibrated from.</td></tr>
+  </table></div>
+  <div class="params">
+    <div class="prow"><div class="pname">to_json_dict()<span class="ptype">→ dict</span></div>
+      <div class="pdesc">The profile-file form of the spec — what <code>update_profile()</code> writes. <code>None</code> fields are omitted.</div></div>
+    <div class="prow"><div class="pname">dedupe_key()<span class="ptype">→ tuple</span></div>
+      <div class="pdesc">Structural identity used to skip duplicates when merging into a profile.</div></div>
+  </div>
   <h3 class="api">ProfileUpdate</h3>
-  <p>What a write actually did: <code>path</code>, <code>added</code> (specs newly merged),
-  <code>replaced_events</code> (categories cleared by <code>replace=True</code>), and
-  <code>backup_path</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td class="mono">path</td><td class="mono">Path</td><td>The profile file that was written.</td></tr>
+    <tr><td class="mono">added</td><td class="mono">tuple[OpcodeSpec, ...]</td><td>Specs newly merged in (empty = everything was already present).</td></tr>
+    <tr><td class="mono">replaced_events</td><td class="mono">tuple[str, ...]</td><td>Event categories cleared first by <span class="mono">replace=True</span>.</td></tr>
+    <tr><td class="mono">backup_path</td><td class="mono">Path | None</td><td>Where the previous file was backed up (<span class="mono">None</span> if there was nothing to back up or <span class="mono">backup=False</span>).</td></tr>
+  </table></div>
 </section>
 
 <p class="eyebrow">Command line</p>
@@ -711,14 +787,15 @@ bdo-toolkit reset-profile opcodes.json</code></pre>
     may change without notice.</li>
     <li><strong>Additive schema:</strong> new optional <code>BDOEvent</code> fields may appear in
     any release; existing fields keep their meaning. Provisional fields live in
-    <code>extra</code> first.</li>
+    <code>extra</code> first and graduate to first-class fields once proven —
+    <code>deposit_origin</code> is the first graduate.</li>
     <li><strong>Passive by construction:</strong> the toolkit opens capture handles read-only and
     contains no packet-sending code path. It never automates gameplay.</li>
     <li><strong>Provisional knowledge:</strong> all offsets and labels come from observed
     captures. Treat <code>confidence="observed"</code> as exactly that.</li>
   </ul>
   <footer>
-    bdo-toolkit v0.1.0 Â· MIT License Â· packet knowledge is observational and may lag game patches.<br>
+    bdo-toolkit v0.1.0 · MIT License · packet knowledge is observational and may lag game patches.<br>
     Regression-tested against recorded captures on every commit.
   </footer>
 </section>

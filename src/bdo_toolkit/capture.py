@@ -55,8 +55,8 @@ class _EventCollector:
     """Wire a PacketEngine to app-facing events with optional filtering.
 
     storage_delta events take a short detour through the deposit-origin
-    tracker (a few frames of lookahead) so each event carries
-    ``extra["deposit_origin"]``; all other events emit immediately, which can
+    tracker (a few frames of lookahead) so each event carries a classified
+    ``deposit_origin``; all other events emit immediately, which can
     place a deferred storage_delta slightly after later events of other
     types. Timestamps are unaffected.
     """
@@ -96,14 +96,16 @@ class _EventCollector:
 
     def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
         event = toolkit_event_from_record(record)
-        if self.event_filter is not None and not self.event_filter.allows(event):
-            return
         if event.event_type == "storage_delta":
+            # Filtering happens at delivery, AFTER classification, so filters
+            # on deposit_origin see the final field value.
             self._tracker.register(event)
         else:
             self._deliver(event)
 
     def _deliver(self, event: BDOEvent) -> None:
+        if self.event_filter is not None and not self.event_filter.allows(event):
+            return
         self.events.append(event)
         if self.on_event is not None:
             self.on_event(event)
@@ -120,13 +122,20 @@ def _event_filter(
     event_types: Optional[Iterable[str]] = None,
     sources: Optional[Iterable[str]] = None,
     item_ids: Optional[Iterable[int]] = None,
+    deposit_origins: Optional[Iterable[str]] = None,
 ) -> Optional[EventFilter]:
-    if event_types is None and sources is None and item_ids is None:
+    if (
+        event_types is None
+        and sources is None
+        and item_ids is None
+        and deposit_origins is None
+    ):
         return None
     return EventFilter.from_values(
         event_types=event_types,
         sources=sources,
         item_ids=item_ids,
+        deposit_origins=deposit_origins,
     )
 
 
@@ -140,6 +149,7 @@ def replay_pcap(
     event_types: Optional[Iterable[str]] = None,
     sources: Optional[Iterable[str]] = None,
     item_ids: Optional[Iterable[int]] = None,
+    deposit_origins: Optional[Iterable[str]] = None,
     quiet: bool = True,
 ) -> Iterator[BDOEvent]:
     """Replay a pcap/pcapng file and yield structured events.
@@ -154,6 +164,7 @@ def replay_pcap(
             event_types=event_types,
             sources=sources,
             item_ids=item_ids,
+            deposit_origins=deposit_origins,
         ),
         opcode_profile=opcode_profile,
         include_legacy_opcodes=include_legacy_opcodes,
@@ -175,6 +186,7 @@ def capture_live(
     event_types: Optional[Iterable[str]] = None,
     sources: Optional[Iterable[str]] = None,
     item_ids: Optional[Iterable[int]] = None,
+    deposit_origins: Optional[Iterable[str]] = None,
     capture_seconds: Optional[float] = None,
     no_bpf: bool = False,
     no_local_ip_filter: bool = False,
@@ -195,6 +207,7 @@ def capture_live(
             event_types=event_types,
             sources=sources,
             item_ids=item_ids,
+            deposit_origins=deposit_origins,
         ),
         on_event=queue.put,
         opcode_profile=opcode_profile,

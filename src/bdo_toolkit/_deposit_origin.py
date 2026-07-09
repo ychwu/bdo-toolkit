@@ -324,9 +324,11 @@ class DepositOriginTracker:
             origin = ORIGIN_UNKNOWN
         event = dataclasses.replace(
             pending.event,
+            deposit_origin=origin,
             extra={
                 **pending.event.extra,
-                "deposit_origin": origin,
+                # The verdict is a first-class field; the per-signal audit
+                # trail stays provisional in extra.
                 "deposit_origin_evidence": {
                     "worker_companions": companions,
                     "matching_decrement": pending.matching_decrement,

@@ -38,7 +38,7 @@ MANUAL_FIXTURES = [
 
 def _origins(fixture):
     return [
-        (event.extra.get("deposit_origin"), event.extra.get("deposit_origin_evidence"))
+        (event.deposit_origin, event.extra.get("deposit_origin_evidence"))
         for event in replay_pcap(FIXTURE_DIR / fixture)
         if event.event_type == "storage_delta"
     ]
@@ -115,7 +115,7 @@ def test_no_evidence_yields_unknown():
     tracker.observe_frame(_frame(0x0E6A, seq=1000))
     tracker.register(_storage_event(seq=1000))
     tracker.finalize_all()
-    assert emitted[0].extra["deposit_origin"] == "unknown"
+    assert emitted[0].deposit_origin == "unknown"
 
 
 def test_companions_outrank_a_spurious_decrement_match():
@@ -142,7 +142,7 @@ def test_companions_outrank_a_spurious_decrement_match():
     tracker.observe_frame(_frame(0x1558, seq=1100))
     tracker.observe_frame(_frame(0x1168, seq=1200))
     tracker.finalize_all()
-    assert emitted[0].extra["deposit_origin"] == "worker"
+    assert emitted[0].deposit_origin == "worker"
     assert emitted[0].extra["deposit_origin_evidence"] == {
         "worker_companions": True,
         "matching_decrement": True,
@@ -174,7 +174,7 @@ def test_multi_record_worker_batch_agrees_across_records():
     tracker.observe_frame(_frame(0x1558, seq=1100))
     tracker.observe_frame(_frame(0x1168, seq=1200))
     tracker.finalize_all()
-    origins = [e.extra["deposit_origin"] for e in emitted]
+    origins = [e.deposit_origin for e in emitted]
     assert origins == ["worker", "worker"]
 
 
@@ -187,7 +187,7 @@ def test_companions_already_in_segment_finalize_immediately():
     tracker.observe_frame(_frame(0x1558, seq=1100))
     tracker.observe_frame(_frame(0x1168, seq=1200))
     tracker.register(_storage_event(seq=1000))
-    assert emitted and emitted[0].extra["deposit_origin"] == "worker"
+    assert emitted and emitted[0].deposit_origin == "worker"
 
 
 def test_stale_pending_deposit_flushes_as_unknown():
@@ -197,7 +197,7 @@ def test_stale_pending_deposit_flushes_as_unknown():
     tracker.register(_storage_event(seq=1000, timestamp=1000.0))
     assert not emitted
     tracker.flush_stale(now=1005.0)
-    assert emitted[0].extra["deposit_origin"] == "unknown"
+    assert emitted[0].deposit_origin == "unknown"
 
 
 def test_lookahead_window_expires_after_unrelated_frames():
@@ -207,7 +207,7 @@ def test_lookahead_window_expires_after_unrelated_frames():
     tracker.register(_storage_event(seq=1000))
     for i in range(4):
         tracker.observe_frame(_frame(0x1CAE, seq=1100 + i))
-    assert emitted and emitted[0].extra["deposit_origin"] == "unknown"
+    assert emitted and emitted[0].deposit_origin == "unknown"
 
 
 @requires_fixtures
@@ -215,3 +215,36 @@ def test_format_human_shows_deposit_origin():
     events = list(replay_pcap(FIXTURE_DIR / "worker_4607.pcapng"))
     line = events[0].format_human()
     assert "deposit_origin=worker" in line
+
+
+@requires_fixtures
+def test_deposit_origins_filter_is_first_class():
+    # The dev-facing worker-tracker one-liner: filter at the API, applied
+    # AFTER classification so the verdict is already on the event.
+    manual = FIXTURE_DIR / "1000306_qty5_unstackable_i2s.pcapng"
+    worker = FIXTURE_DIR / "worker_4607.pcapng"
+
+    assert list(replay_pcap(manual, deposit_origins={"worker"})) == []
+    assert len(list(replay_pcap(manual, deposit_origins={"manual"}))) == 5
+
+    events = list(replay_pcap(worker, deposit_origins={"worker"}))
+    assert [(e.item_id, e.deposit_origin) for e in events] == [(4607, "worker")]
+
+
+def test_deposit_origin_defaults_to_none_off_storage_deltas():
+    from bdo_toolkit.events import BDOEvent, Flow
+
+    event = BDOEvent(
+        event_type="item_received",
+        timestamp=1000.0,
+        flow=Flow("1.1.1.1", 8889, "2.2.2.2", 50000),
+        item_id=7003,
+        quantity=1,
+    )
+    assert event.deposit_origin is None
+    assert "deposit_origin" not in event.to_dict()
+
+    from bdo_toolkit.filters import EventFilter
+
+    f = EventFilter.from_values(deposit_origins={"worker"})
+    assert not f.allows(event)  # None never matches a set filter
