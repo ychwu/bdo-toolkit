@@ -1,4 +1,4 @@
-# BDO Toolkit
+﻿# BDO Toolkit
 
 Passive, read-only packet telemetry tooling for developers building BDO helper
 apps.
@@ -17,9 +17,14 @@ from bdo_toolkit import replay_pcap, capture_live
 for event in replay_pcap("session.pcapng", sources={"Mob Drop"}):
     print(event.item_id, event.quantity)
 
-for event in capture_live(event_types={"storage_delta"}, sources={"Worker Deposit"}):
-    print(event.to_dict())
+# a worker-production tracker in one filter — deposit_origin is classified
+# from packet structure as "worker" / "manual" / "unknown"
+for event in capture_live(event_types={"storage_delta"}, deposit_origins={"worker"}):
+    print(event.item_id, event.quantity, event.timestamp)
 ```
+
+`"Batch Storage Deposit"` is not worker-only. It is a batch-style storage delta
+observed in both passive worker deposits and manual bulk deposits.
 
 ## Installation
 
@@ -156,3 +161,4 @@ git diff tests/baselines/
 
 - Event schema versioning.
 - Inventory snapshot event API.
+

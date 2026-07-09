@@ -61,6 +61,10 @@ class BDOEvent:
     record_count: Optional[int] = None
     record_offset: Optional[int] = None
     confidence: Optional[str] = None
+    # "worker" | "manual" | "unknown" on storage_delta events, None elsewhere.
+    # Classified from packet structure; the per-signal audit trail stays in
+    # extra["deposit_origin_evidence"]. Graduated from extra 2026-07-08.
+    deposit_origin: Optional[str] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -96,6 +100,7 @@ class BDOEvent:
             "record_count": self.record_count,
             "record_offset": self.record_offset,
             "confidence": self.confidence,
+            "deposit_origin": self.deposit_origin,
         }
         for key, value in optional.items():
             if value is not None:
@@ -124,5 +129,7 @@ class BDOEvent:
             parts.append(f"item_instance={self.item_instance}")
         if self.storage_instance is not None:
             parts.append(f"storage_instance={self.storage_instance}")
+        if self.deposit_origin is not None:
+            parts.append(f"deposit_origin={self.deposit_origin}")
         return " ".join(parts)
 

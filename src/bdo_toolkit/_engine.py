@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections import deque
 from typing import Callable, Iterable, Optional
 
-from ._framing import TargetMessageScanner
+from ._framing import FrameCollectorScanner, TargetMessageScanner
 from ._protocol import (
     DEDUP_HISTORY_LIMIT,
+    BDOFrame,
     EventSpec,
     FlowKey,
     LootEvent,
@@ -16,6 +17,30 @@ from ._protocol import (
 )
 from ._reassembly import FlowManager
 from .events import BDOEvent, Flow
+
+
+class _TeeScanner:
+    """Feed one reassembled stream to the target scanner and a frame tap.
+
+    The tap runs FIRST so correlation logic already holds every frame of a
+    TCP segment by the time the target scanner emits events from it.
+    """
+
+    def __init__(self, primary: TargetMessageScanner, tap: FrameCollectorScanner) -> None:
+        self._primary = primary
+        self._tap = tap
+
+    def feed(self, data, context) -> None:
+        self._tap.feed(data, context)
+        self._primary.feed(data, context)
+
+    def scan_standalone(self, data, context) -> None:
+        self._tap.scan_standalone(data, context)
+        self._primary.scan_standalone(data, context)
+
+    def reset(self) -> None:
+        self._tap.reset()
+        self._primary.reset()
 
 
 def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
@@ -85,15 +110,21 @@ class PacketEngine:
         server_ports: Iterable[int],
         event_specs: Iterable[EventSpec],
         on_event: Callable[[LootEvent, bytes], None],
+        frame_observer: Optional[Callable[[BDOFrame], None]] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
         self._on_event = on_event
+
+        def build_scanner():
+            primary = TargetMessageScanner(self._handle_record, self.event_specs)
+            if frame_observer is None:
+                return primary
+            return _TeeScanner(primary, FrameCollectorScanner(frame_observer))
+
         self._flow_manager = FlowManager(
             server_ports=server_ports,
-            scanner_factory=lambda: TargetMessageScanner(
-                self._handle_record, self.event_specs
-            ),
+            scanner_factory=build_scanner,
         )
         self._seen_event_keys: set[
             tuple[FlowKey, int, int, Optional[int], bytes]

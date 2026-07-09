@@ -1,6 +1,12 @@
-"""Tiny example: print passive worker storage deposits.
+"""Tiny example: print worker-attributed storage deposits.
 
 Usage: python examples/worker_production_log.py [path/to/session.pcapng]
+
+Every storage_delta event carries event.deposit_origin:
+"worker" / "manual" / "unknown", classified from packet structure (a manual
+deposit is preceded by a matching source-stack decrement; a worker deposit is
+followed by its companion frames). "unknown" means the evidence was absent or
+contradictory -- the toolkit refuses to guess.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ def main() -> None:
     for event in replay_pcap(
         pcap,
         event_types={"storage_delta"},
-        sources={"Worker Deposit"},
+        deposit_origins={"worker"},
     ):
         writer.write(event)
 

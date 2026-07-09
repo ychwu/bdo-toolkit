@@ -1,4 +1,4 @@
-"""Command-line interface: ``bdo-toolkit <command>``."""
+﻿"""Command-line interface: ``bdo-toolkit <command>``."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="sources",
         metavar="SOURCE",
-        help='only yield this source (repeatable), e.g. "Worker Deposit"',
+        help='only yield this source (repeatable), e.g. "Batch Storage Deposit"',
     )
     parser.add_argument(
         "--item-id",
@@ -90,6 +90,15 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="emit newline-delimited JSON instead of human-readable lines",
     )
+    parser.add_argument(
+        "--deposit-origin",
+        choices=("worker", "manual", "unknown"),
+        default=None,
+        help=(
+            "only yield storage_delta events with this classified deposit "
+            "origin (worker deposits vs manual deposits)"
+        ),
+    )
 
 
 def _writer(args: argparse.Namespace):
@@ -108,6 +117,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         event_types=set(args.event_types) if args.event_types else None,
         sources=set(args.sources) if args.sources else None,
         item_ids=set(args.item_ids) if args.item_ids else None,
+        deposit_origins={args.deposit_origin} if args.deposit_origin else None,
     ):
         writer.write(event)
         count += 1
@@ -127,6 +137,7 @@ def _run_live(args: argparse.Namespace) -> int:
             event_types=set(args.event_types) if args.event_types else None,
             sources=set(args.sources) if args.sources else None,
             item_ids=set(args.item_ids) if args.item_ids else None,
+            deposit_origins={args.deposit_origin} if args.deposit_origin else None,
             capture_seconds=args.capture_seconds,
         ):
             writer.write(event)
@@ -392,3 +403,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

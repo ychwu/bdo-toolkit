@@ -13,7 +13,7 @@ from bdo_toolkit.calibration import CalibrationSession, update_profile
 
 
 PROFILE = Path("opcodes.local")
-ITEM_ID = 1000306  # Unstackable test item
+ITEM_ID = 7003  # Potato Test
 QUANTITY = 5
 
 

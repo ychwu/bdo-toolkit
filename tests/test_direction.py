@@ -2,7 +2,7 @@
 
 These lock in the 2026-07-07 re-audit findings: the reference-frame and
 context-label features classify direction opcode-free across both observed
-opcode generations, worker deposits fall in the storage-delta family, and auto
+opcode generations, batch deposits fall in the storage-delta family, and auto
 calibration never silently mislabels a wrong-direction capture.
 """
 
@@ -238,7 +238,7 @@ def test_intrinsic_storage_context_beats_windowed_reference():
     message = bytearray(length)
     message[0:2] = length.to_bytes(2, "little")
     message[3:5] = (0x0E6A).to_bytes(2, "little")
-    message[8:12] = bytes.fromhex("20000000")  # worker storage-delta context
+    message[8:12] = bytes.fromhex("20000000")  # batch storage-delta context
     item_offset = 37
     message[item_offset : item_offset + 4] = (99123).to_bytes(4, "little")
     message[item_offset + 4 : item_offset + 8] = (3).to_bytes(4, "little")
@@ -306,7 +306,7 @@ def test_reference_frame_after_record_does_not_count():
 
 def test_multi_record_reference_frame_up_to_mid_gap_length():
     # Reference frames grow ~15 bytes per record (24 single, 39 for a
-    # two-record worker deposit). A ~54-byte three-record reference must
+    # two-record batch deposit). A ~54-byte three-record reference must
     # still classify as into_storage; lengths are bimodal (24-39 vs 251+),
     # so the threshold sits mid-gap rather than at the observed edge.
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
@@ -364,3 +364,28 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     # STORAGE_ITEM_DELTA is emitted as an INVENTORY_TO_STORAGE decode spec.
     assert "INVENTORY_TRANSFER" in labels
     assert "INVENTORY_TO_STORAGE" in labels
+
+
+def test_special_production_context_is_intrinsic_into_storage():
+    # 0x8c050000 (special worker production, observed 2026-07-08) is a
+    # storage-delta mode: it must classify into_storage WITHOUT needing a
+    # reference frame, and must never read as a receipt context label.
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import detect_transfer_family
+
+    message = bytearray(261)
+    message[0:2] = (261).to_bytes(2, "little")
+    message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[8:12] = bytes.fromhex("8c050000")
+    message[37:41] = (821108).to_bytes(4, "little")
+    message[41:45] = (65).to_bytes(4, "little")
+    message[72:80] = b"\x22" * 8
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(timestamp=1000.0, flow=FlowKey("1.1.1.1", 8889, "2.2.2.2", 50000)),
+        stream_sequence=1,
+    )
+    family, ref, ctx, storage_ctx = detect_transfer_family([frame], frame, 37, 821108)
+    assert family == "into_storage"
+    assert storage_ctx and not ctx and not ref
