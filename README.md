@@ -1,4 +1,6 @@
-﻿# BDO Toolkit
+# BDO Toolkit
+
+WORK IN PROGRESS, INCOMPLETE
 
 Passive, read-only packet telemetry tooling for developers building BDO helper
 apps.
