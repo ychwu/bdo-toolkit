@@ -16,7 +16,6 @@ from bdo_toolkit import (
 from bdo_toolkit._protocol import FlowKey
 from bdo_toolkit.origin_learning import CompanionObservation
 
-
 FLOW = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -24,7 +23,9 @@ requires_fixtures = pytest.mark.skipif(
 )
 
 
-def _observation(*, sequence: int, timestamp: float, token: str) -> CompanionObservation:
+def _observation(
+    *, sequence: int, timestamp: float, token: str
+) -> CompanionObservation:
     return CompanionObservation(
         timestamp=timestamp,
         flow=FLOW,
@@ -56,6 +57,26 @@ def test_learner_deduplicates_replay_and_confirms_independent_observations(tmp_p
     loaded = OriginLearner.load(path)
     assert loaded.candidates == learner.candidates
     assert len(loaded.confirmed_candidates) == 1
+
+
+def test_learner_summary_reports_empty_and_confirmed_families():
+    learner = OriginLearner(min_observations=2)
+
+    empty = learner.summary()
+    assert "observed 0 origin companion family/families" in empty
+    assert "no origin companion families observed" in empty
+
+    learner.observe(_observation(sequence=1000, timestamp=1000.0, token="a" * 16))
+    learner.observe(_observation(sequence=2000, timestamp=2000.0, token="b" * 16))
+
+    text = learner.summary()
+    assert "1 confirmed for promotion" in text
+    assert "threshold: 2 observation(s)" in text
+    assert "confirmed: delta=0x0D7E" in text
+    assert "companions=0x0F7E -> 0x0DE1" in text
+    assert "lengths=(60, 23)" in text
+    assert "observations=2" in text
+    assert "distinct_tokens=2" in text
 
 
 def test_promotion_is_explicit_validated_and_idempotent(tmp_path):

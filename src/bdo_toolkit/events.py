@@ -69,12 +69,7 @@ class Flow:
 
 @dataclass(frozen=True)
 class BDOEvent:
-    """One decoded gameplay-relevant packet event.
-
-    ``event_type`` is the stable app-facing category. ``legacy_label`` preserves
-    the current prototype label so migrations can stay lossless while the event
-    model matures.
-    """
+    """One decoded gameplay-relevant packet event."""
 
     event_type: str
     timestamp: float
@@ -85,7 +80,6 @@ class BDOEvent:
     raw_context: Optional[str] = None
     opcode: Optional[int] = None
     message_length: Optional[int] = None
-    legacy_label: Optional[str] = None
     base_item_id: Optional[int] = None
     enhancement_level: Optional[int] = None
     enhancement: Optional[str] = None
@@ -132,7 +126,6 @@ class BDOEvent:
             "raw_context": self.raw_context,
             "opcode": f"0x{self.opcode:04X}" if self.opcode is not None else None,
             "message_length": self.message_length,
-            "legacy_label": self.legacy_label,
             "base_item_id": self.base_item_id,
             "enhancement_level": self.enhancement_level,
             "enhancement": self.enhancement,

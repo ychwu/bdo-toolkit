@@ -3,7 +3,7 @@
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
-from bdo_toolkit import load_opcode_profile, replay_pcap
+from bdo_toolkit import EventFilter, load_opcode_profile, replay_pcap
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -45,10 +45,19 @@ def test_replay_batch_storage_deposit_as_structured_events():
 def test_replay_filters_by_event_type_and_source():
     fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
 
-    assert list(replay_pcap(fixture, event_types={"item_received"})) == []
-    worker_events = list(replay_pcap(fixture, sources={"Batch Storage Deposit"}))
+    assert list(
+        replay_pcap(fixture, event_filter=EventFilter(event_types={"item_received"}))
+    ) == []
+    worker_events = list(
+        replay_pcap(
+            fixture,
+            event_filter=EventFilter(sources={"Batch Storage Deposit"}),
+        )
+    )
     assert len(worker_events) == 2
-    assert list(replay_pcap(fixture, item_ids={5960}))[0].item_id == 5960
+    assert list(replay_pcap(fixture, event_filter=EventFilter(item_ids={5960})))[
+        0
+    ].item_id == 5960
 
 
 @requires_fixtures
@@ -69,6 +78,8 @@ def test_event_to_dict_round_trips_extra_fields():
     data = event.to_dict()
 
     assert data["event_type"] == "storage_delta"
+    assert not hasattr(event, "legacy_label")
+    assert "legacy_label" not in data
     assert data["extra"]["storage_delta"] == event.quantity
     assert "stream_sequence" in data["extra"]
 

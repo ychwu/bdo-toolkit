@@ -275,9 +275,11 @@ class _CandidateState:
             value
             for value in (
                 self.first_seen_text,
-                _utc_text(self.first_timestamp)
-                if self.first_timestamp is not None
-                else None,
+                (
+                    _utc_text(self.first_timestamp)
+                    if self.first_timestamp is not None
+                    else None
+                ),
             )
             if value is not None
         ]
@@ -286,9 +288,11 @@ class _CandidateState:
             value
             for value in (
                 self.last_seen_text,
-                _utc_text(self.last_timestamp)
-                if self.last_timestamp is not None
-                else None,
+                (
+                    _utc_text(self.last_timestamp)
+                    if self.last_timestamp is not None
+                    else None
+                ),
             )
             if value is not None
         ]
@@ -369,10 +373,10 @@ class OriginLearner:
         if not isinstance(entry, dict):
             raise ProfileError(f"{location} must be an object")
         if entry.get("detection") != COMPANION_DETECTION:
-            raise ProfileError(
-                f"{location}.detection must be {COMPANION_DETECTION!r}"
-            )
-        delta_opcode = _parse_opcode(entry.get("delta_opcode"), f"{location}.delta_opcode")
+            raise ProfileError(f"{location}.detection must be {COMPANION_DETECTION!r}")
+        delta_opcode = _parse_opcode(
+            entry.get("delta_opcode"), f"{location}.delta_opcode"
+        )
         raw_opcodes = entry.get("companion_opcodes")
         raw_lengths = entry.get("companion_lengths")
         if not isinstance(raw_opcodes, list) or len(raw_opcodes) != 2:
@@ -385,7 +389,11 @@ class OriginLearner:
         )
         lengths: list[int] = []
         for value in raw_lengths:
-            if isinstance(value, bool) or not isinstance(value, int) or not 5 <= value <= 0xFFFF:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 5 <= value <= 0xFFFF
+            ):
                 raise ProfileError(f"{location}.companion_lengths must be 5..65535")
             lengths.append(value)
         key = (delta_opcode, opcodes[0], opcodes[1], lengths[0], lengths[1])
@@ -454,9 +462,7 @@ class OriginLearner:
     @property
     def candidates(self) -> tuple[OriginCompanionCandidate, ...]:
         with self._lock:
-            return tuple(
-                self._states[key].snapshot() for key in sorted(self._states)
-            )
+            return tuple(self._states[key].snapshot() for key in sorted(self._states))
 
     @property
     def confirmed_candidates(self) -> tuple[OriginCompanionCandidate, ...]:
@@ -465,6 +471,39 @@ class OriginLearner:
             for candidate in self.candidates
             if candidate.confirmed(self.min_observations)
         )
+
+    def summary(self) -> str:
+        """Return a human-readable multi-line candidate report."""
+        candidates = self.candidates
+        confirmed_count = sum(
+            candidate.confirmed(self.min_observations) for candidate in candidates
+        )
+        lines = [
+            f"observed {len(candidates)} origin companion family/families; "
+            f"{confirmed_count} confirmed for promotion "
+            f"(threshold: {self.min_observations} observation(s))"
+        ]
+        if not candidates:
+            lines.append("no origin companion families observed")
+            return "\n".join(lines)
+
+        for candidate in candidates:
+            status = (
+                "confirmed"
+                if candidate.confirmed(self.min_observations)
+                else "candidate"
+            )
+            companions = " -> ".join(
+                f"0x{opcode:04X}" for opcode in candidate.companion_opcodes
+            )
+            lengths = ", ".join(str(length) for length in candidate.companion_lengths)
+            lines.append(
+                f"{status}: delta=0x{candidate.delta_opcode:04X} "
+                f"companions={companions} lengths=({lengths}) "
+                f"observations={candidate.observations} "
+                f"distinct_tokens={candidate.distinct_tokens}"
+            )
+        return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -536,7 +575,9 @@ def promote_origin_candidates(
             )
         )
 
-    added = tuple(candidate for candidate in confirmed if candidate.family_key not in existing)
+    added = tuple(
+        candidate for candidate in confirmed if candidate.family_key not in existing
+    )
     if not added:
         return OriginPromotion(destination, (), None, False)
     promoted_at = _utc_text()

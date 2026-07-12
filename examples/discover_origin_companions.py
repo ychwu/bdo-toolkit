@@ -49,19 +49,7 @@ def main() -> None:
             pass
 
     learner.save(args.candidates)
-    for candidate in learner.candidates:
-        pair = " -> ".join(
-            f"0x{opcode:04X}" for opcode in candidate.companion_opcodes
-        )
-        status = (
-            "confirmed"
-            if candidate.confirmed(learner.min_observations)
-            else "candidate"
-        )
-        print(
-            f"{status}: delta=0x{candidate.delta_opcode:04X} "
-            f"companions={pair} observations={candidate.observations}"
-        )
+    print(learner.summary())
 
 
 if __name__ == "__main__":

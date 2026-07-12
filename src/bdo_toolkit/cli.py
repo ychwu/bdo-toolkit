@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .capture import capture_live, replay_pcap
+from .capture import LiveCaptureOptions, capture_live, replay_pcap
 from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
     CALIBRATION_ACTIONS,
@@ -25,6 +25,7 @@ from .origin_learning import (
     OriginLearner,
     promote_origin_candidates,
 )
+from .filters import EventFilter
 from .writers import ConsoleEventWriter, JsonlEventWriter
 
 
@@ -110,16 +111,6 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         help="only yield this item id (repeatable)",
     )
     parser.add_argument(
-        "--include-legacy-opcodes",
-        action="store_true",
-        help="also decode legacy observed opcodes from older captures",
-    )
-    parser.add_argument(
-        "--ignore-profile",
-        action="store_true",
-        help="ignore the opcode profile and use built-in current opcodes",
-    )
-    parser.add_argument(
         "--jsonl",
         action="store_true",
         help="emit newline-delimited JSON instead of human-readable lines",
@@ -139,6 +130,19 @@ def _writer(args: argparse.Namespace):
     return JsonlEventWriter() if args.jsonl else ConsoleEventWriter()
 
 
+def _decode_filter(args: argparse.Namespace) -> EventFilter | None:
+    if not any(
+        (args.event_types, args.sources, args.item_ids, args.deposit_origin)
+    ):
+        return None
+    return EventFilter(
+        event_types=args.event_types,
+        sources=args.sources,
+        item_ids=args.item_ids,
+        deposit_origins={args.deposit_origin} if args.deposit_origin else None,
+    )
+
+
 def _run_replay(args: argparse.Namespace) -> int:
     writer = _writer(args)
     count = 0
@@ -146,12 +150,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         args.pcap,
         opcode_profile=args.profile,
         ports=args.ports,
-        include_legacy_opcodes=args.include_legacy_opcodes,
-        ignore_opcode_profile=args.ignore_profile,
-        event_types=set(args.event_types) if args.event_types else None,
-        sources=set(args.sources) if args.sources else None,
-        item_ids=set(args.item_ids) if args.item_ids else None,
-        deposit_origins={args.deposit_origin} if args.deposit_origin else None,
+        event_filter=_decode_filter(args),
     ):
         writer.write(event)
         count += 1
@@ -164,16 +163,13 @@ def _run_live(args: argparse.Namespace) -> int:
     try:
         for event in capture_live(
             opcode_profile=args.profile,
-            interface=args.iface,
-            ports=args.ports,
-            include_legacy_opcodes=args.include_legacy_opcodes,
-            ignore_opcode_profile=args.ignore_profile,
-            event_types=set(args.event_types) if args.event_types else None,
-            sources=set(args.sources) if args.sources else None,
-            item_ids=set(args.item_ids) if args.item_ids else None,
-            deposit_origins={args.deposit_origin} if args.deposit_origin else None,
+            live_options=LiveCaptureOptions(
+                interface=args.iface,
+                ports=args.ports,
+                event_queue_size=args.event_queue_size,
+            ),
+            event_filter=_decode_filter(args),
             capture_seconds=args.capture_seconds,
-            event_queue_size=args.event_queue_size,
         ):
             writer.write(event)
     except KeyboardInterrupt:
@@ -205,7 +201,10 @@ def _print_calibration_result(result: CalibrationResult, verbose: bool) -> None:
         if spec.score is not None:
             fields.append(f"confidence={spec.score:.2f}")
         print("discovered " + " ".join(fields))
-    _FAMILY_LABEL = {"into_inventory": "storage->inventory", "into_storage": "inventory->storage"}
+    _FAMILY_LABEL = {
+        "into_inventory": "storage->inventory",
+        "into_storage": "inventory->storage",
+    }
     detected = {
         _FAMILY_LABEL[e.detected_family]
         for e in result.evidence
@@ -254,7 +253,9 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             )
         else:
             if args.capture_seconds is not None:
-                stop_instruction = f"stopping automatically after {args.capture_seconds:g}s"
+                stop_instruction = (
+                    f"stopping automatically after {args.capture_seconds:g}s"
+                )
             else:
                 stop_instruction = "press Ctrl+C when done"
             print(f"listening -- {instruction}, {stop_instruction}", file=sys.stderr)
@@ -316,9 +317,7 @@ def _run_origin_learn(args: argparse.Namespace) -> int:
             if candidate.confirmed(learner.min_observations)
             else "candidate"
         )
-        pair = " -> ".join(
-            f"0x{opcode:04X}" for opcode in candidate.companion_opcodes
-        )
+        pair = " -> ".join(f"0x{opcode:04X}" for opcode in candidate.companion_opcodes)
         print(
             f"origin {status}: delta=0x{candidate.delta_opcode:04X} "
             f"companions={pair} observations={candidate.observations}",
@@ -343,8 +342,10 @@ def _run_origin_learn(args: argparse.Namespace) -> int:
             )
             for _ in capture_live(
                 opcode_profile=args.profile,
-                interface=args.iface,
-                ports=args.ports,
+                live_options=LiveCaptureOptions(
+                    interface=args.iface,
+                    ports=args.ports,
+                ),
                 capture_seconds=args.capture_seconds,
                 origin_observer=observe,
             ):
@@ -359,20 +360,7 @@ def _run_origin_learn(args: argparse.Namespace) -> int:
         f"to {args.candidates}",
         file=sys.stderr,
     )
-    for candidate in learner.candidates:
-        pair = " -> ".join(
-            f"0x{opcode:04X}" for opcode in candidate.companion_opcodes
-        )
-        status = (
-            "confirmed"
-            if candidate.confirmed(learner.min_observations)
-            else "candidate"
-        )
-        print(
-            f"{status}: delta=0x{candidate.delta_opcode:04X} "
-            f"companions={pair} lengths={candidate.companion_lengths} "
-            f"observations={candidate.observations}",
-        )
+    print(learner.summary())
     return 0 if learner.candidates else 1
 
 
@@ -464,7 +452,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="decimal item id used for the calibration action (Potato: 7003)",
     )
     calibrate.add_argument(
-        "--qty", type=_positive_int, default=None, help="expected quantity for the action"
+        "--qty",
+        type=_positive_int,
+        default=None,
+        help="expected quantity for the action",
     )
     calibrate.add_argument(
         "--action",
@@ -546,10 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidates",
         type=Path,
         default=Path("opcodes.origin-candidates.json"),
-        help=(
-            "candidate output file "
-            "(default: opcodes.origin-candidates.json)"
-        ),
+        help=("candidate output file " "(default: opcodes.origin-candidates.json)"),
     )
     origin_learn.add_argument(
         "--min-observations",

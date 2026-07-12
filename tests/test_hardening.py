@@ -7,11 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from bdo_toolkit import BDOEvent, Flow, ProfileError, load_opcode_profile, replay_pcap
+from bdo_toolkit import (
+    BDOEvent,
+    EventFilter,
+    Flow,
+    ProfileError,
+    load_opcode_profile,
+    replay_pcap,
+)
 from bdo_toolkit import capture as capture_module
 from bdo_toolkit._capture_backend import import_scapy
 from bdo_toolkit._engine import PacketEngine
-from bdo_toolkit._protocol import BDOFrame, CURRENT_EVENT_SPECS, FlowKey, PacketContext
+from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit._specs import load_spec_profile
 from bdo_toolkit.calibration import (
     CalibrationResult,
@@ -24,18 +31,42 @@ from bdo_toolkit import calibration as calibration_module
 
 
 def _loot_preview_frame(item_id: int = 7003, quantity: int = 3) -> bytes:
-    message = bytearray(31)
-    message[0:2] = (31).to_bytes(2, "little")
+    message = bytearray(244)
+    message[0:2] = (244).to_bytes(2, "little")
     message[3:5] = (0x1643).to_bytes(2, "little")
     message[23:27] = item_id.to_bytes(4, "little")
     message[27:31] = quantity.to_bytes(4, "little")
     return bytes(message)
 
 
+SYNTHETIC_EVENT_SPECS = (
+    EventSpec(
+        label="LOOT_PREVIEW",
+        opcode=0x1643,
+        item_offset=23,
+        quantity_offset=27,
+        min_message_length=31,
+        default_context="Gathering",
+    ),
+    EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x0E6A,
+        item_offset=37,
+        quantity_offset=41,
+        min_message_length=80,
+        source_context_offset=8,
+        storage_instance_offset=72,
+        repeat_stride=226,
+        single_record_message_length=261,
+        default_context="Storage",
+    ),
+)
+
+
 def _engine(events: list) -> PacketEngine:
     return PacketEngine(
         server_ports=(8889,),
-        event_specs=CURRENT_EVENT_SPECS,
+        event_specs=SYNTHETIC_EVENT_SPECS,
         on_event=lambda event, raw: events.append(event),
     )
 
@@ -102,8 +133,7 @@ def test_replay_yields_before_processing_the_next_packet(monkeypatch):
         engine.finish()
 
     monkeypatch.setattr(capture_module, "iter_pcap_file", fake_iter)
-    events = replay_pcap("unused.pcapng", ignore_opcode_profile=True)
-
+    events = replay_pcap("unused.pcapng")
     assert next(events).item_id == 7003
     assert progress == ["first"]
     events.close()
@@ -114,7 +144,6 @@ def test_callback_collector_does_not_retain_delivered_events():
     collector = capture_module._EventCollector(
         server_ports=(8889,),
         on_event=delivered.append,
-        ignore_opcode_profile=True,
     )
     event = BDOEvent("test", 0.0, Flow("a", 1, "b", 2), 1, 1)
 
@@ -407,6 +436,33 @@ def test_missing_explicit_profile_does_not_silently_fall_back(tmp_path):
         next(events)
 
 
+def test_inactive_explicit_profile_fails_instead_of_mixing_authorities(tmp_path):
+    profile_path = tmp_path / "inactive.json"
+    profile_path.write_text(
+        json.dumps({"profile_active": False, "specs": {}}),
+        encoding="utf-8",
+    )
+
+    assert load_opcode_profile(profile_path).active is False
+    events = replay_pcap("unused.pcapng", opcode_profile=profile_path)
+    with pytest.raises(ProfileError, match="inactive"):
+        next(events)
+
+
+def test_event_collector_loads_profile_once(monkeypatch):
+    real_load = capture_module.load_opcode_profile
+    calls = []
+
+    def counted_load(path):
+        calls.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
+    capture_module._EventCollector(server_ports=(8889,))
+
+    assert len(calls) == 1
+
+
 def test_empty_profile_update_is_a_true_noop(tmp_path):
     path = tmp_path / "opcodes.json"
     original = '{"sentinel": true}\n'
@@ -534,12 +590,6 @@ def test_calibration_rejects_invalid_options(kwargs):
         calibrate_frames([], **kwargs)
 
 
-def test_capture_rejects_invalid_queue_before_starting_scapy():
-    generator = capture_module.capture_live(event_queue_size=0)
-    with pytest.raises(ValueError, match="event_queue_size"):
-        next(generator)
-
-
 def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
     state = {"entered": False, "exited": False, "stopped": False}
 
@@ -571,7 +621,13 @@ def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
 
 
 def test_filter_rejects_accidental_string_iterables():
-    from bdo_toolkit import EventFilter
-
     with pytest.raises(TypeError, match="not a string"):
         EventFilter.from_values(sources="Mob Drop")
+
+
+def test_event_filter_constructor_normalizes_and_freezes_inputs():
+    sources = {"Mob Drop"}
+    event_filter = EventFilter(sources=sources)
+    sources.add("Storage")
+
+    assert event_filter.sources == frozenset({"Mob Drop"})

@@ -1241,7 +1241,6 @@ def _calibrate_storage_to_inventory(
             quantity_offset=best.item_offset + 4,
             item_instance_offset=best.instance_offset,
             context_offset=_discover_context_offset(best.frame, best.item_offset),
-            inventory_slot_offset=_discover_inventory_slot_offset(best.frame, best.item_offset),
             repeat_stride=_discover_repeat_stride(best.frame, best.item_offset)
             or observed_stride,
             confidence=_confidence_label(best.confidence),
@@ -1773,12 +1772,6 @@ def _discover_storage_context_offset(
             best_offset = offset if best_offset is None else max(best_offset, offset)
             search_at = offset + 1
     return best_offset
-
-
-def _discover_inventory_slot_offset(frame: BDOFrame, item_offset: int) -> Optional[int]:
-    if frame.opcode == 0x19E9 and item_offset > 0:
-        return item_offset - 1
-    return None
 
 
 def _discover_repeat_stride(frame: BDOFrame, item_offset: int) -> Optional[int]:

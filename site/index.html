@@ -245,6 +245,8 @@ footer {
       <div class="nglabel">Decoding</div>
       <a class="nl" href="#replay-pcap"><code>replay_pcap()</code></a>
       <a class="nl" href="#capture-live"><code>capture_live()</code></a>
+      <a class="nl" href="#livecaptureoptions"><code>LiveCaptureOptions</code></a>
+      <a class="nl" href="#livecapturesession"><code>LiveCaptureSession</code></a>
       <a class="nl" href="#bdoevent"><code>BDOEvent</code></a>
       <a class="nl" href="#event-types">Event types &amp; sources</a>
       <a class="nl" href="#eventfilter"><code>EventFilter</code></a>
@@ -317,7 +319,7 @@ footer {
 <section class="section" id="quickstart">
   <h2>Quick start</h2>
   <p>Replay a recorded capture and print every decoded event:</p>
-<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> replay_pcap
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> EventFilter, capture_live, replay_pcap
 
 <span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(<span class="s">"session.pcapng"</span>):
     <span class="f">print</span>(event.<span class="f">format_human</span>())</code></pre>
@@ -325,15 +327,16 @@ footer {
   <p>Filter to what your app cares about — here, batch-style storage deltas:</p>
 <pre><code><span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(
     <span class="s">"session.pcapng"</span>,
-    event_types={<span class="s">"storage_delta"</span>},
-    sources={<span class="s">"Batch Storage Deposit"</span>},
+    event_filter=<span class="f">EventFilter</span>(
+        event_types={<span class="s">"storage_delta"</span>},
+        sources={<span class="s">"Batch Storage Deposit"</span>},
+    ),
 ):
     <span class="f">print</span>(event.item_id, event.quantity)</code></pre>
 
   <p>Listen live (requires Npcap + admin on Windows) and stream events as they happen:</p>
-<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
-
-<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"item_received"</span>}, sources={<span class="s">"Mob Drop"</span>}):
+<pre><code>mob_drops = <span class="f">EventFilter</span>(event_types={<span class="s">"item_received"</span>}, sources={<span class="s">"Mob Drop"</span>})
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_filter=mob_drops):
     <span class="f">print</span>(event.<span class="f">to_dict</span>())</code></pre>
 </section>
 
@@ -350,10 +353,9 @@ footer {
   the package; when it goes stale, you <a href="#calibration">calibrate a local one</a> and pass
   it via <code>opcode_profile=</code>.</p>
   <h3>Filtering at the edge</h3>
-  <p>The engine decodes every known category in one pass; the <code>event_types</code> /
-  <code>sources</code> / <code>item_ids</code> / <code>deposit_origins</code> arguments control
-  only what is <em>yielded to your app</em>. Filtering never changes what the engine
-  understands.</p>
+  <p>The engine decodes every known category in one pass; an
+  <a href="#eventfilter"><code>EventFilter</code></a> controls only what is
+  <em>yielded to your app</em>. Filtering never changes what the engine understands.</p>
 </section>
 
 <section class="section" id="choosing">
@@ -364,8 +366,8 @@ footer {
     <tr><th>You want to…</th><th>Call</th><th>Returns</th><th>Notes</th></tr>
     <tr><td>Parse a saved capture</td><td class="mono"><a href="#replay-pcap">replay_pcap(path, …)</a></td><td class="mono">Iterator[<a href="#bdoevent">BDOEvent</a>]</td><td>Offline and deterministic — the easiest surface to build and test against.</td></tr>
     <tr><td>Stream live events in a script</td><td class="mono"><a href="#capture-live">capture_live(…)</a></td><td class="mono">Iterator[BDOEvent]</td><td>Blocking iterator; yields as packets decode.</td></tr>
-    <tr><td>Stream live events in an app/GUI</td><td class="mono">capture_live(…) on a thread</td><td class="mono">Iterator[BDOEvent]</td><td>The iterator is synchronous — see the <a href="#capture-live">threading pattern</a>.</td></tr>
-    <tr><td>Track worker production</td><td class="mono">capture_live(deposit_origins={"worker"})</td><td class="mono">Iterator[BDOEvent]</td><td>Classification is automatic—no learner required. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
+    <tr><td>Start and stop live capture from an app/GUI</td><td class="mono"><a href="#livecapturesession">LiveCaptureSession</a></td><td class="mono">events() / poll()</td><td>Explicit lifecycle control; <code>stop()</code> wakes a quiet consumer from another thread.</td></tr>
+    <tr><td>Track worker production</td><td class="mono">capture_live(event_filter=EventFilter(deposit_origins={"worker"}))</td><td class="mono">Iterator[BDOEvent]</td><td>Classification is automatic—no learner required. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
     <tr><td>Recalibrate from a recording</td><td class="mono"><a href="#calibrate-pcap">calibrate_pcap(path, …)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>Deterministic — ideal for tests and support reports.</td></tr>
     <tr><td>Recalibrate from a terminal</td><td class="mono"><a href="#calibrate-live">calibrate_live(…)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>One blocking call; timer or Ctrl+C to stop.</td></tr>
     <tr><td>Recalibrate <em>and</em> persist in one call</td><td class="mono"><a href="#calibrate-and-update">calibrate_and_update(path, …)</a></td><td class="mono">(<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | None)</td><td>The post-patch recovery path; profile untouched if nothing was found.</td></tr>
@@ -381,10 +383,8 @@ footer {
 <section class="section" id="replay-pcap">
   <h2 class="api">bdo_toolkit.replay_pcap()</h2>
   <div class="sig"><span class="f">replay_pcap</span>(path, *, opcode_profile=<span class="k">None</span>, ports=(8884, 8885, 8889),
-            include_legacy_opcodes=<span class="k">False</span>, ignore_opcode_profile=<span class="k">False</span>,
-            event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
-            deposit_origins=<span class="k">None</span>, quiet=<span class="k">True</span>,
-            origin_observer=<span class="k">None</span>) → Iterator[<a href="#bdoevent">BDOEvent</a>]</div>
+            event_filter=<span class="k">None</span>, origin_observer=<span class="k">None</span>)
+            → Iterator[<a href="#bdoevent">BDOEvent</a>]</div>
   <p>Replay a <code>.pcap</code>/<code>.pcapng</code> file and yield structured events in
   capture order. Works fully offline; no capture driver needed.</p>
   <div class="note"><span class="tag">Yields</span>
@@ -400,80 +400,170 @@ footer {
       <div class="pdesc">Path to a local <code>opcodes.json</code>. <span class="pdefault">Default: the profile bundled with the package.</span></div></div>
     <div class="prow"><div class="pname">ports<span class="ptype">tuple[int, ...]</span></div>
       <div class="pdesc">BDO server source ports to treat as game traffic. <span class="pdefault">Default: (8884, 8885, 8889).</span></div></div>
-    <div class="prow"><div class="pname">include_legacy_opcodes<span class="ptype">bool</span></div>
-      <div class="pdesc">Also decode legacy opcodes observed in older captures — useful when replaying old recordings.</div></div>
-    <div class="prow"><div class="pname">ignore_opcode_profile<span class="ptype">bool</span></div>
-      <div class="pdesc">Skip the profile entirely and use the built-in current spec table.</div></div>
-    <div class="prow"><div class="pname">event_types / sources / item_ids / deposit_origins<span class="ptype">Iterable | None</span></div>
-      <div class="pdesc">Yield only matching events. <code>deposit_origins</code> filters storage deltas by classified origin (<span class="mono">{"worker"}</span>, …). See <a href="#origin-classification">how origin classification works</a>.</div></div>
-    <div class="prow"><div class="pname">quiet<span class="ptype">bool</span></div>
-      <div class="pdesc">Retained for backwards compatibility; the engine produces no console output either way.</div></div>
+    <div class="prow"><div class="pname">event_filter<span class="ptype">EventFilter | None</span></div>
+      <div class="pdesc">Yield only matching events. Deposit-origin filters run after classification. See <a href="#eventfilter"><code>EventFilter</code></a>.</div></div>
     <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
       <div class="pdesc">Optional audit hook; it is not required for classification. Receives each structurally discovered worker companion chain once per storage-delta frame. Use <a href="#origin-learner"><code>OriginLearner.observe</code></a> for in-memory aggregation. No writes occur automatically.</div></div>
   </div>
   <p><strong>Raises</strong> <code>FileNotFoundError</code> if the file does not exist,
   <code>ValueError</code> if it cannot be read as a capture, <code>ProfileError</code> for a
-  corrupt profile, <code>RuntimeError</code> if scapy is missing.</p>
+  corrupt or inactive selected profile, <code>RuntimeError</code> if scapy is missing.</p>
 </section>
 
 <section class="section" id="capture-live">
   <h2 class="api">bdo_toolkit.capture_live()</h2>
-  <div class="sig"><span class="f">capture_live</span>(*, opcode_profile=<span class="k">None</span>, interface=<span class="k">None</span>, local_ip=<span class="k">None</span>,
-             ports=(8884, 8885, 8889), include_legacy_opcodes=<span class="k">False</span>,
-             ignore_opcode_profile=<span class="k">False</span>, event_types=<span class="k">None</span>, sources=<span class="k">None</span>,
-             item_ids=<span class="k">None</span>, deposit_origins=<span class="k">None</span>, capture_seconds=<span class="k">None</span>,
-             no_bpf=<span class="k">False</span>, no_local_ip_filter=<span class="k">False</span>, event_queue_size=1024,
+  <div class="sig"><span class="f">capture_live</span>(*, opcode_profile=<span class="k">None</span>, live_options=<span class="k">None</span>,
+             event_filter=<span class="k">None</span>, capture_seconds=<span class="k">None</span>,
              origin_observer=<span class="k">None</span>) → Iterator[<a href="#bdoevent">BDOEvent</a>]</div>
-  <p>Start passive live capture and yield events as they are decoded. The iterator blocks
-  between events; it ends when <code>capture_seconds</code> elapses or the capture stops.
-  Stranded TCP segments are drained on shutdown so end-of-session events are not lost.</p>
-<pre><code><span class="c"># a worker-production tracker is a one-liner filter:</span>
-<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"storage_delta"</span>}, deposit_origins={<span class="s">"worker"</span>}):
+  <p>Script-focused blocking convenience wrapper around
+  <a href="#livecapturesession"><code>LiveCaptureSession</code></a>. It starts passive capture
+  and yields events as they are decoded. The iterator blocks between events and ends when
+  <code>capture_seconds</code> elapses, capture ends, the generator is closed, or the caller is
+  interrupted. Apps with Start/Stop controls should use the session API directly.</p>
+<pre><code><span class="c"># a worker-production tracker is a reusable filter:</span>
+worker_deposits = <span class="f">EventFilter</span>(event_types={<span class="s">"storage_delta"</span>}, deposit_origins={<span class="s">"worker"</span>})
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_filter=worker_deposits):
     <span class="c"># every BDOEvent field is a plain attribute:</span>
     track_worker_yield(event.item_id, event.quantity, event.timestamp)</code></pre>
   <div class="note"><span class="tag">Yields</span>
   <a href="#bdoevent"><code>BDOEvent</code></a> objects — the identical shape
   <code>replay_pcap()</code> yields, so app code is capture-source agnostic.</div>
   <div class="params">
-    <div class="prow"><div class="pname">interface<span class="ptype">str | None</span></div>
-      <div class="pdesc">Capture interface name. <span class="pdefault">Default: auto-detected from the default route.</span></div></div>
-    <div class="prow"><div class="pname">local_ip<span class="ptype">str | None</span></div>
-      <div class="pdesc">Require this IPv4 address as the packet destination. <span class="pdefault">Default: auto-detected unless <code>no_local_ip_filter=True</code>.</span></div></div>
+    <div class="prow"><div class="pname">live_options<span class="ptype">LiveCaptureOptions | None</span></div>
+      <div class="pdesc">Interface, destination-IP discovery, ports, BPF, and queue controls. See <a href="#livecaptureoptions"><code>LiveCaptureOptions</code></a>.</div></div>
+    <div class="prow"><div class="pname">event_filter<span class="ptype">EventFilter | None</span></div>
+      <div class="pdesc">The same app-facing filter accepted by <code>replay_pcap()</code>.</div></div>
     <div class="prow"><div class="pname">capture_seconds<span class="ptype">float | None</span></div>
-      <div class="pdesc">Stop automatically after this long. <span class="pdefault">Default: run until the consumer stops iterating.</span></div></div>
-    <div class="prow"><div class="pname">no_bpf<span class="ptype">bool</span></div>
-      <div class="pdesc">Disable the kernel capture filter and filter in Python instead — a fallback for adapters with broken BPF support.</div></div>
-    <div class="prow"><div class="pname">event_queue_size<span class="ptype">int</span></div>
-      <div class="pdesc">Maximum decoded events buffered for a slow consumer. <span class="pdefault">Default: 1024.</span></div></div>
+      <div class="pdesc">Stop automatically after this long. <span class="pdefault">Default: run until interrupted, closed, or the capture source ends.</span></div></div>
     <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
       <div class="pdesc">Same optional audit hook as <code>replay_pcap()</code>; leaving it as <code>None</code> does not disable classification. See <a href="#origin-learner"><code>OriginLearner</code></a>. Live callbacks run on the capture-processing thread; keep custom callbacks fast and thread-safe.</div></div>
-    <div class="prow"><div class="pname">(shared)<span class="ptype">&nbsp;</span></div>
-      <div class="pdesc"><code>opcode_profile</code>, <code>ports</code>, <code>include_legacy_opcodes</code>,
-      <code>ignore_opcode_profile</code>, and the four filters behave exactly as in
-      <a href="#replay-pcap"><code>replay_pcap()</code></a>.</div></div>
   </div>
-  <h3>Using it from an app or GUI</h3>
-  <p>The iterator is synchronous — it blocks between events. Command-line tools consume it
-  directly; an application with its own event loop should run it on a background thread and
-  hand events across a queue:</p>
-<pre><code><span class="k">from</span> queue <span class="k">import</span> Queue
-<span class="k">from</span> threading <span class="k">import</span> Thread
-<span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
-
-events = <span class="f">Queue</span>()
-
-<span class="k">def</span> <span class="f">pump</span>():
-    <span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(event_types={<span class="s">"item_received"</span>, <span class="s">"storage_delta"</span>}):
-        events.<span class="f">put</span>(event)
-
-<span class="f">Thread</span>(target=pump, daemon=<span class="k">True</span>).<span class="f">start</span>()
-
-<span class="c"># the UI thread drains the queue without ever blocking on the network</span>
-event = events.<span class="f">get</span>()</code></pre>
-  <p><code>BDOEvent</code> is frozen (immutable), so handing events between threads is safe.</p>
+  <div class="note"><span class="tag">Need a Stop button?</span>
+  Do not wrap this generator with an app-side flag: the flag cannot be checked while the
+  iterator is quietly waiting for its next event. Use
+  <a href="#livecapturesession"><code>LiveCaptureSession.stop()</code></a>, which can wake the
+  consumer even when no packets or events are arriving.</div>
   <div class="warn"><span class="tag">Windows</span>
   Live capture needs <a href="https://npcap.com/">Npcap</a> installed and usually an
   Administrator shell. Offline replay does not.</div>
+</section>
+
+<section class="section" id="livecaptureoptions">
+  <h2 class="api">bdo_toolkit.LiveCaptureOptions</h2>
+  <div class="sig"><span class="f">LiveCaptureOptions</span>(interface=<span class="k">None</span>, local_ip=<span class="k">None</span>, ports=(8884, 8885, 8889),
+                     use_bpf=<span class="k">True</span>, auto_local_ip=<span class="k">True</span>, event_queue_size=1024)</div>
+  <p>Immutable live-capture configuration shared by <code>capture_live()</code> and
+  <code>LiveCaptureSession</code>. The positive boolean names make the normal behavior explicit:</p>
+  <div class="params">
+    <div class="prow"><div class="pname">interface<span class="ptype">str | None</span></div><div class="pdesc">Capture interface; <code>None</code> uses default-route detection.</div></div>
+    <div class="prow"><div class="pname">local_ip<span class="ptype">str | None</span></div><div class="pdesc">Explicit destination IPv4 restriction.</div></div>
+    <div class="prow"><div class="pname">ports<span class="ptype">tuple[int, ...]</span></div><div class="pdesc">BDO server source ports.</div></div>
+    <div class="prow"><div class="pname">use_bpf<span class="ptype">bool</span></div><div class="pdesc">Use the kernel BPF filter. Set false only as an adapter compatibility fallback.</div></div>
+    <div class="prow"><div class="pname">auto_local_ip<span class="ptype">bool</span></div><div class="pdesc">When interface and local_ip are both omitted, restrict traffic to the default route's local IPv4 address.</div></div>
+    <div class="prow"><div class="pname">event_queue_size<span class="ptype">int</span></div><div class="pdesc">Maximum decoded events buffered for a slow consumer.</div></div>
+  </div>
+</section>
+
+<section class="section" id="livecapturesession">
+  <h2 class="api">bdo_toolkit.LiveCaptureSession</h2>
+  <div class="sig"><span class="f">LiveCaptureSession</span>(*, opcode_profile=<span class="k">None</span>, live_options=<span class="k">None</span>,
+                   event_filter=<span class="k">None</span>, origin_observer=<span class="k">None</span>)</div>
+  <p>Programmatically controlled live capture for apps, terminal UIs, and services. Capture
+  itself runs in the background after <code>start()</code>. Your app can consume the blocking
+  <code>events()</code> iterator on a worker thread or call <code>poll(timeout=0)</code> from a UI
+  timer. A Stop button may call <code>stop()</code> from another thread even when traffic is
+  completely quiet.</p>
+
+  <h3>Start/Stop button pattern</h3>
+<pre><code><span class="k">from</span> threading <span class="k">import</span> Thread
+<span class="k">from</span> bdo_toolkit <span class="k">import</span> EventFilter, LiveCaptureSession
+
+session = <span class="f">LiveCaptureSession</span>(
+    event_filter=<span class="f">EventFilter</span>(event_types={<span class="s">"item_received"</span>, <span class="s">"storage_delta"</span>}),
+)
+
+<span class="k">def</span> <span class="f">pump_events</span>():
+    <span class="k">try</span>:
+        <span class="k">for</span> event <span class="k">in</span> session.<span class="f">events</span>():
+            send_to_ui(event)
+    <span class="k">except</span> Exception <span class="k">as</span> exc:
+        report_capture_failure(exc)
+
+<span class="c"># Start button:</span>
+session.<span class="f">start</span>()
+worker = <span class="f">Thread</span>(target=pump_events, daemon=<span class="k">True</span>)
+worker.<span class="f">start</span>()
+
+<span class="c"># Stop button, on the UI/control thread:</span>
+session.<span class="f">stop</span>()
+worker.<span class="f">join</span>()</code></pre>
+  <p><code>stop()</code> stops new packet intake, finishes pending TCP reassembly and origin
+  classification, and wakes a quiet <code>events()</code> consumer. Events decoded before or
+  during finalization remain available, so the iterator drains them before ending. A session
+  is single-use and supports one consumer; create a new session for the next Start click and do
+  not consume <code>events()</code> and <code>poll()</code> concurrently.</p>
+
+  <h3>Polling from a UI timer</h3>
+<pre><code>session = <span class="f">LiveCaptureSession</span>()
+session.<span class="f">start</span>()
+
+<span class="k">def</span> <span class="f">on_ui_timer</span>():
+    <span class="k">while</span> (event := session.<span class="f">poll</span>(timeout=<span class="s">0</span>)) <span class="k">is not None</span>:
+        render_event(event)
+
+<span class="c"># Stop button:</span>
+session.<span class="f">stop</span>()</code></pre>
+  <p>A <code>None</code> result from <code>poll()</code> means either “nothing available before
+  the timeout” or “fully drained after stop”; inspect <code>session.stopped</code> to distinguish
+  them.</p>
+
+  <div class="params">
+    <div class="prow"><div class="pname">start()<span class="ptype">→ None</span></div>
+      <div class="pdesc">Open the capture handle, then return with packet processing running in the background. Waiting for the handle to become ready prevents an immediate Stop click from racing startup. Raises <code>RuntimeError</code> if this single-use session was already started.</div></div>
+    <div class="prow"><div class="pname">stop()<span class="ptype">→ None</span></div>
+      <div class="pdesc">Idempotent graceful stop, safe to call from a separate UI/control thread. Stops packet intake, finalizes decoder state, and wakes blocked consumers. Raises <code>RuntimeError</code> before <code>start()</code>.</div></div>
+    <div class="prow"><div class="pname">events()<span class="ptype">→ Iterator[BDOEvent]</span></div>
+      <div class="pdesc">Blocking event iterator. It drains already-decoded and shutdown-finalized events after <code>stop()</code>, then ends. Background capture failures are re-raised here after draining.</div></div>
+    <div class="prow"><div class="pname">poll(timeout=None)<span class="ptype">→ BDOEvent | None</span></div>
+      <div class="pdesc">Return one event. <code>timeout=None</code> waits indefinitely but still wakes on <code>stop()</code>; <code>0</code> is nonblocking; a positive timeout waits up to that many seconds.</div></div>
+    <div class="prow"><div class="pname">running / stopped<span class="ptype">bool (properties)</span></div>
+      <div class="pdesc">Current lifecycle state. “Starting” counts as running; stopped remains true after finalization.</div></div>
+    <div class="prow"><div class="pname">stop_reason<span class="ptype">str | None</span></div>
+      <div class="pdesc"><code>"requested"</code>, <code>"capture-ended"</code>, or <code>"error"</code> after shutdown; <code>None</code> beforehand.</div></div>
+    <div class="prow"><div class="pname">error<span class="ptype">BaseException | None</span></div>
+      <div class="pdesc">First decoder, observer, or cleanup failure captured from the background path.</div></div>
+    <div class="prow"><div class="pname">raise_if_failed()<span class="ptype">→ None</span></div>
+      <div class="pdesc">Re-raise <code>error</code> in the calling thread. <code>events()</code> and a fully drained <code>poll()</code> already do this automatically.</div></div>
+  </div>
+  <p>The constructor accepts the same profile, <code>event_filter</code>,
+  <code>live_options</code>, and origin-observer options as
+  <a href="#capture-live"><code>capture_live()</code></a>, except
+  <code>capture_seconds</code>: the application owns session timing. It is also a context
+  manager—<code>with LiveCaptureSession(...) as session:</code> starts on entry and guarantees
+  <code>stop()</code> on exit.</p>
+
+  <h3>Asyncio integration</h3>
+  <p>A separate asyncio API is not required. Because <code>poll()</code> has a bounded timeout and
+  <code>stop()</code> is externally controllable, an async app can bridge the session safely
+  without leaving an uncancellable capture thread behind:</p>
+<pre><code><span class="k">import</span> asyncio
+<span class="k">from</span> bdo_toolkit <span class="k">import</span> LiveCaptureSession
+
+<span class="k">async def</span> <span class="f">consume_live</span>():
+    session = <span class="f">LiveCaptureSession</span>()
+    session.<span class="f">start</span>()
+    <span class="k">try</span>:
+        <span class="k">while True</span>:
+            event = <span class="k">await</span> asyncio.<span class="f">to_thread</span>(session.poll, <span class="s">0.2</span>)
+            <span class="k">if</span> event <span class="k">is not None</span>:
+                <span class="k">await</span> handle_event(event)
+            <span class="k">elif</span> session.stopped:
+                <span class="k">break</span>
+    <span class="k">finally</span>:
+        <span class="k">await</span> asyncio.<span class="f">to_thread</span>(session.stop)</code></pre>
+  <p>Task cancellation enters <code>finally</code>, stops the underlying capture, and lets the
+  outstanding <code>poll()</code> return within 0.2 seconds. A future native async iterator would
+  be convenience syntax over this same lifecycle, not a different decoder.</p>
 </section>
 
 <section class="section" id="bdoevent">
@@ -493,7 +583,6 @@ event = events.<span class="f">get</span>()</code></pre>
     <tr><td class="mono">raw_context</td><td class="mono">str | None</td><td>The raw context bytes as hex — preserved even when <span class="mono">source</span> has a label.</td></tr>
     <tr><td class="mono">opcode</td><td class="mono">int | None</td><td>Message opcode. Serialized as a hex string (<span class="mono">"0x0F16"</span>) in <span class="mono">to_dict()</span>.</td></tr>
     <tr><td class="mono">message_length</td><td class="mono">int | None</td><td>Length of the containing BDO message.</td></tr>
-    <tr><td class="mono">legacy_label</td><td class="mono">str | None</td><td>The research-era label (<span class="mono">INVENTORY_TRANSFER</span>, …). Kept for traceability — don't build app logic on it.</td></tr>
     <tr><td class="mono">base_item_id</td><td class="mono">int | None</td><td>Item id with the enhancement byte stripped, when one was detected.</td></tr>
     <tr><td class="mono">enhancement_level</td><td class="mono">int | None</td><td>Detected enhancement level (1–20), from <span class="mono">item_id &gt;&gt; 24</span>.</td></tr>
     <tr><td class="mono">enhancement</td><td class="mono">str | None</td><td>Label for the level: <span class="mono">PRI DUO TRI TET PEN HEX SEP OCT NOV DEC</span>.</td></tr>
@@ -555,16 +644,16 @@ event = events.<span class="f">get</span>()</code></pre>
 
 <section class="section" id="eventfilter">
   <h2 class="api">bdo_toolkit.EventFilter</h2>
-  <div class="sig"><span class="f">EventFilter.from_values</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
-                        deposit_origins=<span class="k">None</span>) → EventFilter
+  <div class="sig"><span class="f">EventFilter</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
+              deposit_origins=<span class="k">None</span>)
 <span class="f">filter.allows</span>(event) → bool</div>
-  <p>The same filtering used by the <code>event_types</code>/<code>sources</code>/<code>item_ids</code>
-  arguments, as a standalone object — build one when your app filters events itself (for example,
-  fan one decoded stream out to multiple consumers). A criterion left as <code>None</code>
-  matches everything; set criteria must <em>all</em> match.</p>
+  <p>Pass the object as <code>event_filter=</code> to replay, live capture, or a live session,
+  or use <code>allows()</code> when your app fans one decoded stream out to multiple consumers.
+  A criterion left as <code>None</code> matches everything; supplied criteria must all match.</p>
   <p>Attributes mirror the constructor: <code>filter.event_types</code>,
   <code>filter.sources</code>, <code>filter.item_ids</code>, <code>filter.deposit_origins</code> —
-  each a <code>frozenset</code> or <code>None</code>.</p>
+  each normalized to an immutable <code>frozenset</code> or <code>None</code>.
+  <code>EventFilter.from_values(...)</code> remains an equivalent named factory.</p>
 </section>
 
 <section class="section" id="writers">
@@ -599,7 +688,7 @@ writer.<span class="f">write</span>(event)</div>
   <div class="tablewrap"><table>
     <tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
     <tr><td class="mono">path</td><td class="mono">Path</td><td>Where it was loaded from.</td></tr>
-    <tr><td class="mono">active</td><td class="mono">bool</td><td><span class="mono">profile_active</span> flag — inactive profiles fall back to built-in specs.</td></tr>
+    <tr><td class="mono">active</td><td class="mono">bool</td><td><span class="mono">profile_active</span> flag. Inspection can load an inactive profile, but selecting one for decoding raises <code>ProfileError</code> rather than mixing opcode authorities.</td></tr>
     <tr><td class="mono">version</td><td class="mono">int | None</td><td>Profile format version.</td></tr>
     <tr><td class="mono">updated_at</td><td class="mono">str | None</td><td>ISO timestamp of the last calibration write.</td></tr>
     <tr><td class="mono">calibration_item_id</td><td class="mono">int | None</td><td>Item used for the last calibration (Potato: 7003).</td></tr>
@@ -626,19 +715,20 @@ writer.<span class="f">write</span>(event)</div>
   promoted companion opcodes. Read <code>event.deposit_origin</code> from a normal
   <a href="#replay-pcap"><code>replay_pcap()</code></a> or
   <a href="#capture-live"><code>capture_live()</code></a> call.</div>
-<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> capture_live
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> EventFilter, capture_live
 
 <span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(
     opcode_profile=<span class="s">"opcodes.local"</span>,
-    event_types={<span class="s">"storage_delta"</span>},
+    event_filter=<span class="f">EventFilter</span>(event_types={<span class="s">"storage_delta"</span>}),
 ):
     <span class="f">print</span>(event.deposit_origin)  <span class="c"># "worker", "manual", or "unknown"</span></code></pre>
   <p>For a worker deposit, the tracker starts at the exact end of the decoded storage delta,
   parses the next two contiguous <em>companion frames</em>, and looks for an informative 8-byte
   token shared by all three frames. That three-frame relationship—not the exact opcode
   values—is the worker evidence.</p>
-  <p>Without that structure, a calibrated matching source-stack decrement in the immediate
-  pre-delta chain is <code>manual</code>. Incomplete or absent evidence is <code>unknown</code>.</p>
+  <p>Without that structure, a matching source-stack decrement in the immediate pre-delta
+  chain is <code>manual</code> only when its opcode, minimum calibrated shape, and exact quantity
+  offset come from the selected profile. Incomplete or absent evidence is <code>unknown</code>.</p>
 
   <h3 id="origin-known-family">Companion frames vs. companion opcode families</h3>
   <p>The word “companion” appears in both terms, but they play different roles:</p>
@@ -676,6 +766,7 @@ writer.<span class="f">write</span>(event)</div>
     <tr><th>Your goal</th><th>Use</th><th>Effect</th></tr>
     <tr><td>Only classify deposits</td><td>Normal capture/replay; leave <code>origin_observer=None</code></td><td>Events still receive <code>deposit_origin</code></td></tr>
     <tr><td>Audit families in memory</td><td class="mono">origin_observer=learner.observe</td><td>Populates <code>learner.candidates</code>; no file writes</td></tr>
+    <tr><td>React to each observation immediately</td><td>Wrap <code>learner.observe</code> in your own callback</td><td>Your callback receives the observation and can use the updated candidate</td></tr>
     <tr><td>Continue learning across sessions</td><td class="mono">OriginLearner.load(...)</td><td>Reloads prior counts and deduplication IDs</td></tr>
     <tr><td>Persist observations</td><td class="mono">learner.save(...)</td><td>Writes a candidate JSON file; does not modify the opcode profile</td></tr>
   </table></div>
@@ -683,6 +774,7 @@ writer.<span class="f">write</span>(event)</div>
   <h3 class="api">OriginLearner</h3>
   <div class="sig"><span class="f">OriginLearner</span>(min_observations=2)
 learner.<span class="f">observe</span>(observation) → OriginCompanionCandidate
+learner.<span class="f">summary</span>() → str
 learner.<span class="f">save</span>(path) → Path
 OriginLearner.<span class="f">load</span>(path, *, min_observations=<span class="k">None</span>) → OriginLearner</div>
 <pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> OriginLearner, replay_pcap
@@ -695,8 +787,26 @@ learner = <span class="f">OriginLearner</span>(min_observations=<span class="s">
 ):
     <span class="f">print</span>(event.deposit_origin)
 
+<span class="f">print</span>(learner.<span class="f">summary</span>())
+
 <span class="c"># Explicit opt-in write; normal capture never writes.</span>
 learner.<span class="f">save</span>(<span class="s">"opcodes.origin-candidates.json"</span>)</code></pre>
+  <div class="note"><span class="tag">Reacting immediately</span>
+  Capture creates a <code>CompanionObservation</code> and passes it into your callback.
+  <code>learner.observe(observation)</code> returns the updated
+  <code>OriginCompanionCandidate</code>, but capture/replay deliberately ignores callback return
+  values. Wrap the learner when your app needs that candidate immediately:</div>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> OriginLearner, capture_live
+
+learner = <span class="f">OriginLearner</span>()
+
+<span class="k">def</span> <span class="f">on_origin_observation</span>(observation):
+    candidate = learner.<span class="f">observe</span>(observation)
+    <span class="f">print</span>(candidate.family_key, candidate.observations)
+
+<span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(origin_observer=on_origin_observation):
+    <span class="k">if</span> event.deposit_origin == <span class="s">"worker"</span>:
+        handle_worker_deposit(event)</code></pre>
   <p><code>min_observations=2</code> means that two independent structural observations of the
   same family are required before it becomes a confirmed <em>promotion candidate</em>. It does
   not make the learner run twice, and it is not a worker-classification confidence threshold.</p>
@@ -713,6 +823,8 @@ learner.<span class="f">save</span>(<span class="s">"opcodes.origin-candidates.j
       <div class="pdesc">Reload a candidate file to continue learning across sessions. A missing path creates an empty learner. Pass <code>min_observations=</code> to override the saved threshold.</div></div>
     <div class="prow"><div class="pname">save(path)<span class="ptype">→ Path</span></div>
       <div class="pdesc">Atomically write candidate history and deduplication IDs. Saving does not update the opcode profile and does not change <code>known_family</code>.</div></div>
+    <div class="prow"><div class="pname">summary()<span class="ptype">→ str</span></div>
+      <div class="pdesc">Human-readable multi-line report of the threshold and every candidate family. Print or log it as-is.</div></div>
     <div class="prow"><div class="pname">to_dict()<span class="ptype">dict</span></div>
       <div class="pdesc">Candidate-file form. Raw shared tokens are never stored; only short BLAKE2 digests and opaque observation IDs are retained. Replaying the same capture does not inflate counts.</div></div>
   </div>
@@ -1032,7 +1144,7 @@ bdo-toolkit origin-learn --profile opcodes.local --pcap worker-one.pcapng --pcap
 bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.local</code></pre>
   <div class="tablewrap"><table>
     <tr><th>Command</th><th>Purpose</th><th>Key flags</th></tr>
-    <tr><td class="mono">replay &lt;pcap&gt;</td><td>Decode a capture file</td><td class="mono">--jsonl --profile --event-type --source --item-id --ports --include-legacy-opcodes --ignore-profile</td></tr>
+    <tr><td class="mono">replay &lt;pcap&gt;</td><td>Decode a capture file</td><td class="mono">--jsonl --profile --event-type --source --item-id --ports</td></tr>
     <tr><td class="mono">live</td><td>Decode live traffic</td><td class="mono">replay flags + --iface --capture-seconds</td></tr>
     <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --replace --verbose</td></tr>
     <tr><td class="mono">reset-profile &lt;path&gt;</td><td>Write an empty active profile</td><td class="mono">--calibration-item-id</td></tr>
@@ -1049,8 +1161,9 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
     <tr><th>Exception</th><th>Raised when</th></tr>
     <tr><td class="mono">FileNotFoundError</td><td>The capture file passed to <span class="mono">replay_pcap</span>/<span class="mono">calibrate_pcap</span> does not exist.</td></tr>
     <tr><td class="mono">ValueError</td><td>The file exists but cannot be read as a pcap/pcapng.</td></tr>
-    <tr><td class="mono">bdo_toolkit.ProfileError</td><td>An opcode profile or origin-candidate file has invalid JSON/schema. Subclass of <span class="mono">ValueError</span>.</td></tr>
-    <tr><td class="mono">RuntimeError</td><td>scapy is not installed (capture/replay), or a <span class="mono">CalibrationSession</span> is started twice / stopped before starting.</td></tr>
+    <tr><td class="mono">bdo_toolkit.ProfileError</td><td>An opcode profile or origin-candidate file has invalid JSON/schema, or an inactive profile is selected for decoding. Subclass of <span class="mono">ValueError</span>.</td></tr>
+    <tr><td class="mono">RuntimeError</td><td>Scapy is not installed (capture/replay), or a <span class="mono">LiveCaptureSession</span>/<span class="mono">CalibrationSession</span> lifecycle method is used out of order.</td></tr>
+    <tr><td class="mono">Background exception (original type)</td><td><span class="mono">LiveCaptureSession.events()</span> and a fully drained <span class="mono">poll()</span> re-raise decoder/observer failures in the consuming thread instead of silently ending capture.</td></tr>
   </table></div>
 </section>
 

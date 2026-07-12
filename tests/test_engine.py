@@ -2,7 +2,7 @@
 
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._protocol import (
-    CURRENT_EVENT_SPECS,
+    EventSpec,
     STORAGE_DELTA_CONTEXTS,
     source_label,
 )
@@ -27,8 +27,8 @@ def test_source_label_unknown_candidate_stays_visible():
 
 def _loot_preview_frame(item_id: int, quantity: int) -> bytes:
     # LOOT_PREVIEW spec: opcode 0x1643, item @23, quantity @27, min length 31.
-    message = bytearray(31)
-    message[0:2] = (31).to_bytes(2, "little")
+    message = bytearray(244)
+    message[0:2] = (244).to_bytes(2, "little")
     message[2] = 0
     message[3:5] = (0x1643).to_bytes(2, "little")
     message[23:27] = item_id.to_bytes(4, "little")
@@ -36,10 +36,22 @@ def _loot_preview_frame(item_id: int, quantity: int) -> bytes:
     return bytes(message)
 
 
+SYNTHETIC_EVENT_SPECS = (
+    EventSpec(
+        label="LOOT_PREVIEW",
+        opcode=0x1643,
+        item_offset=23,
+        quantity_offset=27,
+        min_message_length=31,
+        default_context="Gathering",
+    ),
+)
+
+
 def _make_engine(events):
     return PacketEngine(
         server_ports=(8889,),
-        event_specs=CURRENT_EVENT_SPECS,
+        event_specs=SYNTHETIC_EVENT_SPECS,
         on_event=lambda event, raw: events.append(event),
     )
 
@@ -101,7 +113,7 @@ def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):
     pcap_path = tmp_path / "synthetic.pcapng"
     wrpcap(str(pcap_path), [packet])
 
-    events = list(replay_pcap(pcap_path, ignore_opcode_profile=True))
+    events = list(replay_pcap(pcap_path))
     assert [(event.event_type, event.item_id, event.quantity) for event in events] == [
         ("loot_preview", 7003, 6)
     ]

@@ -9,7 +9,7 @@ exercises.
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
-from bdo_toolkit import replay_pcap
+from bdo_toolkit import EventFilter, replay_pcap
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
@@ -133,9 +133,27 @@ def _worker_chain(delta_seq=1000, delta_opcode=0x0E6A, first=0x1558, second=0x11
 
 def _tracker(emitted):
     return DepositOriginTracker(
-        decrement_specs=(DecrementSpec(0x1A32, quantity_offset=42),),
+        decrement_specs=(DecrementSpec(0x1A32, 52, 42),),
         emit=emitted.append,
     )
+
+
+def test_manual_decrement_requires_calibrated_length_and_offset():
+    emitted = []
+    tracker = _tracker(emitted)
+    wrong_length = bytearray(45)
+    wrong_length[0:2] = (45).to_bytes(2, "little")
+    wrong_length[3:5] = (0x1A32).to_bytes(2, "little")
+    wrong_length[38:42] = (3).to_bytes(4, "little")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(wrong_length), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(_storage_event(quantity=3, seq=1000))
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
 
 
 def test_no_evidence_yields_unknown():
@@ -288,10 +306,16 @@ def test_deposit_origins_filter_is_first_class():
     manual = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
     worker = fixture_path("worker_4607.pcapng")
 
-    assert list(replay_pcap(manual, deposit_origins={"worker"})) == []
-    assert len(list(replay_pcap(manual, deposit_origins={"manual"}))) == 5
+    assert list(
+        replay_pcap(manual, event_filter=EventFilter(deposit_origins={"worker"}))
+    ) == []
+    assert len(
+        list(replay_pcap(manual, event_filter=EventFilter(deposit_origins={"manual"})))
+    ) == 5
 
-    events = list(replay_pcap(worker, deposit_origins={"worker"}))
+    events = list(
+        replay_pcap(worker, event_filter=EventFilter(deposit_origins={"worker"}))
+    )
     assert [(e.item_id, e.deposit_origin) for e in events] == [(4607, "worker")]
 
 

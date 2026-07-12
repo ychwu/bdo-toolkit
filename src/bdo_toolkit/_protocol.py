@@ -32,13 +32,8 @@ TCP_SEQUENCE_MODULUS = 1 << 32
 TCP_SEQUENCE_HALF_RANGE = TCP_SEQUENCE_MODULUS >> 1
 LOOT_PREVIEW_SENTINEL_INSTANCE = b"\xff" * 8
 
-# Source-stack-decrement family fallbacks when the active profile carries no
-# calibrated SOURCE_STACK_DECREMENT entries (current-gen, legacy).
-DEPOSIT_DECREMENT_FALLBACK_OPCODES = (0x1A32, 0x13ED)
 CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH = 27
-CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH = 35
 CURRENT_STORAGE_DELTA_RECORD_STRIDE = 226
-CURRENT_STORAGE_DELTA_CONTEXT_OFFSET = 8
 CHARACTER_LOAD_CONTEXT = b"\x00" * 4
 STORAGE_DELTA_CONTEXTS = (
     bytes.fromhex("05000000"),
@@ -165,75 +160,6 @@ class EventSpec:
                     f"{self.label} single_record_message_length must be between "
                     "min_message_length and 65535"
                 )
-
-
-CURRENT_EVENT_SPECS: tuple[EventSpec, ...] = (
-    EventSpec(
-        label="LOOT_PREVIEW",
-        opcode=0x1643,
-        item_offset=23,
-        quantity_offset=27,
-        min_message_length=31,
-        default_context="Gathering",
-    ),
-    EventSpec(
-        label="INVENTORY_TRANSFER",
-        opcode=0x0F16,
-        item_offset=33,
-        quantity_offset=37,
-        min_message_length=41,
-        source_context_offset=23,
-        item_instance_offset=68,
-        repeat_stride=228,
-        single_record_message_length=(
-            CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH + 228
-        ),
-    ),
-    EventSpec(
-        label="INVENTORY_TO_STORAGE",
-        opcode=0x0E6A,
-        item_offset=37,
-        quantity_offset=41,
-        min_message_length=80,
-        source_context_offset=CURRENT_STORAGE_DELTA_CONTEXT_OFFSET,
-        storage_instance_offset=72,
-        repeat_stride=CURRENT_STORAGE_DELTA_RECORD_STRIDE,
-        single_record_message_length=(
-            CURRENT_STORAGE_DELTA_RECORD_BASE_LENGTH
-            + CURRENT_STORAGE_DELTA_RECORD_STRIDE
-        ),
-        default_context="Storage",
-    ),
-)
-
-LEGACY_EVENT_SPECS: tuple[EventSpec, ...] = (
-    EventSpec(
-        label="LOOT_PREVIEW",
-        opcode=0x1BF0,
-        item_offset=19,
-        quantity_offset=23,
-        min_message_length=27,
-        default_context="Gathering",
-    ),
-    EventSpec(
-        label="INVENTORY_TRANSFER",
-        opcode=0x19E9,
-        item_offset=26,
-        quantity_offset=30,
-        min_message_length=34,
-        inventory_slot_offset=25,
-        source_context_offset=13,
-    ),
-    EventSpec(
-        label="INVENTORY_TO_STORAGE",
-        opcode=0x1B6A,
-        item_offset=43,
-        quantity_offset=47,
-        min_message_length=86,
-        storage_instance_offset=78,
-        default_context="Storage",
-    ),
-)
 
 
 @dataclass(frozen=True)

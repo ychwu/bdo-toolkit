@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .capture import capture_live, replay_pcap
+from .capture import LiveCaptureOptions, LiveCaptureSession, capture_live, replay_pcap
 from .events import BDOEvent, Flow
 from .filters import EventFilter
 from .profiles import (
@@ -32,6 +32,8 @@ __all__ = [
     "EventFilter",
     "Flow",
     "JsonlEventWriter",
+    "LiveCaptureOptions",
+    "LiveCaptureSession",
     "OpcodeProfile",
     "OriginCompanionFamily",
     "CompanionObservation",
@@ -46,4 +48,3 @@ __all__ = [
     "promote_origin_candidates",
     "replay_pcap",
 ]
-

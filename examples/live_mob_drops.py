@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from bdo_toolkit import ConsoleEventWriter, capture_live
+from bdo_toolkit import ConsoleEventWriter, EventFilter, capture_live
 
 
 def main() -> None:
     writer = ConsoleEventWriter()
     for event in capture_live(
-        event_types={"item_received"},
-        sources={"Mob Drop"},
+        event_filter=EventFilter(
+            event_types={"item_received"},
+            sources={"Mob Drop"},
+        ),
     ):
         writer.write(event)
 

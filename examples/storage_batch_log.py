@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from bdo_toolkit import JsonlEventWriter, replay_pcap
+from bdo_toolkit import EventFilter, JsonlEventWriter, replay_pcap
 
 
 def main() -> None:
@@ -24,8 +24,10 @@ def main() -> None:
     writer = JsonlEventWriter()
     for event in replay_pcap(
         args.pcap,
-        event_types={"storage_delta"},
-        deposit_origins={"worker"},
+        event_filter=EventFilter(
+            event_types={"storage_delta"},
+            deposit_origins={"worker"},
+        ),
     ):
         writer.write(event)
 

@@ -14,15 +14,67 @@ packet capture or pcap replay in -> structured gameplay item events out
 ```
 
 ```python
-from bdo_toolkit import replay_pcap, capture_live
+from bdo_toolkit import EventFilter, capture_live, replay_pcap
 
-for event in replay_pcap("session.pcapng", sources={"Mob Drop"}):
+for event in replay_pcap(
+    "session.pcapng",
+    event_filter=EventFilter(sources={"Mob Drop"}),
+):
     print(event.item_id, event.quantity)
 
 # a worker-production tracker in one filter — deposit_origin is classified
 # from packet structure as "worker" / "manual" / "unknown"
-for event in capture_live(event_types={"storage_delta"}, deposit_origins={"worker"}):
+worker_deposits = EventFilter(
+    event_types={"storage_delta"},
+    deposit_origins={"worker"},
+)
+for event in capture_live(event_filter=worker_deposits):
     print(event.item_id, event.quantity, event.timestamp)
+```
+
+For an app with Start and Stop controls, use `LiveCaptureSession` instead of
+trying to interrupt the blocking iterator yourself:
+
+```python
+from threading import Thread
+from bdo_toolkit import EventFilter, LiveCaptureSession
+
+session = LiveCaptureSession(
+    event_filter=EventFilter(event_types={"item_received", "storage_delta"}),
+)
+
+def pump_events():
+    for event in session.events():
+        handle_event(event)
+
+# Start button:
+session.start()
+worker = Thread(target=pump_events, daemon=True)
+worker.start()
+
+# Stop button (safe even when no events are arriving):
+session.stop()
+worker.join()
+```
+
+`stop()` wakes a blocked `events()` consumer, stops packet capture, finalizes
+pending TCP and deposit-origin state, and lets the iterator drain already
+decoded events before ending. A session is single-use; create a new one when
+the feature is started again. See the runnable
+[`controlled_live_capture.py`](examples/controlled_live_capture.py) example.
+
+Live backend controls are grouped in `LiveCaptureOptions`:
+
+```python
+from bdo_toolkit import LiveCaptureOptions, LiveCaptureSession
+
+options = LiveCaptureOptions(
+    interface="Ethernet",
+    use_bpf=True,
+    auto_local_ip=True,
+    event_queue_size=2048,
+)
+session = LiveCaptureSession(live_options=options)
 ```
 
 `"Batch Storage Deposit"` is not worker-only. It is a batch-style storage delta
@@ -62,6 +114,11 @@ public surface with examples:
 - [`replay_pcap`](https://ychwu.github.io/bdo-toolkit/#replay-pcap) /
   [`capture_live`](https://ychwu.github.io/bdo-toolkit/#capture-live) — decode
   captures into events
+- [`LiveCaptureSession`](https://ychwu.github.io/bdo-toolkit/#livecapturesession)
+  — programmatic Start/Stop, polling, cleanup, and background error reporting
+- [`LiveCaptureOptions`](https://ychwu.github.io/bdo-toolkit/#livecaptureoptions)
+  and [`EventFilter`](https://ychwu.github.io/bdo-toolkit/#eventfilter) — reusable
+  live-backend and event-selection configuration
 - [`BDOEvent`](https://ychwu.github.io/bdo-toolkit/#bdoevent) — the stable
   event model and its [event types](https://ychwu.github.io/bdo-toolkit/#event-types)
 - [Opcode profiles](https://ychwu.github.io/bdo-toolkit/#profiles) — bundled
@@ -110,6 +167,10 @@ if "STORAGE_ITEM_DELTA" in result.events_found:
 
 Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
 
+The bundled profile remains the default for now. For an older recording, pass
+the profile captured for that game patch instead of combining opcode
+generations. Decoding always uses one selected profile authority.
+
 Direction is classified from structure, not taken on faith: an explicit
 `--action` calibration refuses (rather than mislabels) a capture whose
 structure contradicts the declared action. See the
@@ -123,11 +184,11 @@ You do **not** need an `OriginLearner` to classify deposits. Normal
 `"worker"`, `"manual"`, or `"unknown"` in `event.deposit_origin`:
 
 ```python
-from bdo_toolkit import capture_live
+from bdo_toolkit import EventFilter, capture_live
 
 for event in capture_live(
     opcode_profile="opcodes.local",
-    event_types={"storage_delta"},
+    event_filter=EventFilter(event_types={"storage_delta"}),
 ):
     print(event.deposit_origin)
 ```
@@ -195,6 +256,8 @@ for event in capture_live(
     origin_observer=learner.observe,
 ):
     print(event.deposit_origin)
+
+print(learner.summary())
 
 # Explicit opt-in persistence:
 learner.save("opcodes.origin-candidates.json")

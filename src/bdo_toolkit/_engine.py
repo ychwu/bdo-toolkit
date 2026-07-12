@@ -74,7 +74,6 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         raw_context=_hex(event.source_context_candidate),
         opcode=event.opcode,
         message_length=event.message_length,
-        legacy_label=event.label,
         base_item_id=base_item_id,
         enhancement_level=enhancement_level,
         enhancement=enhancement,

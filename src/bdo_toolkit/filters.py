@@ -19,7 +19,7 @@ def _freeze(values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
     return frozenset(values)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class EventFilter:
     """Filter decoded events before yielding them to an application."""
 
@@ -27,6 +27,21 @@ class EventFilter:
     sources: Optional[frozenset[str]] = None
     item_ids: Optional[frozenset[int]] = None
     deposit_origins: Optional[frozenset[str]] = None
+
+    def __init__(
+        self,
+        *,
+        event_types: Optional[Iterable[str]] = None,
+        sources: Optional[Iterable[str]] = None,
+        item_ids: Optional[Iterable[int]] = None,
+        deposit_origins: Optional[Iterable[str]] = None,
+    ) -> None:
+        # Normalize at the public constructor boundary so callers can use
+        # ordinary sets/lists while the frozen object remains truly immutable.
+        object.__setattr__(self, "event_types", _freeze(event_types))
+        object.__setattr__(self, "sources", _freeze(sources))
+        object.__setattr__(self, "item_ids", _freeze(item_ids))
+        object.__setattr__(self, "deposit_origins", _freeze(deposit_origins))
 
     @classmethod
     def from_values(
@@ -38,10 +53,10 @@ class EventFilter:
         deposit_origins: Optional[Iterable[str]] = None,
     ) -> "EventFilter":
         return cls(
-            event_types=_freeze(event_types),
-            sources=_freeze(sources),
-            item_ids=_freeze(item_ids),
-            deposit_origins=_freeze(deposit_origins),
+            event_types=event_types,
+            sources=sources,
+            item_ids=item_ids,
+            deposit_origins=deposit_origins,
         )
 
     def allows(self, event: BDOEvent) -> bool:

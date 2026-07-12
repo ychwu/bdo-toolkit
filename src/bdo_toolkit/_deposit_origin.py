@@ -35,7 +35,28 @@ class DecrementSpec:
     """One source-stack-decrement shape to test candidates against."""
 
     opcode: int
-    quantity_offset: Optional[int] = None
+    min_message_length: int
+    quantity_offset: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.opcode, bool)
+            or not isinstance(self.opcode, int)
+            or not 0 <= self.opcode <= 0xFFFF
+        ):
+            raise ValueError("decrement opcode must be a uint16")
+        if (
+            isinstance(self.min_message_length, bool)
+            or not isinstance(self.min_message_length, int)
+            or self.min_message_length < 5
+        ):
+            raise ValueError("decrement minimum message length must be at least 5")
+        if (
+            isinstance(self.quantity_offset, bool)
+            or not isinstance(self.quantity_offset, int)
+            or not 0 <= self.quantity_offset <= self.min_message_length - 4
+        ):
+            raise ValueError("decrement quantity offset must fit its minimum shape")
 
 
 @dataclass
@@ -67,12 +88,11 @@ class DepositOriginTracker:
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
         known_companion_families: Iterable[OriginCompanionFamily] = (),
     ) -> None:
-        self._decrement_specs: dict[int, DecrementSpec] = {}
+        self._decrement_specs: dict[int, list[DecrementSpec]] = {}
         for spec in decrement_specs:
-            existing = self._decrement_specs.get(spec.opcode)
-            # A calibrated position-exact spec beats an offset-less fallback.
-            if existing is None or existing.quantity_offset is None:
-                self._decrement_specs[spec.opcode] = spec
+            matches = self._decrement_specs.setdefault(spec.opcode, [])
+            if spec not in matches:
+                matches.append(spec)
         self._emit = emit
         self._origin_observer = origin_observer
         self._known_companion_families = {
@@ -271,7 +291,6 @@ class DepositOriginTracker:
         event: BDOEvent,
     ) -> bool:
         quantity_bytes = event.quantity.to_bytes(4, "little")
-        item_bytes = event.item_id.to_bytes(4, "little")
         eligible = [
             frame
             for frame in self._recent.get(flow, ())
@@ -282,17 +301,16 @@ class DepositOriginTracker:
             )
         ][-self.MANUAL_LOOKBACK_FRAMES :]
         for frame in eligible:
-            spec = self._decrement_specs.get(frame.opcode)
-            if spec is None:
-                continue
-            if spec.quantity_offset is not None:
+            for spec in self._decrement_specs.get(frame.opcode, ()):
+                # Profile lengths are calibrated single-record minima. Batch
+                # decrements append more records to the same frame.
+                if len(frame.message) < spec.min_message_length:
+                    continue
                 end = spec.quantity_offset + 4
                 if end <= len(frame.message) and (
                     frame.message[spec.quantity_offset:end] == quantity_bytes
                 ):
                     return True
-            elif quantity_bytes in frame.message and item_bytes not in frame.message:
-                return True
         return False
 
     # --- flushing ---
