@@ -6,6 +6,9 @@ docs/
 tests/fixtures/
 tests/baselines/
 
+# Local Arena of Solare protocol research (promote proven pieces explicitly)
+tools/solare/
+
 # Local calibration output
 opcodes_backups/
 *.origin-candidates.json

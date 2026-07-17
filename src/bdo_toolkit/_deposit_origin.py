@@ -17,7 +17,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
-from ._protocol import MAX_TARGET_MESSAGE_LENGTH, BDOFrame, FlowKey
+from ._protocol import MAX_TARGET_MESSAGE_LENGTH, BDOFrame, FlowKey, PacketContext
 from .events import BDOEvent
 from .origin_learning import (
     CompanionObservation,
@@ -69,6 +69,17 @@ class _PendingDeposit:
     frames_after: int = 0
     end_sequence: Optional[int] = None
     companion_observation: Optional[CompanionObservation] = None
+    delta_message: Optional[bytes] = None
+
+
+@dataclass(frozen=True)
+class _StreamSpan:
+    start: int
+    data: bytes
+
+    @property
+    def end(self) -> int:
+        return self.start + len(self.data)
 
 
 class DepositOriginTracker:
@@ -77,6 +88,7 @@ class DepositOriginTracker:
     LOOKAHEAD_FRAMES = 4
     STALE_SECONDS = 2.0
     BACKWARD_WINDOW = 16
+    STREAM_SPAN_HISTORY_LIMIT = 64
     MANUAL_LOOKBACK_FRAMES = 2
     OBSERVATION_HISTORY_LIMIT = 4096
 
@@ -99,11 +111,43 @@ class DepositOriginTracker:
             family.family_key for family in known_companion_families
         }
         self._recent: dict[FlowKey, deque[BDOFrame]] = {}
+        self._stream_spans: dict[FlowKey, deque[_StreamSpan]] = {}
         self._pending: list[_PendingDeposit] = []
         self._observed_chains: set[tuple[FlowKey, Optional[int]]] = set()
         self._observed_chain_order: deque[tuple[FlowKey, Optional[int]]] = deque()
 
     # --- frame stream ---
+
+    def observe_stream(self, data: bytes, context: PacketContext) -> None:
+        """Retain raw reassembled bytes for alignment-independent correlation.
+
+        The generic frame tap can begin in the middle of an application frame
+        when live capture starts on an established TCP connection. Target
+        opcodes can still resynchronize in that situation, so worker evidence
+        must not depend exclusively on the generic tap finding a boundary.
+        """
+        if not data or context.stream_start is None:
+            return
+        span = _StreamSpan(context.stream_start, bytes(data))
+        window = self._stream_spans.setdefault(
+            context.flow,
+            deque(maxlen=self.STREAM_SPAN_HISTORY_LIMIT),
+        )
+        window.append(span)
+
+        if not self._pending:
+            return
+        still: list[_PendingDeposit] = []
+        for pending in self._pending:
+            if pending.flow != context.flow:
+                still.append(pending)
+                continue
+            if pending.end_sequence is not None and span.end <= pending.end_sequence:
+                still.append(pending)
+                continue
+            if not self._resolve_companions(pending):
+                still.append(pending)
+        self._pending = still
 
     def observe_frame(self, frame: BDOFrame) -> None:
         window = self._recent.setdefault(
@@ -145,7 +189,11 @@ class DepositOriginTracker:
 
     # --- event stream ---
 
-    def register(self, event: BDOEvent) -> None:
+    def register(
+        self,
+        event: BDOEvent,
+        raw_message: Optional[bytes] = None,
+    ) -> None:
         """Defer one storage-delta event until its evidence resolves."""
         flow = FlowKey(
             source_ip=event.flow.source_ip,
@@ -158,6 +206,15 @@ class DepositOriginTracker:
         end_sequence = None
         if stream_sequence is not None and event.message_length is not None:
             end_sequence = stream_sequence + event.message_length
+        delta_message = None
+        if raw_message is not None and event.message_length is not None:
+            candidate = bytes(raw_message)
+            if (
+                len(candidate) == event.message_length
+                and len(candidate) >= 5
+                and int.from_bytes(candidate[0:2], "little") == len(candidate)
+            ):
+                delta_message = candidate
         pending = _PendingDeposit(
             event=event,
             flow=flow,
@@ -169,6 +226,7 @@ class DepositOriginTracker:
                 event,
             ),
             end_sequence=end_sequence,
+            delta_message=delta_message,
         )
         if self._resolve_companions(pending):
             return
@@ -192,21 +250,32 @@ class DepositOriginTracker:
         output = bytearray()
         position = start
         remaining = length
-        frames = self._recent.get(flow, ())
         while remaining > 0:
-            source = None
-            for frame in frames:
-                if frame.stream_sequence is None:
-                    continue
-                offset = position - frame.stream_sequence
-                if 0 <= offset < len(frame.message):
-                    source = frame
+            source_start = None
+            source_data = None
+            # Prefer raw reassembled spans. Iterate newest-first so an overlap
+            # or standalone retransmission cannot shadow newer contiguous data.
+            for span in reversed(self._stream_spans.get(flow, ())):
+                offset = position - span.start
+                if 0 <= offset < len(span.data):
+                    source_start = span.start
+                    source_data = span.data
                     break
-            if source is None:
+            if source_data is None:
+                # Unit-level callers and older integrations may only provide
+                # generic frames; retain that compatible fallback.
+                for frame in reversed(self._recent.get(flow, ())):
+                    if frame.stream_sequence is None:
+                        continue
+                    offset = position - frame.stream_sequence
+                    if 0 <= offset < len(frame.message):
+                        source_start = frame.stream_sequence
+                        source_data = frame.message
+                        break
+            if source_data is None or source_start is None:
                 return None
-            assert source.stream_sequence is not None
-            offset = position - source.stream_sequence
-            chunk = source.message[offset : offset + remaining]
+            offset = position - source_start
+            chunk = source_data[offset : offset + remaining]
             if not chunk:
                 return None
             output += chunk
@@ -225,10 +294,8 @@ class DepositOriginTracker:
             or pending.event.message_length is None
         ):
             return None
-        delta_message = self._read_span(
-            pending.flow,
-            pending.stream_sequence,
-            pending.event.message_length,
+        delta_message = pending.delta_message or self._read_span(
+            pending.flow, pending.stream_sequence, pending.event.message_length
         )
         if delta_message is None:
             return None

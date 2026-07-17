@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
-import ipaddress
 import math
 import time
 from pathlib import Path
@@ -20,6 +18,7 @@ from ._capture_backend import (
     make_packet_handler,
     validate_server_ports,
 )
+from ._capture_options import LiveCaptureOptions
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
@@ -37,40 +36,6 @@ from .profiles import (
     default_profile_path,
     load_opcode_profile,
 )
-
-
-@dataclass(frozen=True)
-class LiveCaptureOptions:
-    """Capture-backend and buffering options shared by live APIs."""
-
-    interface: Optional[str] = None
-    local_ip: Optional[str] = None
-    ports: tuple[int, ...] = DEFAULT_SERVER_PORTS
-    use_bpf: bool = True
-    auto_local_ip: bool = True
-    event_queue_size: int = 1024
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "ports", validate_server_ports(self.ports))
-        if not isinstance(self.use_bpf, bool):
-            raise ValueError("use_bpf must be a boolean")
-        if not isinstance(self.auto_local_ip, bool):
-            raise ValueError("auto_local_ip must be a boolean")
-        if (
-            isinstance(self.event_queue_size, bool)
-            or not isinstance(self.event_queue_size, int)
-        ):
-            raise ValueError("event_queue_size must be an integer")
-        if self.event_queue_size <= 0:
-            raise ValueError("event_queue_size must be greater than zero")
-        if self.local_ip is not None:
-            try:
-                normalized_ip = str(ipaddress.IPv4Address(self.local_ip))
-            except ipaddress.AddressValueError as exc:
-                raise ValueError(
-                    f"local_ip must be an IPv4 address: {self.local_ip!r}"
-                ) from exc
-            object.__setattr__(self, "local_ip", normalized_ip)
 
 
 def _load_selected_profile(path: Path) -> OpcodeProfile:
@@ -155,6 +120,7 @@ class _EventCollector:
             event_specs=loaded_specs.specs,
             on_event=self._handle_record,
             frame_observer=self._tracker.observe_frame,
+            stream_observer=self._tracker.observe_stream,
         )
 
     def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
@@ -162,7 +128,7 @@ class _EventCollector:
         if event.event_type == "storage_delta":
             # Filtering happens at delivery, AFTER classification, so filters
             # on deposit_origin see the final field value.
-            self._tracker.register(event)
+            self._tracker.register(event, raw_message=raw_message)
         else:
             self._deliver(event)
 

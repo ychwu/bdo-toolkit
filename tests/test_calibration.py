@@ -5,7 +5,10 @@ import json
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
+from bdo_toolkit import PacketCaptureOptions
+from bdo_toolkit import _capture_backend as capture_backend
 from bdo_toolkit.calibration import (
+    CalibrationSession,
     calibrate_pcap,
     reset_profile,
     update_profile,
@@ -328,8 +331,6 @@ def test_reset_profile_writes_empty_active_profile(tmp_path):
 
 
 def test_calibration_session_guards_lifecycle():
-    from bdo_toolkit.calibration import CalibrationSession
-
     session = CalibrationSession(item_id=7003)
     assert not session.running
     assert session.frames_collected == 0
@@ -339,3 +340,91 @@ def test_calibration_session_guards_lifecycle():
 
     with pytest.raises(RuntimeError, match="not started"):
         session.stop()
+
+
+def test_calibration_session_uses_shared_packet_capture_options(monkeypatch):
+    class FakeSniffer:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.running = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+    monkeypatch.setattr(
+        capture_backend,
+        "import_scapy",
+        lambda: (object(), object(), None, None, None),
+    )
+    monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
+
+    session = CalibrationSession(
+        item_id=7003,
+        capture_options=PacketCaptureOptions(
+            interface="test-interface",
+            ports=(9000,),
+            use_bpf=False,
+            auto_local_ip=False,
+        ),
+    )
+    session.start()
+
+    sniffer = FakeSniffer.instances[-1]
+    assert sniffer.kwargs["iface"] == "test-interface"
+    assert sniffer.kwargs["filter"] is None
+    assert callable(sniffer.kwargs["lfilter"])
+    session.stop()
+
+
+def test_calibration_session_rejects_wrong_capture_options_type():
+    with pytest.raises(TypeError, match="PacketCaptureOptions"):
+        CalibrationSession(item_id=7003, capture_options=object())
+
+
+def test_calibration_session_can_disable_automatic_local_ip(monkeypatch):
+    class FakeSniffer:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.running = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+    monkeypatch.setattr(
+        capture_backend,
+        "import_scapy",
+        lambda: (object(), object(), None, None, None),
+    )
+    monkeypatch.setattr(
+        capture_backend,
+        "detect_default_capture_target",
+        lambda: capture_backend.CaptureTarget(
+            interface="default-interface",
+            local_ip="192.0.2.25",
+            gateway="192.0.2.1",
+        ),
+    )
+    monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
+
+    session = CalibrationSession(
+        item_id=7003,
+        capture_options=PacketCaptureOptions(auto_local_ip=False),
+    )
+    session.start()
+
+    sniffer = FakeSniffer.instances[-1]
+    assert sniffer.kwargs["iface"] == "default-interface"
+    assert "dst host" not in sniffer.kwargs["filter"]
+    session.stop()

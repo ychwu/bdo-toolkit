@@ -314,7 +314,7 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
 
     assert by_label["INVENTORY_TRANSFER"].single_record_message_length == 254
     assert by_label["INVENTORY_TO_STORAGE"].repeat_stride is None
-    assert by_label["INVENTORY_TO_STORAGE"].single_record_message_length is None
+    assert by_label["INVENTORY_TO_STORAGE"].single_record_message_length == 258
 
     inventory = bytearray(254)
     inventory[0:2] = (254).to_bytes(2, "little")
@@ -345,6 +345,85 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
         ("INVENTORY_TRANSFER", 7003, 5),
         ("INVENTORY_TO_STORAGE", 7003, 5),
     ]
+
+
+def _july17_structural_batch() -> bytes:
+    message = bytearray(479)
+    message[0:2] = (479).to_bytes(2, "little")
+    message[3:5] = (0x126D).to_bytes(2, "little")
+    message[27:31] = bytes.fromhex("20000000")
+    for offset, item_id, quantity, instance_byte in (
+        (36, 4802, 1, b"\x11"),
+        (258, 4003, 21, b"\x22"),
+    ):
+        message[offset : offset + 4] = item_id.to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = quantity.to_bytes(4, "little")
+        message[offset + 12 : offset + 20] = b"\xff" * 8
+        message[offset + 35 : offset + 43] = instance_byte * 8
+    return bytes(message)
+
+
+@pytest.mark.parametrize("saved_stride", [None, 221])
+def test_runtime_derives_changed_batch_stride_from_records(saved_stride):
+    """A single-record profile must decode a later batch and stale stride."""
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        repeat_stride=saved_stride,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, _july17_structural_batch())
+    engine.finish()
+
+    assert [
+        (event.item_id, event.quantity, event.record_index, event.record_count)
+        for event in decoded
+    ] == [
+        (4802, 1, 1, 2),
+        (4003, 21, 2, 2),
+    ]
+
+
+def test_off_length_transfer_without_complete_record_structure_fails_closed():
+    message = bytearray(_july17_structural_batch())
+    # Remove record 2's sentinel. The 479-byte frame can no longer prove a
+    # second record and must not silently emit only record 1.
+    message[258 + 12 : 258 + 20] = b"\x00" * 8
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert decoded == []
 
 
 def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
@@ -381,6 +460,25 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
     assert delta.length == 258
     assert delta.context_offset == 25
     assert delta.repeat_stride == 221
+
+    # Watching the SECOND item in the same mixed batch must still write a
+    # first-record profile rather than pinning offsets to record 2.
+    second_result = calibrate_frames(
+        [frame],
+        item_id=4604,
+        quantity=25,
+        action="inventory-to-storage",
+    )
+    second_delta = next(
+        spec for spec in second_result.specs if spec.event == "STORAGE_ITEM_DELTA"
+    )
+    assert (
+        second_delta.length,
+        second_delta.item_id_offset,
+        second_delta.quantity_added_offset,
+        second_delta.destination_instance_offset,
+        second_delta.repeat_stride,
+    ) == (258, 37, 41, 72, 221)
 
     profile_path = tmp_path / "opcodes.local"
     update_profile(result, profile_path, backup=False)

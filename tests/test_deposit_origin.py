@@ -6,12 +6,15 @@ synthetic tests pin the fail-closed rules that no capture currently
 exercises.
 """
 
+import json
+
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit import EventFilter, replay_pcap
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
-from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
+from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
 
 requires_fixtures = pytest.mark.skipif(
@@ -243,6 +246,59 @@ def test_companions_already_in_segment_finalize_immediately():
     assert emitted and emitted[0].deposit_origin == "worker"
 
 
+def test_worker_chain_survives_a_desynchronized_generic_frame_tap():
+    """Raw stream correlation must work even when capture starts mid-frame."""
+    emitted = []
+    tracker = _tracker(emitted)
+    tapped_frames = []
+
+    def observe_frame(frame):
+        tapped_frames.append(frame)
+        tracker.observe_frame(frame)
+
+    def handle_record(record, raw_message):
+        tracker.register(
+            toolkit_event_from_record(record),
+            raw_message=raw_message,
+        )
+
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x0E6A,
+        item_offset=37,
+        quantity_offset=41,
+        min_message_length=80,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=handle_record,
+        frame_observer=observe_frame,
+        stream_observer=tracker.observe_stream,
+    )
+    delta, first, second = _worker_chain()
+    delta_message = bytearray(delta.message)
+    delta_message[37:41] = (7002).to_bytes(4, "little")
+    delta_message[41:45] = (25).to_bytes(4, "little")
+
+    # 0x1000 is a plausible but incomplete leading length, deliberately
+    # stalling the generic collector. The opcode scanner can still resync.
+    payload = b"\x00\x10" + bytes(delta_message) + first.message + second.message
+    engine.process_tcp_segment(
+        source_ip=FLOW.source_ip,
+        source_port=FLOW.source_port,
+        destination_ip=FLOW.destination_ip,
+        destination_port=FLOW.destination_port,
+        sequence=998,
+        payload=payload,
+        timestamp=1000.0,
+    )
+
+    assert tapped_frames == []
+    assert emitted and emitted[0].deposit_origin == "worker"
+
+
 def test_unknown_companion_opcodes_are_discovered_once_for_multi_record_batch():
     emitted = []
     observations = []
@@ -270,6 +326,48 @@ def test_unknown_companion_opcodes_are_discovered_once_for_multi_record_batch():
     assert [event.deposit_origin for event in emitted] == ["worker", "worker"]
     assert len(observations) == 1
     assert observations[0].companion_opcodes == (0x0F7E, 0x0DE1)
+
+
+@requires_fixtures
+def test_july17_single_record_profile_decodes_full_worker_batch(tmp_path):
+    try:
+        fixture = fixture_path("multi_worker_deposit_4802_4003.pcapng")
+    except FileNotFoundError:
+        pytest.skip("July 17 private worker fixture not present")
+
+    profile = tmp_path / "opcodes.local"
+    profile.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profile_active": True,
+                "specs": {
+                    "STORAGE_ITEM_DELTA": [
+                        {
+                            "event": "STORAGE_ITEM_DELTA",
+                            "opcode": "0x126D",
+                            "length": 257,
+                            "item_id_offset": 36,
+                            "quantity_added_offset": 40,
+                            "destination_instance_offset": 71,
+                            "context_offset": 27,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    events = list(replay_pcap(fixture, opcode_profile=profile))
+
+    assert [
+        (event.item_id, event.quantity, event.record_index, event.deposit_origin)
+        for event in events
+    ] == [
+        (4802, 1, 1, "worker"),
+        (4003, 21, 2, "worker"),
+    ]
 
 
 def test_stale_pending_deposit_flushes_as_unknown():

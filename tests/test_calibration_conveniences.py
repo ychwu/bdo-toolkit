@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from bdo_toolkit import calibration
+from bdo_toolkit import PacketCaptureOptions, calibration
 from bdo_toolkit.calibration import (
     CalibrationResult,
     DirectionEvidence,
@@ -182,7 +182,15 @@ class TestCalibrateAndUpdate:
 
     @pytest.mark.parametrize(
         "live_only_kwarg",
-        [{"capture_seconds": 5.0}, {"interface": "eth0"}, {"local_ip": "10.0.0.5"}],
+        [
+            {"capture_seconds": 5.0},
+            {
+                "capture_options": PacketCaptureOptions(
+                    interface="eth0",
+                    local_ip="10.0.0.5",
+                )
+            },
+        ],
     )
     def test_live_only_arguments_are_rejected_with_pcap(
         self, tmp_path, live_only_kwarg
@@ -193,4 +201,50 @@ class TestCalibrateAndUpdate:
                 item_id=7003,
                 pcap="capture.pcapng",
                 **live_only_kwarg,
+            )
+
+    def test_pcap_ports_are_forwarded_only_to_offline_calibration(
+        self, tmp_path, monkeypatch
+    ):
+        seen = {}
+
+        def fake_calibrate_pcap(*args, **kwargs):
+            seen.update(kwargs)
+            return _result()
+
+        monkeypatch.setattr(calibration, "calibrate_pcap", fake_calibrate_pcap)
+        calibrate_and_update(
+            tmp_path / "opcodes.json",
+            item_id=7003,
+            pcap="capture.pcapng",
+            pcap_ports=(9000, 9001),
+        )
+
+        assert seen["ports"] == (9000, 9001)
+
+    def test_capture_options_are_forwarded_only_to_live_calibration(
+        self, tmp_path, monkeypatch
+    ):
+        seen = {}
+        options = PacketCaptureOptions(interface="test-interface", use_bpf=False)
+
+        def fake_calibrate_live(**kwargs):
+            seen.update(kwargs)
+            return _result()
+
+        monkeypatch.setattr(calibration, "calibrate_live", fake_calibrate_live)
+        calibrate_and_update(
+            tmp_path / "opcodes.json",
+            item_id=7003,
+            capture_options=options,
+        )
+
+        assert seen["capture_options"] is options
+
+    def test_pcap_ports_are_rejected_for_live_calibration(self, tmp_path):
+        with pytest.raises(ValueError, match="offline calibration only"):
+            calibrate_and_update(
+                tmp_path / "opcodes.json",
+                item_id=7003,
+                pcap_ports=(9000,),
             )

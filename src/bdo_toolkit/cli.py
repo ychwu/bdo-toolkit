@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import __version__
-from .capture import LiveCaptureOptions, capture_live, replay_pcap
+from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
+from .capture import capture_live, replay_pcap
 from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
     CALIBRATION_ACTIONS,
@@ -263,8 +264,10 @@ def _run_calibrate(args: argparse.Namespace) -> int:
                 item_id=args.item_id,
                 quantity=args.qty,
                 action=args.action,
-                ports=args.ports,
-                interface=args.iface,
+                capture_options=PacketCaptureOptions(
+                    interface=args.iface,
+                    ports=args.ports,
+                ),
                 capture_seconds=args.capture_seconds,
                 min_confidence=args.min_confidence,
             )

@@ -25,7 +25,6 @@ the original research prototype.
 from __future__ import annotations
 
 import datetime as dt
-import ipaddress
 import json
 import math
 import os
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ._capture_backend import replay_pcap_file, validate_server_ports
+from ._capture_options import PacketCaptureOptions
 from ._framing import FrameCollectorScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
@@ -561,9 +561,7 @@ class CalibrationSession:
         item_id: int,
         quantity: Optional[int] = None,
         action: str = "auto",
-        ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
-        interface: Optional[str] = None,
-        local_ip: Optional[str] = None,
+        capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
         min_confidence: float = 0.80,
     ) -> None:
@@ -574,19 +572,16 @@ class CalibrationSession:
             context_frames=context_frames,
             min_confidence=min_confidence,
         )
-        if local_ip is not None:
-            try:
-                local_ip = str(ipaddress.IPv4Address(local_ip))
-            except ipaddress.AddressValueError as exc:
-                raise ValueError(
-                    f"local_ip must be an IPv4 address: {local_ip!r}"
-                ) from exc
+        if capture_options is not None and not isinstance(
+            capture_options, PacketCaptureOptions
+        ):
+            raise TypeError(
+                "capture_options must be a PacketCaptureOptions or None"
+            )
         self._item_id = item_id
         self._quantity = quantity
         self._action = action
-        self._ports = validate_server_ports(ports)
-        self._interface = interface
-        self._local_ip = local_ip
+        self._capture_options = capture_options or PacketCaptureOptions()
         self._context_frames = context_frames
         self._min_confidence = min_confidence
         self._frames: list[BDOFrame] = []
@@ -613,30 +608,53 @@ class CalibrationSession:
             make_packet_handler,
         )
 
-        import_scapy()
+        IP, TCP, _, _, _ = import_scapy()
         from scapy.sendrecv import AsyncSniffer  # type: ignore
 
         self._frames = []
-        self._manager = FlowManager(
-            server_ports=self._ports,
+        manager = FlowManager(
+            server_ports=self._capture_options.ports,
             scanner_factory=lambda: FrameCollectorScanner(self._frames.append),
         )
+        self._manager = manager
 
         detected_target = None
-        if self._interface is None:
+        if self._capture_options.interface is None:
             detected_target = detect_default_capture_target()
             capture_interface = detected_target.interface
         else:
-            capture_interface = self._interface
-        capture_local_ip = self._local_ip
-        if capture_local_ip is None and self._interface is None:
+            capture_interface = self._capture_options.interface
+        capture_local_ip = self._capture_options.local_ip
+        if (
+            capture_local_ip is None
+            and self._capture_options.interface is None
+            and self._capture_options.auto_local_ip
+        ):
             assert detected_target is not None
             capture_local_ip = detected_target.local_ip
 
+        bpf_filter = (
+            None
+            if not self._capture_options.use_bpf
+            else build_bpf_filter(self._capture_options.ports, capture_local_ip)
+        )
+        lfilter = None
+        if not self._capture_options.use_bpf:
+            lfilter = lambda packet: (  # noqa: E731
+                IP in packet
+                and TCP in packet
+                and int(packet[TCP].sport) in manager.server_ports
+                and (
+                    capture_local_ip is None
+                    or str(packet[IP].dst) == capture_local_ip
+                )
+            )
+
         capture = AsyncSniffer(
             iface=capture_interface,
-            filter=build_bpf_filter(self._ports, capture_local_ip),
-            prn=make_packet_handler(self._manager),
+            filter=bpf_filter,
+            lfilter=lfilter,
+            prn=make_packet_handler(manager),
             store=False,
         )
         try:
@@ -689,9 +707,7 @@ def calibrate_live(
     capture_seconds: Optional[float] = None,
     quantity: Optional[int] = None,
     action: str = "auto",
-    ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
-    interface: Optional[str] = None,
-    local_ip: Optional[str] = None,
+    capture_options: Optional[PacketCaptureOptions] = None,
     context_frames: int = 5,
     min_confidence: float = 0.80,
 ) -> CalibrationResult:
@@ -717,9 +733,7 @@ def calibrate_live(
         item_id=item_id,
         quantity=quantity,
         action=action,
-        ports=ports,
-        interface=interface,
-        local_ip=local_ip,
+        capture_options=capture_options,
         context_frames=context_frames,
         min_confidence=min_confidence,
     )
@@ -840,9 +854,8 @@ def calibrate_and_update(
     capture_seconds: Optional[float] = None,
     quantity: Optional[int] = None,
     action: str = "auto",
-    ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
-    interface: Optional[str] = None,
-    local_ip: Optional[str] = None,
+    capture_options: Optional[PacketCaptureOptions] = None,
+    pcap_ports: Optional[tuple[int, ...]] = None,
     context_frames: int = 5,
     min_confidence: float = 0.80,
     replace: bool = True,
@@ -852,9 +865,11 @@ def calibrate_and_update(
 
     With ``pcap`` set the capture is replayed from disk; otherwise a live
     capture runs (``capture_seconds`` timer, or Ctrl+C to stop, exactly like
-    :func:`calibrate_live`). If calibration promoted specs they are merged
-    into ``profile_path`` and both objects come back; if it found nothing the
-    profile file is left untouched and the update slot is ``None``::
+    :func:`calibrate_live`). ``pcap_ports`` applies only to the recording;
+    ``capture_options`` applies only to live packet acquisition. If calibration
+    promoted specs they are merged into ``profile_path`` and both objects come
+    back; if it found nothing the profile file is left untouched and the update
+    slot is ``None``::
 
         result, update = calibrate_and_update("opcodes.local", item_id=7003)
         print(result.summary())
@@ -869,8 +884,7 @@ def calibrate_and_update(
     if pcap is not None:
         for name, value in (
             ("capture_seconds", capture_seconds),
-            ("interface", interface),
-            ("local_ip", local_ip),
+            ("capture_options", capture_options),
         ):
             if value is not None:
                 raise ValueError(
@@ -881,19 +895,22 @@ def calibrate_and_update(
             item_id=item_id,
             quantity=quantity,
             action=action,
-            ports=ports,
+            ports=DEFAULT_SERVER_PORTS if pcap_ports is None else pcap_ports,
             context_frames=context_frames,
             min_confidence=min_confidence,
         )
     else:
+        if pcap_ports is not None:
+            raise ValueError(
+                "pcap_ports applies to offline calibration only; omit it "
+                "without pcap"
+            )
         result = calibrate_live(
             item_id=item_id,
             capture_seconds=capture_seconds,
             quantity=quantity,
             action=action,
-            ports=ports,
-            interface=interface,
-            local_ip=local_ip,
+            capture_options=capture_options,
             context_frames=context_frames,
             min_confidence=min_confidence,
         )
@@ -1226,22 +1243,27 @@ def _calibrate_storage_to_inventory(
     # Write the SINGLE-record length even when calibrated from a multi-record
     # frame (unstackables): the recorded length acts as a minimum at load
     # time, so the observed multi-record length would block single transfers.
+    layout_item_offset, layout_instance_offset = _first_transfer_record_layout(
+        best.frame,
+        best.item_offset,
+        best.instance_offset,
+    )
     single_record_length, observed_stride = _record_frame_shape(
         best.frame,
         best.item_id,
-        best.item_offset,
-        best.instance_offset,
+        layout_item_offset,
+        layout_instance_offset,
     )
     specs = [
         MessageSpec(
             event="INVENTORY_TRANSFER",
             opcode=best.frame.opcode,
             length=single_record_length,
-            item_id_offset=best.item_offset,
-            quantity_offset=best.item_offset + 4,
-            item_instance_offset=best.instance_offset,
-            context_offset=_discover_context_offset(best.frame, best.item_offset),
-            repeat_stride=_discover_repeat_stride(best.frame, best.item_offset)
+            item_id_offset=layout_item_offset,
+            quantity_offset=layout_item_offset + 4,
+            item_instance_offset=layout_instance_offset,
+            context_offset=_discover_context_offset(best.frame, layout_item_offset),
+            repeat_stride=_discover_repeat_stride(best.frame, layout_item_offset)
             or observed_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "storage-to-inventory"),
@@ -1303,29 +1325,34 @@ def _calibrate_inventory_to_storage(
     # Same single-record length normalization as the receipt spec; also record
     # the observed stride so a multi-record storage delta (unstackable
     # deposits) decodes all records under the written profile.
+    layout_item_offset, layout_instance_offset = _first_transfer_record_layout(
+        best.frame,
+        best.item_offset,
+        best.instance_offset,
+    )
     single_record_length, observed_stride = _record_frame_shape(
         best.frame,
         best.item_id,
-        best.item_offset,
-        best.instance_offset,
+        layout_item_offset,
+        layout_instance_offset,
     )
     storage_context_offset = _discover_storage_context_offset(
         best.frame,
-        best.item_offset,
+        layout_item_offset,
     )
     repeat_stride = observed_stride or _discover_storage_repeat_stride(
         best.frame,
-        best.item_offset,
-        best.instance_offset,
+        layout_item_offset,
+        layout_instance_offset,
     )
     specs.append(
         MessageSpec(
             event="STORAGE_ITEM_DELTA",
             opcode=best.frame.opcode,
             length=single_record_length,
-            item_id_offset=best.item_offset,
-            quantity_added_offset=best.item_offset + 4,
-            destination_instance_offset=best.instance_offset,
+            item_id_offset=layout_item_offset,
+            quantity_added_offset=layout_item_offset + 4,
+            destination_instance_offset=layout_instance_offset,
             context_offset=storage_context_offset,
             repeat_stride=repeat_stride,
             confidence=_confidence_label(best.confidence),
@@ -1545,6 +1572,22 @@ def _record_frame_shape(
     return frame.length - (len(offsets) - 1) * stride, stride
 
 
+def _first_transfer_record_layout(
+    frame: BDOFrame,
+    item_offset: int,
+    instance_offset: Optional[int],
+) -> tuple[int, Optional[int]]:
+    """Normalize a watched later batch item back to record zero's offsets."""
+    if instance_offset is None:
+        return item_offset, None
+    instance_delta = instance_offset - item_offset
+    offsets = _full_transfer_record_offsets(frame, item_offset, instance_offset)
+    if not offsets:
+        return item_offset, instance_offset
+    first_item_offset = offsets[0]
+    return first_item_offset, first_item_offset + instance_delta
+
+
 def _full_transfer_record_offsets(
     frame: BDOFrame,
     item_offset: int,
@@ -1558,7 +1601,7 @@ def _full_transfer_record_offsets(
         return []
     return [
         offset
-        for offset in range(item_offset, len(frame.message))
+        for offset in range(5, len(frame.message))
         if _looks_like_transfer_record(frame, offset, instance_delta)
     ]
 

@@ -15,32 +15,46 @@ from ._protocol import (
     LootEvent,
     source_label,
     split_item_id_enhancement,
+    PacketContext,
 )
 from ._reassembly import FlowManager
 from .events import BDOEvent, Flow
 
 
 class _TeeScanner:
-    """Feed one reassembled stream to the target scanner and a frame tap.
+    """Feed one reassembled stream to the target scanner and observers.
 
-    The tap runs FIRST so correlation logic already holds every frame of a
-    TCP segment by the time the target scanner emits events from it.
+    Observers run FIRST so correlation logic already holds every raw span and
+    generic frame of a TCP segment when the target scanner emits events.
     """
 
-    def __init__(self, primary: TargetMessageScanner, tap: FrameCollectorScanner) -> None:
+    def __init__(
+        self,
+        primary: TargetMessageScanner,
+        tap: Optional[FrameCollectorScanner],
+        stream_observer: Optional[Callable[[bytes, PacketContext], None]],
+    ) -> None:
         self._primary = primary
         self._tap = tap
+        self._stream_observer = stream_observer
 
     def feed(self, data, context) -> None:
-        self._tap.feed(data, context)
+        if self._stream_observer is not None:
+            self._stream_observer(data, context)
+        if self._tap is not None:
+            self._tap.feed(data, context)
         self._primary.feed(data, context)
 
     def scan_standalone(self, data, context) -> None:
-        self._tap.scan_standalone(data, context)
+        if self._stream_observer is not None:
+            self._stream_observer(data, context)
+        if self._tap is not None:
+            self._tap.scan_standalone(data, context)
         self._primary.scan_standalone(data, context)
 
     def reset(self) -> None:
-        self._tap.reset()
+        if self._tap is not None:
+            self._tap.reset()
         self._primary.reset()
 
 
@@ -112,6 +126,7 @@ class PacketEngine:
         event_specs: Iterable[EventSpec],
         on_event: Callable[[LootEvent, bytes], None],
         frame_observer: Optional[Callable[[BDOFrame], None]] = None,
+        stream_observer: Optional[Callable[[bytes, PacketContext], None]] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
@@ -119,9 +134,14 @@ class PacketEngine:
 
         def build_scanner():
             primary = TargetMessageScanner(self._handle_record, self.event_specs)
-            if frame_observer is None:
+            if frame_observer is None and stream_observer is None:
                 return primary
-            return _TeeScanner(primary, FrameCollectorScanner(frame_observer))
+            tap = (
+                FrameCollectorScanner(frame_observer)
+                if frame_observer is not None
+                else None
+            )
+            return _TeeScanner(primary, tap, stream_observer)
 
         self._flow_manager = FlowManager(
             server_ports=server_ports,

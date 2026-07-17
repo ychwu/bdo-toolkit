@@ -63,7 +63,31 @@ decoded events before ending. A session is single-use; create a new one when
 the feature is started again. See the runnable
 [`controlled_live_capture.py`](examples/controlled_live_capture.py) example.
 
-Live backend controls are grouped in `LiveCaptureOptions`:
+Asyncio apps can use the same capture engine without writing their own thread
+bridge:
+
+```python
+import asyncio
+
+from bdo_toolkit import AsyncLiveCaptureSession
+
+async def main():
+    async with AsyncLiveCaptureSession() as session:
+        async for event in session:
+            print(event.format_human())
+
+asyncio.run(main())
+```
+
+`AsyncLiveCaptureSession` and `AsyncCalibrationSession` are additive facades
+over the synchronous sessions. See the dedicated
+[asyncio guide](https://ychwu.github.io/bdo-toolkit/asyncio.html) and the
+runnable [`async_live_capture.py`](examples/async_live_capture.py) example.
+
+Packet acquisition controls shared with live calibration live in
+`PacketCaptureOptions`. `LiveCaptureOptions` extends those settings with the
+decoded-event queue size used by `capture_live()`, `LiveCaptureSession`, and
+`AsyncLiveCaptureSession`:
 
 ```python
 from bdo_toolkit import LiveCaptureOptions, LiveCaptureSession
@@ -116,9 +140,13 @@ public surface with examples:
   captures into events
 - [`LiveCaptureSession`](https://ychwu.github.io/bdo-toolkit/#livecapturesession)
   — programmatic Start/Stop, polling, cleanup, and background error reporting
+- [Asyncio integration](https://ychwu.github.io/bdo-toolkit/asyncio.html) —
+  `AsyncLiveCaptureSession`, `AsyncCalibrationSession`, cancellation, and
+  Start/Stop patterns for async apps
 - [`LiveCaptureOptions`](https://ychwu.github.io/bdo-toolkit/#livecaptureoptions)
   and [`EventFilter`](https://ychwu.github.io/bdo-toolkit/#eventfilter) — reusable
-  live-backend and event-selection configuration
+  live-event and event-selection configuration; `PacketCaptureOptions` carries
+  the network settings shared with live calibration
 - [`BDOEvent`](https://ychwu.github.io/bdo-toolkit/#bdoevent) — the stable
   event model and its [event types](https://ychwu.github.io/bdo-toolkit/#event-types)
 - [Opcode profiles](https://ychwu.github.io/bdo-toolkit/#profiles) — bundled
@@ -164,6 +192,29 @@ result = session.stop()
 if "STORAGE_ITEM_DELTA" in result.events_found:
     update_profile(result, "opcodes.json", replace=True)
 ```
+
+In an asyncio app, await the calibration lifecycle directly:
+
+```python
+import asyncio
+
+from bdo_toolkit import AsyncCalibrationSession
+
+async def main():
+    async with AsyncCalibrationSession(item_id=7003, quantity=3) as session:
+        await asyncio.to_thread(
+            input,
+            "Move 3 Potatoes to storage and back, then press Enter...",
+        )
+        result = await session.stop()
+    print(result.summary())
+
+asyncio.run(main())
+```
+
+When the network defaults are not suitable, pass
+`capture_options=PacketCaptureOptions(...)` to `CalibrationSession`,
+`AsyncCalibrationSession`, or `calibrate_live()`.
 
 Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
 

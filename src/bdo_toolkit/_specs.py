@@ -109,9 +109,10 @@ def _event_spec_from_entry(
             source_context_offset=context_offset,
             item_instance_offset=item_instance_offset,
             repeat_stride=repeat_stride,
-            single_record_message_length=(
-                length if repeat_stride is not None else None
-            ),
+            # Preserve the calibrated base length even when a single-record
+            # capture could not reveal a repeat stride. Runtime structural
+            # discovery uses it to validate later multi-record messages.
+            single_record_message_length=length,
         )
 
     if event == "STORAGE_ITEM_DELTA":
@@ -142,9 +143,7 @@ def _event_spec_from_entry(
             source_context_offset=context_offset,
             storage_instance_offset=destination_instance_offset,
             repeat_stride=repeat_stride,
-            single_record_message_length=(
-                length if repeat_stride is not None else None
-            ),
+            single_record_message_length=length,
             default_context="Storage",
         )
 

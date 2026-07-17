@@ -147,10 +147,6 @@ class EventSpec:
                 raise ValueError(
                     f"{self.label} single_record_message_length must be an integer"
                 )
-            if self.repeat_stride is None:
-                raise ValueError(
-                    f"{self.label} single_record_message_length requires repeat_stride"
-                )
             if not (
                 self.min_message_length
                 <= self.single_record_message_length

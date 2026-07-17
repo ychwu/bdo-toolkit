@@ -2,7 +2,9 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-from .capture import LiveCaptureOptions, LiveCaptureSession, capture_live, replay_pcap
+from ._async_sessions import AsyncCalibrationSession, AsyncLiveCaptureSession
+from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
+from .capture import LiveCaptureSession, capture_live, replay_pcap
 from .events import BDOEvent, Flow
 from .filters import EventFilter
 from .profiles import (
@@ -27,6 +29,8 @@ except PackageNotFoundError:  # source tree without installed metadata
     __version__ = "0.1.0"
 
 __all__ = [
+    "AsyncCalibrationSession",
+    "AsyncLiveCaptureSession",
     "BDOEvent",
     "ConsoleEventWriter",
     "EventFilter",
@@ -34,6 +38,7 @@ __all__ = [
     "JsonlEventWriter",
     "LiveCaptureOptions",
     "LiveCaptureSession",
+    "PacketCaptureOptions",
     "OpcodeProfile",
     "OriginCompanionFamily",
     "CompanionObservation",

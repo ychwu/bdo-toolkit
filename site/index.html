@@ -247,6 +247,7 @@ footer {
       <a class="nl" href="#capture-live"><code>capture_live()</code></a>
       <a class="nl" href="#livecaptureoptions"><code>LiveCaptureOptions</code></a>
       <a class="nl" href="#livecapturesession"><code>LiveCaptureSession</code></a>
+      <a class="nl" href="asyncio.html">Asyncio support</a>
       <a class="nl" href="#bdoevent"><code>BDOEvent</code></a>
       <a class="nl" href="#event-types">Event types &amp; sources</a>
       <a class="nl" href="#eventfilter"><code>EventFilter</code></a>
@@ -367,11 +368,13 @@ footer {
     <tr><td>Parse a saved capture</td><td class="mono"><a href="#replay-pcap">replay_pcap(path, …)</a></td><td class="mono">Iterator[<a href="#bdoevent">BDOEvent</a>]</td><td>Offline and deterministic — the easiest surface to build and test against.</td></tr>
     <tr><td>Stream live events in a script</td><td class="mono"><a href="#capture-live">capture_live(…)</a></td><td class="mono">Iterator[BDOEvent]</td><td>Blocking iterator; yields as packets decode.</td></tr>
     <tr><td>Start and stop live capture from an app/GUI</td><td class="mono"><a href="#livecapturesession">LiveCaptureSession</a></td><td class="mono">events() / poll()</td><td>Explicit lifecycle control; <code>stop()</code> wakes a quiet consumer from another thread.</td></tr>
+    <tr><td>Stream live events in an asyncio app</td><td class="mono"><a href="asyncio.html#async-live-capture-session">AsyncLiveCaptureSession</a></td><td class="mono">AsyncIterator[BDOEvent]</td><td>Use <code>async with</code> and <code>async for</code>; thread bridging and cancellation cleanup are built in.</td></tr>
     <tr><td>Track worker production</td><td class="mono">capture_live(event_filter=EventFilter(deposit_origins={"worker"}))</td><td class="mono">Iterator[BDOEvent]</td><td>Classification is automatic—no learner required. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
     <tr><td>Recalibrate from a recording</td><td class="mono"><a href="#calibrate-pcap">calibrate_pcap(path, …)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>Deterministic — ideal for tests and support reports.</td></tr>
     <tr><td>Recalibrate from a terminal</td><td class="mono"><a href="#calibrate-live">calibrate_live(…)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>One blocking call; timer or Ctrl+C to stop.</td></tr>
     <tr><td>Recalibrate <em>and</em> persist in one call</td><td class="mono"><a href="#calibrate-and-update">calibrate_and_update(path, …)</a></td><td class="mono">(<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | None)</td><td>The post-patch recovery path; profile untouched if nothing was found.</td></tr>
     <tr><td>Recalibrate inside your app's UI</td><td class="mono"><a href="#calibrationsession">CalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">stop()</span></td><td>Explicit <span class="mono">start()</span>/<span class="mono">stop()</span>; <span class="mono">frames_collected</span> for UI feedback.</td></tr>
+    <tr><td>Recalibrate inside an asyncio app</td><td class="mono"><a href="asyncio.html#async-calibration-session">AsyncCalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">await stop()</span></td><td>Awaitable capture, analysis, abort, and cancellation-safe cleanup.</td></tr>
     <tr><td>Persist discovered specs</td><td class="mono"><a href="#update-profile">update_profile(result, path)</a></td><td class="mono"><a href="#profileupdate">ProfileUpdate</a></td><td>Merges with dedupe and backup; <span class="mono">replace=True</span> supersedes stale entries.</td></tr>
     <tr><td>Inspect a profile</td><td class="mono"><a href="#load-opcode-profile">load_opcode_profile(path)</a></td><td class="mono"><a href="#load-opcode-profile">OpcodeProfile</a></td><td>Metadata and raw specs, no decoding.</td></tr>
     <tr><td>Audit worker companion families</td><td class="mono"><a href="#origin-learner">OriginLearner / origin-learn</a></td><td class="mono">candidate families</td><td>Optional maintenance tooling. It observes workers already found by the structural classifier.</td></tr>
@@ -452,8 +455,10 @@ worker_deposits = <span class="f">EventFilter</span>(event_types={<span class="s
   <h2 class="api">bdo_toolkit.LiveCaptureOptions</h2>
   <div class="sig"><span class="f">LiveCaptureOptions</span>(interface=<span class="k">None</span>, local_ip=<span class="k">None</span>, ports=(8884, 8885, 8889),
                      use_bpf=<span class="k">True</span>, auto_local_ip=<span class="k">True</span>, event_queue_size=1024)</div>
-  <p>Immutable live-capture configuration shared by <code>capture_live()</code> and
-  <code>LiveCaptureSession</code>. The positive boolean names make the normal behavior explicit:</p>
+  <p>Immutable live-capture configuration shared by <code>capture_live()</code>,
+  <code>LiveCaptureSession</code>, and
+  <a href="asyncio.html#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>.
+  The positive boolean names make the normal behavior explicit:</p>
   <div class="params">
     <div class="prow"><div class="pname">interface<span class="ptype">str | None</span></div><div class="pdesc">Capture interface; <code>None</code> uses default-route detection.</div></div>
     <div class="prow"><div class="pname">local_ip<span class="ptype">str | None</span></div><div class="pdesc">Explicit destination IPv4 restriction.</div></div>
@@ -543,27 +548,10 @@ session.<span class="f">stop</span>()</code></pre>
   <code>stop()</code> on exit.</p>
 
   <h3>Asyncio integration</h3>
-  <p>A separate asyncio API is not required. Because <code>poll()</code> has a bounded timeout and
-  <code>stop()</code> is externally controllable, an async app can bridge the session safely
-  without leaving an uncancellable capture thread behind:</p>
-<pre><code><span class="k">import</span> asyncio
-<span class="k">from</span> bdo_toolkit <span class="k">import</span> LiveCaptureSession
-
-<span class="k">async def</span> <span class="f">consume_live</span>():
-    session = <span class="f">LiveCaptureSession</span>()
-    session.<span class="f">start</span>()
-    <span class="k">try</span>:
-        <span class="k">while True</span>:
-            event = <span class="k">await</span> asyncio.<span class="f">to_thread</span>(session.poll, <span class="s">0.2</span>)
-            <span class="k">if</span> event <span class="k">is not None</span>:
-                <span class="k">await</span> handle_event(event)
-            <span class="k">elif</span> session.stopped:
-                <span class="k">break</span>
-    <span class="k">finally</span>:
-        <span class="k">await</span> asyncio.<span class="f">to_thread</span>(session.stop)</code></pre>
-  <p>Task cancellation enters <code>finally</code>, stops the underlying capture, and lets the
-  outstanding <code>poll()</code> return within 0.2 seconds. A future native async iterator would
-  be convenience syntax over this same lifecycle, not a different decoder.</p>
+  <p>Async apps should use <a href="asyncio.html#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>.
+  It provides awaitable lifecycle methods and native <code>async for</code> syntax while delegating
+  capture, decoding, buffering, finalization, and errors to this same synchronous session.
+  See the <a href="asyncio.html">asyncio guide</a> for Start/Stop, cancellation, and calibration patterns.</p>
 </section>
 
 <section class="section" id="bdoevent">
@@ -950,7 +938,9 @@ result = session.<span class="f">stop</span>()          <span class="c"># user c
   </div>
   <p>Also a context manager: <code>with CalibrationSession(...) as session:</code> stops the
   capture on exit even if the block raises. Call <code>stop()</code> inside the block to get
-  the result.</p>
+  the result. Async applications can use
+  <a href="asyncio.html#async-calibration-session"><code>AsyncCalibrationSession</code></a>
+  to await capture shutdown and calibration without blocking their event loop.</p>
 </section>
 
 <section class="section" id="calibrate-pcap">
@@ -1162,8 +1152,8 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
     <tr><td class="mono">FileNotFoundError</td><td>The capture file passed to <span class="mono">replay_pcap</span>/<span class="mono">calibrate_pcap</span> does not exist.</td></tr>
     <tr><td class="mono">ValueError</td><td>The file exists but cannot be read as a pcap/pcapng.</td></tr>
     <tr><td class="mono">bdo_toolkit.ProfileError</td><td>An opcode profile or origin-candidate file has invalid JSON/schema, or an inactive profile is selected for decoding. Subclass of <span class="mono">ValueError</span>.</td></tr>
-    <tr><td class="mono">RuntimeError</td><td>Scapy is not installed (capture/replay), or a <span class="mono">LiveCaptureSession</span>/<span class="mono">CalibrationSession</span> lifecycle method is used out of order.</td></tr>
-    <tr><td class="mono">Background exception (original type)</td><td><span class="mono">LiveCaptureSession.events()</span> and a fully drained <span class="mono">poll()</span> re-raise decoder/observer failures in the consuming thread instead of silently ending capture.</td></tr>
+    <tr><td class="mono">RuntimeError</td><td>Scapy is not installed (capture/replay), or a synchronous/async session lifecycle method is used out of order.</td></tr>
+    <tr><td class="mono">Background exception (original type)</td><td><span class="mono">LiveCaptureSession</span> and <a href="asyncio.html#async-live-capture-session"><span class="mono">AsyncLiveCaptureSession</span></a> re-raise decoder/observer failures after buffered events drain instead of silently ending capture.</td></tr>
   </table></div>
 </section>
 
@@ -1205,7 +1195,9 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
     btn.textContent = "theme: " + mode;
   });
 
-  var links = Array.prototype.slice.call(document.querySelectorAll(".side a.nl"));
+  var links = Array.prototype.slice.call(
+    document.querySelectorAll('.side a.nl[href^="#"]')
+  );
   var targets = links
     .map(function (link) { return document.querySelector(link.getAttribute("href")); })
     .filter(Boolean);

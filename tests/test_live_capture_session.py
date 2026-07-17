@@ -6,7 +6,13 @@ from threading import Thread
 
 import pytest
 
-from bdo_toolkit import BDOEvent, Flow, LiveCaptureOptions, LiveCaptureSession
+from bdo_toolkit import (
+    BDOEvent,
+    Flow,
+    LiveCaptureOptions,
+    LiveCaptureSession,
+    PacketCaptureOptions,
+)
 from bdo_toolkit import capture as capture_module
 
 
@@ -302,6 +308,16 @@ def test_session_validates_configuration_before_capture_starts():
         LiveCaptureOptions(event_queue_size=0)
     with pytest.raises(ValueError, match="IPv4"):
         LiveCaptureOptions(local_ip="not-an-ip")
+    with pytest.raises(ValueError, match="use_bpf"):
+        PacketCaptureOptions(use_bpf="yes")
+
+
+def test_live_options_extend_shared_packet_capture_options():
+    options = LiveCaptureOptions(ports=(8889, 8889), event_queue_size=3)
+
+    assert isinstance(options, PacketCaptureOptions)
+    assert options.ports == (8889,)
+    assert options.event_queue_size == 3
 
 
 def test_live_options_use_positive_backend_controls(live_fakes):
