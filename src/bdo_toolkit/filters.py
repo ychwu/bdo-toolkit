@@ -11,6 +11,14 @@ from .events import BDOEvent
 T = TypeVar("T")
 
 
+_ACTIVITY_EVENT_TYPES = frozenset(
+    {"loot_preview", "item_received", "storage_delta"}
+)
+_SNAPSHOT_RECORD_EVENT_TYPES = frozenset(
+    {"inventory_snapshot", "storage_snapshot"}
+)
+
+
 def _freeze(values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
     if values is None:
         return None
@@ -21,7 +29,12 @@ def _freeze(values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
 
 @dataclass(frozen=True, init=False)
 class EventFilter:
-    """Filter decoded events before yielding them to an application."""
+    """Filter completed events before yielding them to an application.
+
+    Constructing ``EventFilter()`` directly remains an unconstrained filter.
+    The named presets make common delivery policies explicit without changing
+    the meaning of any caller-supplied filter.
+    """
 
     event_types: Optional[frozenset[str]] = None
     sources: Optional[frozenset[str]] = None
@@ -58,6 +71,24 @@ class EventFilter:
             item_ids=item_ids,
             deposit_origins=deposit_origins,
         )
+
+    @classmethod
+    def activity(cls) -> "EventFilter":
+        """Ordinary live events, excluding hydration and neutral diagnostics."""
+
+        return cls(event_types=_ACTIVITY_EVENT_TYPES)
+
+    @classmethod
+    def snapshot_records(cls) -> "EventFilter":
+        """Per-record inventory and storage character-load hydration."""
+
+        return cls(event_types=_SNAPSHOT_RECORD_EVENT_TYPES)
+
+    @classmethod
+    def all(cls) -> "EventFilter":
+        """Every completed decoded event, equivalent to ``EventFilter()``."""
+
+        return cls()
 
     def allows(self, event: BDOEvent) -> bool:
         if self.event_types is not None and event.event_type not in self.event_types:

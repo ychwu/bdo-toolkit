@@ -35,15 +35,12 @@ LOOT_PREVIEW_SENTINEL_INSTANCE = b"\xff" * 8
 CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH = 27
 CURRENT_STORAGE_DELTA_RECORD_STRIDE = 226
 CHARACTER_LOAD_CONTEXT = b"\x00" * 4
-STORAGE_DELTA_CONTEXTS = (
-    bytes.fromhex("05000000"),
-    bytes.fromhex("20000000"),
-    # Royal Workshop production deposits (observed 2026-07-08, item 821108,
-    # 2-record frame; n=1, no pcap yet — produces intermittently). Registered
-    # here so these frames get the intrinsic into_storage direction signal and
-    # are never mistaken for a receipt context label. Worker attribution is
-    # deposit_origin's job, never the context byte (see the 20000000 history).
-    bytes.fromhex("8c050000"),
+# Legacy storage-delta signatures that calibration has observed at varying
+# pre-record offsets. The complete location registry below must not be used as
+# a free-form signature list: small town IDs can coincide with ordinary uint32
+# fields elsewhere in a message.
+STORAGE_DELTA_CONTEXTS = tuple(
+    storage_id.to_bytes(4, "little") for storage_id in (0x0005, 0x0020, 0x058C)
 )
 
 ENHANCEMENT_LABELS: dict[int, str] = {
@@ -69,12 +66,9 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("0471ee0e"): "Gathering",
     bytes.fromhex("85fa5745"): "Mob Drop",
     bytes.fromhex("d0f205a3"): "Storage",
-    STORAGE_DELTA_CONTEXTS[0]: "Storage",
-    # 0x20 is batch-style storage delta: seen on worker deposits (any record
-    # count, including single) AND manual multi-record deposits. It is NOT
-    # worker-specific; worker isolation needs correlation (see wiki).
-    STORAGE_DELTA_CONTEXTS[1]: "Batch Storage Deposit",
-    STORAGE_DELTA_CONTEXTS[2]: "Royal Workshop",
+    STORAGE_DELTA_CONTEXTS[0]: "Velia",
+    STORAGE_DELTA_CONTEXTS[1]: "Heidel",
+    STORAGE_DELTA_CONTEXTS[2]: "Yukjo Street",
     bytes.fromhex("43ce1321"): "Central Market",
     bytes.fromhex("89fa09af"): "Black Spirit Safe",
     bytes.fromhex("35bd5d70"): "Challenges",
@@ -85,6 +79,76 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("56687f25"): "Choose Your Rewards Box",
     bytes.fromhex("52e89da8"): "NPC Sell",
 }
+
+
+@dataclass(frozen=True)
+class StorageLocation:
+    """Best-known name for a numeric storage destination key.
+
+    ``confidence`` distinguishes names directly proven by a unique occupied
+    record count or controlled storage action from names inferred within
+    equal-count groups, and names of empty destinations that are still
+    provisional. The key itself is the durable protocol value; applications
+    should not treat a provisional name as an identity.
+    """
+
+    name: str
+    confidence: str
+
+
+# Numeric little-endian town/storage keys observed in the 2026-07-17 initial
+# game-load storage snapshot. Some older profiles placed the field at another
+# offset, but captures confirm that it was still the destination key.
+STORAGE_LOCATIONS: dict[int, StorageLocation] = {
+    # Direct observations from unique occupied-record counts or controlled
+    # storage actions.
+    0x0005: StorageLocation("Velia", "observed"),
+    0x0020: StorageLocation("Heidel", "observed"),
+    0x0034: StorageLocation("Glish", "observed"),
+    0x004D: StorageLocation("Calpheon City", "observed"),
+    0x0058: StorageLocation("Olvia", "observed"),
+    0x0078: StorageLocation("Port Epheria", "observed"),
+    0x00CA: StorageLocation("Altinova", "observed"),
+    0x00DA: StorageLocation("Asparkan", "observed"),
+    0x00DD: StorageLocation("Tarif", "observed"),
+    0x025D: StorageLocation("Sand Grain Bazaar", "observed"),
+    0x02B5: StorageLocation("Arehaza", "observed"),
+    0x02C2: StorageLocation("Old Wisdom Tree", "observed"),
+    0x0369: StorageLocation("Duvencrune", "observed"),
+    0x03BB: StorageLocation("O'draxxia", "observed"),
+    0x03E8: StorageLocation("Oquilla's Eye", "observed"),
+    0x0464: StorageLocation("Eilton", "observed"),
+    0x04C3: StorageLocation("Nampo's Moodle Village", "observed"),
+    0x04DE: StorageLocation("Nopsae's Byeot County", "observed"),
+    0x055F: StorageLocation("Muzgar", "observed"),
+    0x0566: StorageLocation("Velandir", "observed"),
+    0x058C: StorageLocation("Yukjo Street", "observed"),
+    # Confirmed by controlled manual deposits on 2026-07-17. These wrappers
+    # carried the expected numeric destination key and normalized town name.
+    0x0590: StorageLocation("Godu Village", "observed"),
+    0x05A4: StorageLocation("Bukpo", "observed"),
+    # The capture fixes each key to an equal-count group; the exact name in
+    # each group follows the established region-key ordering and is inferred.
+    0x006B: StorageLocation("Keplan", "inferred"),
+    0x007E: StorageLocation("Trent", "inferred"),
+    0x00B6: StorageLocation("Iliya Island", "inferred"),
+    0x00E5: StorageLocation("Shakatu", "inferred"),
+    0x0259: StorageLocation("Valencia City", "inferred"),
+    0x026B: StorageLocation("Ancado Inner Harbor", "inferred"),
+    0x02DF: StorageLocation("Grana", "inferred"),
+    0x04BA: StorageLocation("Dalbeol Village", "inferred"),
+    # Empty messages carry no item content with which to prove the name.
+    0x02B6: StorageLocation("Muiquun", "probable"),
+    0x0611: StorageLocation("Hakinza Sanctuary", "probable"),
+}
+
+
+def storage_location(storage_id: Optional[int]) -> Optional[StorageLocation]:
+    """Return the best-known location metadata for a storage key."""
+
+    if storage_id is None:
+        return None
+    return STORAGE_LOCATIONS.get(storage_id)
 
 
 @dataclass(frozen=True)
@@ -198,6 +262,10 @@ class LootEvent:
     record_offset: Optional[int] = None
     record_index: Optional[int] = None
     record_count: Optional[int] = None
+    # Storage-family metadata. Normalization can derive ``storage_id`` from a
+    # nonzero four-byte storage context for older decoder integrations.
+    storage_id: Optional[int] = None
+    storage_operation: Optional[str] = None
 
 
 EventCallback = Callable[[LootEvent, bytes], None]

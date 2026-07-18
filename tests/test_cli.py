@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,17 @@ from bdo_toolkit import cli
 from bdo_toolkit._protocol import FlowKey
 from bdo_toolkit.calibration import CalibrationResult, MessageSpec
 from bdo_toolkit.origin_learning import CompanionObservation
+from bdo_toolkit.solare import (
+    SolareCaptureResult,
+    SolareClass,
+    SolareDetectionStatus,
+    SolareEvidence,
+    SolareLeaderboardSnapshot,
+    SolarePlayer,
+    SolareUpdate,
+    SolareUpdateKind,
+)
+from bdo_toolkit.solare.models import solare_snapshot_id
 
 
 def test_replay_invalid_capture_is_a_clean_cli_error(tmp_path, capsys):
@@ -93,6 +105,147 @@ def test_cli_version(capsys):
         cli.main(["--version"])
     assert exc_info.value.code == 0
     assert "bdo-toolkit 0.1.0" in capsys.readouterr().out
+
+
+def _complete_solare_result() -> SolareCaptureResult:
+    player = SolarePlayer(
+        name="ExamplePlayer",
+        global_rank=1,
+        primary_class=SolareClass(0, "Warrior"),
+    )
+    evidence = SolareEvidence(
+        ranked_players=620,
+        overall_players=100,
+        exact_cross_check=100,
+    )
+    snapshot = SolareLeaderboardSnapshot(
+        snapshot_id=solare_snapshot_id((player,)),
+        observed_at=1234.5,
+        players=(player,),
+        evidence=evidence,
+    )
+    return SolareCaptureResult(
+        status=SolareDetectionStatus.COMPLETE,
+        evidence=evidence,
+        snapshot=snapshot,
+    )
+
+
+def test_solare_replay_cli_writes_json_and_uses_domain_exit_status(
+    monkeypatch,
+    capsys,
+):
+    result = SolareCaptureResult(
+        status=SolareDetectionStatus.MENU_CONTEXT,
+        evidence=SolareEvidence(),
+        message="menu only",
+    )
+    monkeypatch.setattr(cli, "replay_solare", lambda *args, **kwargs: result)
+
+    exit_code = cli.main(["solare", "replay", "unused.pcapng"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    output = json.loads(captured.out)
+    assert output["status"] == "menu-context"
+    assert output["complete"] is False
+    assert captured.err == ""
+
+
+def test_solare_replay_cli_refuses_to_overwrite_input_capture(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    capture = tmp_path / "leaderboard.pcapng"
+    capture.write_bytes(b"capture")
+    monkeypatch.setattr(
+        cli,
+        "replay_solare",
+        lambda *args, **kwargs: pytest.fail("replay must not start"),
+    )
+
+    exit_code = cli.main(
+        ["solare", "replay", str(capture), "--output", str(capture)]
+    )
+
+    assert exit_code == 2
+    assert capture.read_bytes() == b"capture"
+    assert "must not overwrite" in capsys.readouterr().err
+
+
+def test_solare_live_cli_reports_progress_and_passes_capture_options(
+    monkeypatch,
+    capsys,
+):
+    result = _complete_solare_result()
+    observed = {}
+
+    def fake_capture(**kwargs):
+        observed.update(kwargs)
+        kwargs["on_update"](
+            SolareUpdate(
+                kind=SolareUpdateKind.RANKED_PROGRESS,
+                message="400 ranked players recovered",
+                ranked_players=400,
+            )
+        )
+        return result
+
+    monkeypatch.setattr(cli, "capture_solare_snapshot", fake_capture)
+
+    exit_code = cli.main(
+        [
+            "solare",
+            "live",
+            "--iface",
+            "Npcap adapter",
+            "--local-ip",
+            "192.0.2.25",
+            "--no-bpf",
+            "--save-pcap",
+            "next-patch.pcapng",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert json.loads(captured.out)["status"] == "complete"
+    assert "[ranked-progress] 400 ranked players recovered" in captured.err
+    options = observed["capture_options"]
+    assert options.interface == "Npcap adapter"
+    assert options.local_ip == "192.0.2.25"
+    assert options.use_bpf is False
+    assert observed["save_pcap"] == Path("next-patch.pcapng")
+    assert observed["stop_on_complete"] is True
+
+
+def test_solare_live_cli_refuses_shared_capture_and_json_path(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    destination = tmp_path / "solare-output.pcapng"
+    monkeypatch.setattr(
+        cli,
+        "capture_solare_snapshot",
+        lambda **kwargs: pytest.fail("capture must not start"),
+    )
+
+    exit_code = cli.main(
+        [
+            "solare",
+            "live",
+            "--save-pcap",
+            str(destination),
+            "--output",
+            str(destination),
+        ]
+    )
+
+    assert exit_code == 2
+    assert not destination.exists()
+    assert "different paths" in capsys.readouterr().err
 
 
 def test_origin_learn_cli_persists_confirmed_unknown_family(

@@ -14,6 +14,7 @@ from .profiles import (
     default_profile_path,
     load_opcode_profile,
 )
+from ._protocol import StorageLocation, storage_location
 from .origin_learning import (
     CompanionObservation,
     OriginCompanionCandidate,
@@ -22,6 +23,7 @@ from .origin_learning import (
     promote_origin_candidates,
 )
 from .writers import ConsoleEventWriter, JsonlEventWriter
+from . import solare
 
 try:
     __version__ = version("bdo-toolkit")
@@ -46,10 +48,13 @@ __all__ = [
     "OriginLearner",
     "OriginPromotion",
     "ProfileError",
+    "StorageLocation",
     "__version__",
     "capture_live",
     "default_profile_path",
     "load_opcode_profile",
     "promote_origin_candidates",
     "replay_pcap",
+    "storage_location",
+    "solare",
 ]

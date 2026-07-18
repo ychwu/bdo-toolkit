@@ -82,6 +82,11 @@ def test_calibration_storage_to_inventory_with_changed_source_instance():
     assert (transfer.opcode, transfer.length) == (0x0F16, 255)
     decrement = specs["SOURCE_CONTAINER_DECREMENT"][0]
     assert (decrement.opcode, decrement.length) == (0x13A5, 40)
+    assert decrement.context_offset == 7
+    assert decrement.quantity_removed_offset == 32
+    # This capture's source instance differs from the receipt instance. The
+    # legacy instance + separator + quantity shape still proves its offset.
+    assert decrement.source_instance_offset == 23
 
 
 @requires_fixtures
@@ -189,6 +194,239 @@ def test_calibration_still_discovers_old_inventory_to_storage():
     assert (delta.opcode, delta.length) == (0x1B6A, 264)
     assert (delta.item_id_offset, delta.quantity_added_offset) == (43, 47)
     assert delta.destination_instance_offset == 78
+
+
+@requires_fixtures
+@pytest.mark.parametrize(
+    (
+        "fixture_name",
+        "item_id",
+        "quantity",
+        "expected_opcode",
+        "expected_length",
+        "expected_instance_offset",
+        "expected_quantity_offset",
+    ),
+    [
+        ("new_potato_1_1_1.pcapng", 7003, 1, 0x1A32, 52, 34, 42),
+        ("potato_leaving_inventory_qty10.pcapng", 7003, 10, 0x13ED, 45, 29, 37),
+        ("potato_7_3_to_storage.pcapng", 7003, 7, 0x13ED, 45, 29, 37),
+        ("new_item_to_storage_13_42.pcapng", 44195, 42, 0x13ED, 45, 29, 37),
+    ],
+)
+def test_calibration_preserves_legacy_stack_layout_when_instances_differ(
+    fixture_name,
+    item_id,
+    quantity,
+    expected_opcode,
+    expected_length,
+    expected_instance_offset,
+    expected_quantity_offset,
+):
+    result = calibrate_pcap(
+        fixture_path(fixture_name),
+        item_id=item_id,
+        quantity=quantity,
+        action="inventory-to-storage",
+    )
+
+    stack = _specs_by_event(result)["SOURCE_STACK_DECREMENT"][0]
+    assert (stack.opcode, stack.length) == (expected_opcode, expected_length)
+    assert stack.source_instance_offset == expected_instance_offset
+    assert stack.quantity_removed_offset == expected_quantity_offset
+
+
+@requires_fixtures
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "calibration_5_inven_0_storage.pcapng",
+        "calibration_to_different_inventory_through_remote.pcapng",
+    ],
+)
+def test_calibration_discovers_all_current_patch_transfer_specs(fixture_name):
+    result = calibrate_pcap(
+        fixture_path(fixture_name),
+        item_id=7003,
+        quantity=5,
+    )
+
+    specs = _specs_by_event(result)
+    assert set(specs) == {
+        "INVENTORY_TRANSFER",
+        "SOURCE_CONTAINER_DECREMENT",
+        "SOURCE_STACK_DECREMENT",
+        "SOURCE_ITEM_REFERENCE",
+        "STORAGE_ITEM_DELTA",
+    }
+
+    transfer = specs["INVENTORY_TRANSFER"][0]
+    assert (transfer.opcode, transfer.length) == (0x194A, 254)
+    assert (transfer.item_id_offset, transfer.quantity_offset) == (31, 35)
+    assert transfer.item_instance_offset == 66
+    assert transfer.context_offset == 27
+
+    container = specs["SOURCE_CONTAINER_DECREMENT"][0]
+    assert (container.opcode, container.length) == (0x17E8, 42)
+    assert container.context_offset == 13
+    assert container.source_instance_offset == 5
+    assert container.quantity_removed_offset == 17
+
+    stack = specs["SOURCE_STACK_DECREMENT"][0]
+    assert (stack.opcode, stack.length) == (0x11AD, 47)
+    assert stack.source_instance_offset == 35
+    assert stack.quantity_removed_offset == 27
+
+    reference = specs["SOURCE_ITEM_REFERENCE"][0]
+    assert (reference.opcode, reference.length) == (0x0F63, 23)
+    assert reference.item_id_offset == 9
+
+    delta = specs["STORAGE_ITEM_DELTA"][0]
+    assert (delta.opcode, delta.length) == (0x126D, 257)
+    assert (delta.item_id_offset, delta.quantity_added_offset) == (36, 40)
+    assert delta.destination_instance_offset == 71
+
+
+def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import (
+        _CalibratedItemRecord,
+        _Options,
+        _discover_source_stack_decrement,
+    )
+
+    flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
+
+    def frame(index, opcode, message):
+        message[0:2] = len(message).to_bytes(2, "little")
+        message[3:5] = opcode.to_bytes(2, "little")
+        return BDOFrame(
+            index=index,
+            message=bytes(message),
+            context=PacketContext(1000.0 + index, flow),
+            stream_sequence=index,
+        )
+
+    quantity = 5
+    item_id = 7003
+    target_instance = bytes.fromhex("1122334455667788")
+
+    decrement_message = bytearray(47)
+    decrement_message[19:27] = bytes.fromhex("00000000be5b0500")
+    decrement_message[27:31] = quantity.to_bytes(4, "little")
+    # A current-layout source instance follows the quantity and zero gap. It
+    # differs from the destination instance, while unrelated nonzero bytes at
+    # q-8 reproduce the false offset 19 seen in the remote capture.
+    decrement_message[35:43] = bytes.fromhex("0102030405060708")
+    decrement_message[43:47] = bytes.fromhex("002bff00")
+    decrement = frame(0, 0xBEEF, decrement_message)
+
+    reference_message = bytearray(23)
+    reference_message[9:13] = item_id.to_bytes(4, "little")
+    reference = frame(1, 0xCAFE, reference_message)
+
+    delta_message = bytearray(257)
+    delta_message[36:40] = item_id.to_bytes(4, "little")
+    delta_message[40:44] = quantity.to_bytes(4, "little")
+    delta_message[71:79] = target_instance
+    delta = frame(2, 0xFACE, delta_message)
+    record = _CalibratedItemRecord(
+        frame=delta,
+        item_offset=36,
+        item_id=item_id,
+        quantity=quantity,
+        instance_offset=71,
+        instance=target_instance,
+        confidence=0.95,
+        reasons=(),
+    )
+    options = _Options(item_id, quantity, "auto", 5, 0.80)
+
+    spec = _discover_source_stack_decrement(
+        [decrement, reference, delta], record, options
+    )
+
+    assert spec is not None
+    assert (spec.opcode, spec.length, spec.quantity_removed_offset) == (
+        0xBEEF,
+        47,
+        27,
+    )
+    assert spec.source_instance_offset == 35
+
+
+@pytest.mark.parametrize(
+    ("layout", "expected_context", "expected_instance", "expected_quantity"),
+    [
+        ("current", 13, 5, 17),
+        ("legacy-different-instance", 7, 23, 32),
+    ],
+)
+def test_container_companion_discovers_both_known_field_orders(
+    layout,
+    expected_context,
+    expected_instance,
+    expected_quantity,
+):
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import (
+        _CalibratedItemRecord,
+        _Options,
+        _discover_source_container_decrement,
+    )
+
+    flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
+
+    def frame(index, opcode, message):
+        message[0:2] = len(message).to_bytes(2, "little")
+        message[3:5] = opcode.to_bytes(2, "little")
+        return BDOFrame(
+            index=index,
+            message=bytes(message),
+            context=PacketContext(1000.0 + index, flow),
+            stream_sequence=index,
+        )
+
+    quantity = 5
+    item_id = 7003
+    receipt_instance = bytes.fromhex("1122334455667788")
+    source_context = bytes.fromhex("d0f205a3")
+
+    if layout == "current":
+        companion_message = bytearray(42)
+        companion_message[5:13] = receipt_instance
+        companion_message[13:17] = source_context
+        companion_message[17:21] = quantity.to_bytes(4, "little")
+    else:
+        companion_message = bytearray(40)
+        companion_message[7:11] = source_context
+        companion_message[23:31] = bytes.fromhex("0102030405060708")
+        companion_message[31] = 0x02
+        companion_message[32:36] = quantity.to_bytes(4, "little")
+    companion = frame(0, 0xBEEF, companion_message)
+
+    receipt_frame = frame(1, 0xCAFE, bytearray(80))
+    receipt = _CalibratedItemRecord(
+        frame=receipt_frame,
+        item_offset=31,
+        item_id=item_id,
+        quantity=quantity,
+        instance_offset=66,
+        instance=receipt_instance,
+        confidence=0.95,
+        reasons=(),
+    )
+    options = _Options(item_id, quantity, "auto", 5, 0.80)
+
+    spec = _discover_source_container_decrement(
+        [companion, receipt_frame], receipt, options
+    )
+
+    assert spec is not None
+    assert (spec.opcode, spec.length) == (0xBEEF, len(companion_message))
+    assert spec.context_offset == expected_context
+    assert spec.source_instance_offset == expected_instance
+    assert spec.quantity_removed_offset == expected_quantity
 
 
 @requires_fixtures

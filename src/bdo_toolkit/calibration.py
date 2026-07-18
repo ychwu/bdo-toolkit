@@ -47,6 +47,7 @@ from ._protocol import (
     SOURCE_CONTEXT_LABELS,
     STORAGE_DELTA_CONTEXTS,
     BDOFrame,
+    storage_location,
 )
 from ._reassembly import FlowManager
 from .profiles import ProfileError, _validate_profile_entry, load_opcode_profile
@@ -1026,7 +1027,7 @@ def _has_item_reference_frame(
 
 
 def _has_storage_delta_context(frame: BDOFrame, before_offset: int) -> bool:
-    """Whether an observed storage reason code precedes the item record."""
+    """Whether a validated storage destination field precedes the record."""
     return _discover_storage_context_offset(frame, before_offset) is not None
 
 
@@ -1637,11 +1638,20 @@ def _discover_source_container_decrement(
     receipt: _CalibratedItemRecord,
     options: _Options,
 ) -> Optional[MessageSpec]:
+    """Find the storage-side decrement that precedes an inventory receipt.
+
+    Companion layouts have changed field order across patches, so neither the
+    source instance nor the context is located relative to a fixed field. The
+    moved quantity and a source context identify the companion; an exact
+    receipt-instance match strengthens the result and supplies its offset.
+    """
     item_bytes = receipt.item_id.to_bytes(4, "little")
     quantity_bytes = receipt.quantity.to_bytes(4, "little")
+    candidates: list[MessageSpec] = []
 
-    for frame in reversed(_context_before(frames, receipt.frame, options.context_frames)):
-        if not 30 <= frame.length <= 60:
+    context = _context_before(frames, receipt.frame, options.context_frames)
+    for frame in reversed(context):
+        if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
             continue
         if item_bytes in frame.message:
             continue
@@ -1649,53 +1659,54 @@ def _discover_source_container_decrement(
         if not quantity_offsets:
             continue
 
-        instance_offset = (
-            frame.message.find(receipt.instance)
+        instance_offsets = (
+            _find_all(frame.message, receipt.instance)
             if receipt.instance is not None
-            else -1
+            else []
         )
-        quantity_offset = quantity_offsets[0]
-        context_offset = None
-        score = 0.80
+        # Multiple occurrences do not prove which field is the source
+        # instance. Keep the family calibratable, but omit the uncertain
+        # optional offset instead of choosing one by position.
+        exact_instance_offset = (
+            instance_offsets[0] if len(instance_offsets) == 1 else None
+        )
 
-        if instance_offset >= 0:
-            context_offset = _discover_context_offset(frame, instance_offset)
-            score = 0.90 if quantity_offset > instance_offset else 0.82
-        else:
-            for candidate_quantity_offset in quantity_offsets:
-                context_offset = _discover_context_offset(
-                    frame,
-                    candidate_quantity_offset,
+        for quantity_offset in quantity_offsets:
+            # The current layout places context after instance; older layouts
+            # place it before instance. Both put context before the quantity.
+            context_offset = _discover_context_offset(frame, quantity_offset)
+            if context_offset is None:
+                continue
+            if exact_instance_offset is not None and _ranges_overlap(
+                exact_instance_offset, 8, quantity_offset, 4
+            ):
+                continue
+            structural_instance_offset = _source_container_structural_instance_offset(
+                frame, quantity_offset
+            )
+            instance_offset = exact_instance_offset
+            if instance_offset is not None:
+                score = 0.90
+            elif structural_instance_offset is not None:
+                instance_offset = structural_instance_offset
+                score = 0.86
+            else:
+                score = 0.82
+            candidates.append(
+                MessageSpec(
+                    event="SOURCE_CONTAINER_DECREMENT",
+                    opcode=frame.opcode,
+                    length=frame.length,
+                    context_offset=context_offset,
+                    source_instance_offset=instance_offset,
+                    quantity_removed_offset=quantity_offset,
+                    confidence=_confidence_label(score),
+                    source=_calibration_source(options, "storage-to-inventory"),
+                    observed_at=_iso_timestamp(frame.context.timestamp),
+                    score=score,
                 )
-                if context_offset is None:
-                    continue
-                quantity_offset = candidate_quantity_offset
-                candidate_instance_offset = candidate_quantity_offset - 9
-                if candidate_instance_offset >= 5:
-                    candidate_instance = frame.message[
-                        candidate_instance_offset : candidate_instance_offset + 8
-                    ]
-                    if _is_plausible_instance(candidate_instance):
-                        instance_offset = candidate_instance_offset
-                        score = 0.86
-                break
-
-        if context_offset is None:
-            continue
-
-        return MessageSpec(
-            event="SOURCE_CONTAINER_DECREMENT",
-            opcode=frame.opcode,
-            length=frame.length,
-            context_offset=context_offset,
-            source_instance_offset=instance_offset if instance_offset >= 0 else None,
-            quantity_removed_offset=quantity_offset,
-            confidence=_confidence_label(score),
-            source=_calibration_source(options, "storage-to-inventory"),
-            observed_at=_iso_timestamp(frame.context.timestamp),
-            score=score,
-        )
-    return None
+            )
+    return _unique_best_companion_spec(candidates)
 
 
 def _discover_source_stack_decrement(
@@ -1703,34 +1714,168 @@ def _discover_source_stack_decrement(
     storage_delta: _CalibratedItemRecord,
     options: _Options,
 ) -> Optional[MessageSpec]:
-    item_bytes = storage_delta.item_id.to_bytes(4, "little")
-    quantity = options.quantity if options.quantity is not None else storage_delta.quantity
-    quantity_bytes = quantity.to_bytes(4, "little")
+    """Find the inventory-side decrement that precedes a storage delta.
 
-    for frame in reversed(_context_before(frames, storage_delta.frame, options.context_frames)):
-        if not 35 <= frame.length <= 60:
+    Older layouts put the source instance before the quantity; the current
+    layout puts it after. Search for the exact instance independently. If it
+    cannot be correlated, a unique decrement -> item-reference -> delta chain
+    can still identify the family without inventing an instance offset.
+    """
+    item_bytes = storage_delta.item_id.to_bytes(4, "little")
+    quantity = (
+        options.quantity
+        if options.quantity is not None
+        else storage_delta.quantity
+    )
+    quantity_bytes = quantity.to_bytes(4, "little")
+    context = _context_before(frames, storage_delta.frame, options.context_frames)
+    candidates: list[MessageSpec] = []
+
+    for frame_index, frame in enumerate(context):
+        if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
             continue
         if item_bytes in frame.message:
             continue
+        instance_offsets = (
+            _find_all(frame.message, storage_delta.instance)
+            if storage_delta.instance is not None
+            else []
+        )
+        exact_instance_offset = (
+            instance_offsets[0] if len(instance_offsets) == 1 else None
+        )
+        has_later_reference = any(
+            _is_source_item_reference(candidate, item_bytes)
+            for candidate in context[frame_index + 1 :]
+        )
+        if exact_instance_offset is None and not has_later_reference:
+            continue
+
         for quantity_offset in _find_all(frame.message, quantity_bytes):
-            instance_offset = quantity_offset - 8
-            if instance_offset < 5:
+            if exact_instance_offset is not None and _ranges_overlap(
+                exact_instance_offset, 8, quantity_offset, 4
+            ):
                 continue
-            instance = frame.message[instance_offset:quantity_offset]
-            if not _is_plausible_instance(instance):
-                continue
-            return MessageSpec(
-                event="SOURCE_STACK_DECREMENT",
-                opcode=frame.opcode,
-                length=frame.length,
-                source_instance_offset=instance_offset,
-                quantity_removed_offset=quantity_offset,
-                confidence=_confidence_label(0.88),
-                source=_calibration_source(options, "inventory-to-storage"),
-                observed_at=_iso_timestamp(frame.context.timestamp),
-                score=0.88,
+            structural_instance_offset = _source_stack_structural_instance_offset(
+                frame, quantity_offset
             )
-    return None
+            instance_offset = exact_instance_offset
+            if instance_offset is not None:
+                score = 0.88
+            elif structural_instance_offset is not None:
+                instance_offset = structural_instance_offset
+                score = 0.86
+            else:
+                score = 0.82
+            candidates.append(
+                MessageSpec(
+                    event="SOURCE_STACK_DECREMENT",
+                    opcode=frame.opcode,
+                    length=frame.length,
+                    source_instance_offset=instance_offset,
+                    quantity_removed_offset=quantity_offset,
+                    confidence=_confidence_label(score),
+                    source=_calibration_source(options, "inventory-to-storage"),
+                    observed_at=_iso_timestamp(frame.context.timestamp),
+                    score=score,
+                )
+            )
+    return _unique_best_companion_spec(candidates)
+
+
+def _source_container_structural_instance_offset(
+    frame: BDOFrame,
+    quantity_offset: int,
+) -> Optional[int]:
+    """Recognize the legacy ``instance + separator + quantity`` layout."""
+    instance_offset = quantity_offset - 9
+    separator = frame.message[quantity_offset - 1 : quantity_offset]
+    if instance_offset < 5 or separator != b"\x02":
+        return None
+    instance = frame.message[instance_offset : instance_offset + 8]
+    return instance_offset if _is_structural_source_instance(instance) else None
+
+
+def _source_stack_structural_instance_offset(
+    frame: BDOFrame,
+    quantity_offset: int,
+) -> Optional[int]:
+    """Recognize known pre- and post-quantity source-instance layouts.
+
+    The older family places the instance immediately before quantity. The
+    current family uses ``quantity + uint32(0) + instance``. If a frame happens
+    to satisfy both shapes, the instance remains unproven.
+    """
+    offsets: set[int] = set()
+
+    before_offset = quantity_offset - 8
+    if before_offset >= 5 and _is_structural_source_instance(
+        frame.message[before_offset:quantity_offset]
+    ):
+        offsets.add(before_offset)
+
+    after_offset = quantity_offset + 8
+    if (
+        after_offset + 8 <= frame.length
+        and frame.message[quantity_offset + 4 : after_offset] == b"\x00" * 4
+        and _is_structural_source_instance(
+            frame.message[after_offset : after_offset + 8]
+        )
+    ):
+        offsets.add(after_offset)
+
+    return next(iter(offsets)) if len(offsets) == 1 else None
+
+
+def _is_structural_source_instance(value: bytes) -> bool:
+    """Stronger guard for an uncorrelated instance-shaped field.
+
+    Exact cross-frame matches use the broader instance validator. A field
+    inferred only from layout must have entropy in both uint32 halves; this
+    rejects current frames' incidental ``uint32(0) + small value`` at q-8.
+    """
+    if not _is_plausible_instance(value):
+        return False
+    empty_halves = {b"\x00" * 4, b"\xff" * 4}
+    return value[:4] not in empty_halves and value[4:] not in empty_halves
+
+
+def _ranges_overlap(
+    first_offset: int,
+    first_width: int,
+    second_offset: int,
+    second_width: int,
+) -> bool:
+    return (
+        first_offset < second_offset + second_width
+        and second_offset < first_offset + first_width
+    )
+
+
+def _is_source_item_reference(frame: BDOFrame, item_bytes: bytes) -> bool:
+    """Whether a small frame carries a non-record reference to the item."""
+    if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
+        return False
+    return any(
+        not _looks_like_full_item_record(frame, item_offset)
+        for item_offset in _find_all(frame.message, item_bytes)
+    )
+
+
+def _unique_best_companion_spec(
+    candidates: Iterable[MessageSpec],
+) -> Optional[MessageSpec]:
+    """Return one strongest companion candidate, refusing an equal-score tie."""
+    unique = {candidate.dedupe_key(): candidate for candidate in candidates}
+    if not unique:
+        return None
+    best_score = max(candidate.score or 0.0 for candidate in unique.values())
+    best = [
+        candidate
+        for candidate in unique.values()
+        if (candidate.score or 0.0) == best_score
+    ]
+    return best[0] if len(best) == 1 else None
 
 
 def _discover_source_item_reference(
@@ -1804,17 +1949,86 @@ def _discover_storage_context_offset(
     frame: BDOFrame,
     before_offset: int,
 ) -> Optional[int]:
-    """Find the nearest observed storage reason code before an item record."""
+    """Find a structurally credible storage destination before an item.
+
+    Three legacy keys were observed at multiple offsets and remain explicit
+    signatures. Other town IDs are small integers and are only meaningful at
+    the current wrapper's item-relative field with its mode/token/count header;
+    scanning all known IDs anywhere would misclassify ordinary uint32 values.
+    """
     best_offset = None
+    current_offset = before_offset - 9
     for context_bytes in STORAGE_DELTA_CONTEXTS:
         search_at = 0
         while True:
             offset = frame.message.find(context_bytes, search_at, before_offset)
             if offset < 0:
                 break
-            best_offset = offset if best_offset is None else max(best_offset, offset)
+            # A legacy key at the current item-relative position must still
+            # prove current-wrapper record geometry. At any other historical
+            # position it retains its explicit legacy-signature behavior.
+            if offset != current_offset:
+                best_offset = (
+                    offset if best_offset is None else max(best_offset, offset)
+                )
             search_at = offset + 1
+
+    mode_offset = before_offset - 30
+    token_end = before_offset - 21
+    count_offset = before_offset - 20
+    if mode_offset >= 5 and current_offset >= 0 and token_end <= len(frame.message):
+        candidate = frame.message[current_offset : current_offset + 4]
+        storage_id = int.from_bytes(candidate, "little")
+        if (
+            storage_location(storage_id) is not None
+            and _has_current_storage_declared_geometry(frame, before_offset)
+        ):
+            best_offset = (
+                current_offset
+                if best_offset is None
+                else max(best_offset, current_offset)
+            )
     return best_offset
+
+
+def _has_current_storage_declared_geometry(
+    frame: BDOFrame,
+    item_offset: int,
+) -> bool:
+    """Validate the item-20 count against every declared item record.
+
+    The exact prefix length is not pinned. Search the narrow header-to-record
+    boundary and accept only one resulting record-offset geometry whose item,
+    quantity, and instance fields all validate. This keeps an unfamiliar
+    operation mode calibratable without trusting a coincidental town integer.
+    """
+    count_offset = item_offset - 20
+    context_end = item_offset - 5
+    if count_offset < 5 or count_offset + 2 > len(frame.message):
+        return False
+    declared_count = int.from_bytes(
+        frame.message[count_offset : count_offset + 2], "little"
+    )
+    if declared_count <= 0:
+        return False
+
+    prefix_start = max(count_offset + 2, context_end)
+    geometries: set[tuple[int, ...]] = set()
+    for prefix_length in range(prefix_start, item_offset + 1):
+        record_bytes = frame.length - prefix_length
+        if record_bytes <= 0 or record_bytes % declared_count:
+            continue
+        stride = record_bytes // declared_count
+        relative_item_offset = item_offset - prefix_length
+        if relative_item_offset < 0 or relative_item_offset + 43 > stride:
+            continue
+        deltas = tuple(stride * index for index in range(declared_count))
+        if all(
+            _looks_like_full_item_record(frame, item_offset + delta)
+            for delta in deltas
+        ):
+            geometries.add(deltas)
+    return len(geometries) == 1
 
 
 def _discover_repeat_stride(frame: BDOFrame, item_offset: int) -> Optional[int]:

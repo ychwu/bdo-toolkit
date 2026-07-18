@@ -28,6 +28,13 @@ from .origin_learning import (
 )
 from .filters import EventFilter
 from .writers import ConsoleEventWriter, JsonlEventWriter
+from .solare import (
+    SolareCaptureResult,
+    SolareUpdate,
+    SolareUpdateKind,
+    capture_solare_snapshot,
+    replay_solare,
+)
 
 
 def _positive_int(value: str) -> int:
@@ -101,7 +108,7 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="sources",
         metavar="SOURCE",
-        help='only yield this source (repeatable), e.g. "Batch Storage Deposit"',
+        help='only yield this source (repeatable), e.g. "Heidel"',
     )
     parser.add_argument(
         "--item-id",
@@ -176,6 +183,75 @@ def _run_live(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     return 0
+
+
+def _write_solare_result(
+    result: SolareCaptureResult,
+    *,
+    output: Path | None,
+    include_raw: bool,
+) -> None:
+    serialized = result.to_json(include_raw=include_raw) + "\n"
+    if output is None:
+        sys.stdout.write(serialized)
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(serialized, encoding="utf-8")
+    print(f"wrote Solare result to {output}", file=sys.stderr)
+
+
+def _same_output_path(left: Path | None, right: Path | None) -> bool:
+    if left is None or right is None:
+        return False
+    left = left.expanduser()
+    right = right.expanduser()
+    try:
+        if left.exists() and right.exists() and left.samefile(right):
+            return True
+    except OSError:
+        pass
+    return left.resolve() == right.resolve()
+
+
+def _run_solare_replay(args: argparse.Namespace) -> int:
+    if _same_output_path(args.pcap, args.output):
+        raise ValueError("--output must not overwrite the replay input capture")
+    result = replay_solare(args.pcap, ports=args.ports)
+    _write_solare_result(
+        result,
+        output=args.output,
+        include_raw=args.include_raw,
+    )
+    return 0 if result.complete else 1
+
+
+def _run_solare_live(args: argparse.Namespace) -> int:
+    if _same_output_path(args.save_pcap, args.output):
+        raise ValueError("--output and --save-pcap must use different paths")
+
+    def report(update: SolareUpdate) -> None:
+        if args.quiet or update.kind is SolareUpdateKind.FINISHED:
+            return
+        print(f"[{update.kind.value}] {update.message}", file=sys.stderr, flush=True)
+
+    result = capture_solare_snapshot(
+        capture_options=PacketCaptureOptions(
+            interface=args.iface,
+            local_ip=args.local_ip,
+            ports=args.ports,
+            use_bpf=not args.no_bpf,
+        ),
+        capture_seconds=args.capture_seconds,
+        save_pcap=args.save_pcap,
+        stop_on_complete=args.stop_on_complete,
+        on_update=report,
+    )
+    _write_solare_result(
+        result,
+        output=args.output,
+        include_raw=args.include_raw,
+    )
+    return 0 if result.complete else 1
 
 
 def _print_calibration_result(result: CalibrationResult, verbose: bool) -> None:
@@ -427,6 +503,105 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="COUNT",
         help="maximum decoded events buffered for the consumer (default: 1024)",
     )
+
+    solare = subparsers.add_parser(
+        "solare",
+        help="capture or replay an opcode-agnostic Arena of Solare snapshot",
+    )
+    solare_subparsers = solare.add_subparsers(
+        dest="solare_command",
+        required=True,
+    )
+
+    solare_replay = solare_subparsers.add_parser(
+        "replay",
+        help="discover a Solare leaderboard in a .pcap/.pcapng file",
+    )
+    solare_replay.add_argument("pcap", type=Path, help="capture file to inspect")
+    solare_replay.add_argument(
+        "--ports",
+        type=_parse_ports,
+        default=DEFAULT_SERVER_PORTS,
+        metavar="PORTS",
+        help="comma-separated BDO server source ports (default: 8884,8885,8889)",
+    )
+    solare_replay.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="write the result JSON here instead of stdout",
+    )
+    solare_replay.add_argument(
+        "--include-raw",
+        action="store_true",
+        help="include large raw gear and skill-addon buffers as hex",
+    )
+    solare_replay.set_defaults(func=_run_solare_replay)
+
+    solare_live = solare_subparsers.add_parser(
+        "live",
+        help="listen until a complete Solare snapshot is confirmed",
+    )
+    solare_live.add_argument(
+        "--ports",
+        type=_parse_ports,
+        default=DEFAULT_SERVER_PORTS,
+        metavar="PORTS",
+        help="comma-separated BDO server source ports (default: 8884,8885,8889)",
+    )
+    solare_live.add_argument(
+        "--iface",
+        help="capture interface (default: auto-detect)",
+    )
+    solare_live.add_argument(
+        "--local-ip",
+        default=None,
+        help="local destination IPv4 address (default: auto-detect)",
+    )
+    solare_live.add_argument(
+        "--no-bpf",
+        action="store_true",
+        help="use a Python packet filter instead of BPF",
+    )
+    solare_live.add_argument(
+        "--capture-seconds",
+        type=_nonnegative_float,
+        default=None,
+        metavar="SECONDS",
+        help="stop after this many seconds (default: Ctrl+C or complete snapshot)",
+    )
+    solare_live.add_argument(
+        "--save-pcap",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="record matching packets to a new .pcap or .pcapng file",
+    )
+    solare_live.add_argument(
+        "--keep-listening",
+        action="store_false",
+        dest="stop_on_complete",
+        help="continue after confirmation instead of stopping automatically",
+    )
+    solare_live.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress progress messages on stderr",
+    )
+    solare_live.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="write the result JSON here instead of stdout",
+    )
+    solare_live.add_argument(
+        "--include-raw",
+        action="store_true",
+        help="include large raw gear and skill-addon buffers as hex",
+    )
+    solare_live.set_defaults(func=_run_solare_live, stop_on_complete=True)
 
     calibrate = subparsers.add_parser(
         "calibrate",

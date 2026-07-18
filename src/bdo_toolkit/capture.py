@@ -8,17 +8,15 @@ import time
 from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, RLock
-from typing import Any, Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from ._capture_backend import (
-    build_bpf_filter,
-    detect_default_capture_target,
-    import_scapy,
     iter_pcap_file,
     make_packet_handler,
     validate_server_ports,
 )
 from ._capture_options import LiveCaptureOptions
+from ._capture_runtime import LivePacketCapture
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
@@ -82,11 +80,13 @@ def _origin_companion_families(
 class _EventCollector:
     """Wire a PacketEngine to app-facing events with optional filtering.
 
-    storage_delta events take a short detour through the deposit-origin
-    tracker (a few frames of lookahead) so each event carries a classified
-    ``deposit_origin``; all other events emit immediately, which can
-    place a deferred storage_delta slightly after later events of other
-    types. Timestamps are unaffected.
+    Live storage deltas and neutral storage records take a short detour through
+    the deposit-origin tracker (a few frames of lookahead). Independent manual
+    or worker evidence can promote an unfamiliar-mode ``storage_record`` to a
+    confirmed-live ``storage_delta``; records without that evidence remain
+    neutral. All other events emit immediately, which can place a deferred
+    storage event slightly after later events of other types. Timestamps are
+    unaffected.
     """
 
     def __init__(
@@ -114,6 +114,11 @@ class _EventCollector:
             emit=self._deliver,
             origin_observer=origin_observer,
             known_companion_families=_origin_companion_families(profile),
+            storage_delta_opcodes=(
+                spec.opcode
+                for spec in loaded_specs.specs
+                if spec.label == "INVENTORY_TO_STORAGE"
+            ),
         )
         self.engine = PacketEngine(
             server_ports=server_ports,
@@ -125,9 +130,10 @@ class _EventCollector:
 
     def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
         event = toolkit_event_from_record(record)
-        if event.event_type == "storage_delta":
+        if event.event_type in {"storage_delta", "storage_record"}:
             # Filtering happens at delivery, AFTER classification, so filters
-            # on deposit_origin see the final field value.
+            # on event_type/deposit_origin see any evidence-based promotion and
+            # the final origin verdict.
             self._tracker.register(event, raw_message=raw_message)
         else:
             self._deliver(event)
@@ -160,7 +166,12 @@ def replay_pcap(
     event_filter: Optional[EventFilter] = None,
     origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
 ) -> Iterator[BDOEvent]:
-    """Replay a pcap/pcapng file and yield structured events."""
+    """Replay a pcap/pcapng file and yield structured events.
+
+    ``event_filter=None`` preserves the complete decoded replay stream. Live
+    capture has a narrower activity-only default because hydration can contain
+    thousands of state records.
+    """
 
     if event_filter is not None and not isinstance(event_filter, EventFilter):
         raise TypeError("event_filter must be an EventFilter or None")
@@ -186,7 +197,9 @@ class LiveCaptureSession:
     finish TCP reassembly, and finalize pending deposit-origin decisions.
 
     A session is single-use and supports one event consumer. Create a new
-    session when a stopped feature is started again.
+    session when a stopped feature is started again. With ``event_filter=None``
+    the session delivers :meth:`EventFilter.activity` events. Pass an explicit
+    filter, including ``EventFilter.all()``, to select different semantics.
     """
 
     _POLL_INTERVAL_SECONDS = 0.2
@@ -207,7 +220,9 @@ class LiveCaptureSession:
 
         self._opcode_profile = opcode_profile
         self._live_options = resolved_live_options
-        self._event_filter = event_filter
+        self._event_filter = (
+            event_filter if event_filter is not None else EventFilter.activity()
+        )
         self._origin_observer = origin_observer
 
         self._queue: Queue[BDOEvent] = Queue(
@@ -221,9 +236,8 @@ class LiveCaptureSession:
         self._stop_requested = Event()
         self._finalizing = Event()
         self._stopped = Event()
-        self._capture_ready = Event()
         self._started = False
-        self._capture: Any = None
+        self._capture: Optional[LivePacketCapture] = None
         self._collector: Optional[_EventCollector] = None
         self._error: Optional[BaseException] = None
         self._stop_reason: Optional[str] = None
@@ -231,18 +245,11 @@ class LiveCaptureSession:
     @property
     def running(self) -> bool:
         capture = self._capture
-        capture_thread = getattr(capture, "thread", None)
-        thread_finished = (
-            capture_thread is not None
-            and capture_thread.ident is not None
-            and not capture_thread.is_alive()
-        )
         return (
             self._started
             and not self._stopped.is_set()
             and capture is not None
-            and not thread_finished
-            and (not self._capture_ready.is_set() or bool(capture.running))
+            and capture.running
         )
 
     @property
@@ -266,11 +273,6 @@ class LiveCaptureSession:
         with self._cleanup_lock:
             if self._started:
                 raise RuntimeError("live capture session was already started")
-            self._capture_ready.clear()
-
-            IP, TCP, _, _, _ = import_scapy()
-            from scapy.sendrecv import AsyncSniffer  # type: ignore
-
             collector = _EventCollector(
                 server_ports=self._live_options.ports,
                 event_filter=self._event_filter,
@@ -278,38 +280,6 @@ class LiveCaptureSession:
                 opcode_profile=self._opcode_profile,
                 origin_observer=self._origin_observer,
             )
-
-            detected_target = None
-            if self._live_options.interface is None:
-                detected_target = detect_default_capture_target()
-                capture_interface = detected_target.interface
-            else:
-                capture_interface = self._live_options.interface
-            capture_local_ip = self._live_options.local_ip
-            if (
-                capture_local_ip is None
-                and self._live_options.interface is None
-                and self._live_options.auto_local_ip
-            ):
-                assert detected_target is not None
-                capture_local_ip = detected_target.local_ip
-
-            bpf_filter = (
-                None
-                if not self._live_options.use_bpf
-                else build_bpf_filter(self._live_options.ports, capture_local_ip)
-            )
-            lfilter = None
-            if not self._live_options.use_bpf:
-                lfilter = lambda packet: (  # noqa: E731
-                    IP in packet
-                    and TCP in packet
-                    and int(packet[TCP].sport) in collector.engine.server_ports
-                    and (
-                        capture_local_ip is None
-                        or str(packet[IP].dst) == capture_local_ip
-                    )
-                )
 
             packet_handler = make_packet_handler(collector.engine)
 
@@ -324,44 +294,19 @@ class LiveCaptureSession:
                     # the exception for the public consumer.
                     raise
 
-            live_capture = AsyncSniffer(
-                iface=capture_interface,
-                filter=bpf_filter,
-                lfilter=lfilter,
-                prn=handle_packet,
-                store=False,
-                started_callback=self._capture_ready.set,
+            live_capture = LivePacketCapture(
+                capture_options=self._live_options,
+                on_packet=handle_packet,
             )
             self._collector = collector
             self._capture = live_capture
             self._started = True
             try:
                 live_capture.start()
-                # AsyncSniffer.start() returns before its thread necessarily
-                # opens the adapter. Do not return a session that can race an
-                # immediate Stop click; wait until its started callback fires
-                # or its thread reports a startup failure.
-                while not self._capture_ready.wait(timeout=0.05):
-                    capture_error = getattr(live_capture, "exception", None)
-                    if isinstance(capture_error, BaseException):
-                        raise capture_error
-                    capture_thread = getattr(live_capture, "thread", None)
-                    if (
-                        capture_thread is not None
-                        and capture_thread.ident is not None
-                        and not capture_thread.is_alive()
-                    ):
-                        raise RuntimeError("live capture thread ended during startup")
             except BaseException:
-                if live_capture.running:
-                    try:
-                        live_capture.stop()
-                    except BaseException:
-                        pass
                 self._collector = None
                 self._capture = None
                 self._started = False
-                self._capture_ready.clear()
                 raise
 
     def stop(self) -> None:
@@ -466,21 +411,12 @@ class LiveCaptureSession:
             self._finish_stop("error" if self.error is not None else "requested")
             return
         capture = self._capture
-        capture_error = getattr(capture, "exception", None)
+        capture_error = capture.error if capture is not None else None
         if isinstance(capture_error, BaseException):
             self._record_error(capture_error)
             self._finish_stop("error")
             return
-        capture_thread = getattr(capture, "thread", None)
-        thread_finished = (
-            capture_thread is not None
-            and capture_thread.ident is not None
-            and not capture_thread.is_alive()
-        )
-        if capture is not None and (
-            (self._capture_ready.is_set() and not bool(capture.running))
-            or thread_finished
-        ):
+        if capture is not None and not capture.running:
             self._finish_stop("error" if self.error is not None else "capture-ended")
 
     def _flush_stale(self) -> None:
@@ -502,15 +438,18 @@ class LiveCaptureSession:
             capture = self._capture
             collector = self._collector
 
-            capture_error = getattr(capture, "exception", None)
+            capture_error = capture.error if capture is not None else None
             if isinstance(capture_error, BaseException):
                 self._record_error(capture_error)
 
-            if capture is not None and capture.running:
+            if capture is not None and not capture.stopped:
                 try:
                     capture.stop()
                 except BaseException as exc:
                     self._record_error(exc)
+                capture_error = capture.error
+                if isinstance(capture_error, BaseException):
+                    self._record_error(capture_error)
             if collector is not None:
                 try:
                     collector.engine.finish()
@@ -555,7 +494,9 @@ def capture_live(
 
     This blocking convenience wrapper is intended for scripts. Applications
     that need programmatic start/stop control should use
-    :class:`LiveCaptureSession`.
+    :class:`LiveCaptureSession`. When ``event_filter`` is omitted, only
+    :meth:`EventFilter.activity` events are delivered; pass
+    ``EventFilter.all()`` for the complete decoded stream.
     """
     _validate_capture_seconds(capture_seconds)
     session = LiveCaptureSession(

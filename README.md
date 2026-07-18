@@ -10,8 +10,13 @@ apps.
 The toolkit goal is simple:
 
 ```text
-packet capture or pcap replay in -> structured gameplay item events out
+packet capture or pcap replay
+  -> item-event decoder -> structured BDOEvent stream
+  -> Solare decoder     -> atomic leaderboard snapshot
 ```
+
+Only the API/session you select runs its decoder; choosing the item route does
+not also decode Solare, and choosing Solare does not load an opcode profile.
 
 ```python
 from bdo_toolkit import EventFilter, capture_live, replay_pcap
@@ -31,6 +36,21 @@ worker_deposits = EventFilter(
 for event in capture_live(event_filter=worker_deposits):
     print(event.item_id, event.quantity, event.timestamp)
 ```
+
+Delivery defaults are intentionally different for offline analysis and live
+apps:
+
+- `replay_pcap(..., event_filter=None)` yields the complete decoded replay
+  stream, including snapshot records and neutral diagnostics.
+- `capture_live(..., event_filter=None)` and `LiveCaptureSession(event_filter=None)`
+  use `EventFilter.activity()`: `loot_preview`, `item_received`, and
+  `storage_delta`.
+- Pass `EventFilter.all()` for every completed decoded live event, or
+  `EventFilter.snapshot_records()` for only `inventory_snapshot` and
+  `storage_snapshot` hydration records.
+- A caller-supplied `EventFilter` is honored exactly. Values within one set are
+  alternatives; every supplied criterion must match. Names and event types are
+  exact and case-sensitive.
 
 For an app with Start and Stop controls, use `LiveCaptureSession` instead of
 trying to interrupt the blocking iterator yourself:
@@ -101,8 +121,201 @@ options = LiveCaptureOptions(
 session = LiveCaptureSession(live_options=options)
 ```
 
-`"Batch Storage Deposit"` is not worker-only. It is a batch-style storage delta
-observed in both passive worker deposits and manual bulk deposits.
+## Arena of Solare snapshots
+
+Solare is a separate public domain inside the same package. It shares passive
+packet acquisition and TCP reassembly with the item-event APIs, but it returns
+one atomic leaderboard snapshot instead of mixing finite leaderboard state into
+the open-ended `BDOEvent` stream:
+
+```python
+from bdo_toolkit.solare import replay_solare
+
+result = replay_solare("solare-session.pcapng")
+if result.snapshot is not None:
+    for player in result.snapshot.top_100:
+        print(player.global_rank, player.name, player.elo)
+```
+
+Live capture structurally discovers the ranked, class-balanced, and overall
+families without accepting a known opcode as classifier input. It reports
+progress while the table arrives and stops automatically only after all 620
+rich records are present and the independent overall top 100 matches exactly:
+
+```python
+from bdo_toolkit.solare import capture_solare_snapshot
+
+result = capture_solare_snapshot(
+    on_update=lambda update: print(f"[{update.kind.value}] {update.message}"),
+    save_pcap="solare-next-patch.pcapng",
+)
+```
+
+Snapshot publication also requires clean acquisition health: any TCP gap or
+reported packet drop before confirmation returns `detected-incomplete`, even
+if the remaining rows happen to match. With `stop_on_complete=False`, the
+first snapshot and its health are latched while optional PCAP recording may
+continue; later decoder messages are not retained or allowed to mutate it.
+
+The June 24, July 14, and July 17 capture generations use different opcodes
+and record geometry; the structural classifier confirms all three. Deeper
+player statistics are enabled only when a geometry-specific decoder validates
+every record. Check `snapshot.capabilities`: `"rankings"` is independent from
+`"performance"` and `"raw_extensions"`.
+
+Each occupied class slot can expose matches, wins, draws, losses, raw recent
+result codes, and exact opaque gear/addon sections. In Python,
+`gear_loadout_raw.data` and `skill_addons_raw.data` are literal `bytes` (2,001
+and 501 bytes respectively). Their internal format is not claimed yet. Normal
+`to_dict()` / `to_json()` output omits these large blobs; pass
+`include_raw=True` to serialize them as hex.
+
+Command-line equivalents keep progress on stderr and result JSON on stdout:
+
+```powershell
+bdo-toolkit solare live --save-pcap solare-next-patch.pcapng
+bdo-toolkit solare replay solare-next-patch.pcapng --output snapshot.json
+```
+
+See [`solare_live_snapshot.py`](examples/solare_live_snapshot.py) and
+[`solare_replay_snapshot.py`](examples/solare_replay_snapshot.py). Raw pcaps,
+player UIDs, names, loadouts, and addons are sensitive account/gameplay data;
+keep captures out of source control and obtain any consent appropriate to your
+application.
+
+Storage events expose their destination separately from their cause:
+
+- `event.storage_id` is the numeric storage/town key from the packet.
+- `event.storage_name` is the best-known town name, with
+  `event.storage_name_confidence` describing provisional mappings.
+- `event.storage_operation` is `"live"` for a mutation, `"snapshot"` for an
+  observed character-load state record, or `"unknown"` when a recognized wrapper has
+  an unfamiliar mode after a patch.
+- A positively recognized `"snapshot"` bypasses deposit-origin classification.
+  A recognized `"unknown"` operation is instead held briefly for the same
+  bounded manual/worker evidence used by live deltas.
+
+Recognized current-wrapper character-load contents are emitted as
+`storage_snapshot`, never as deposits. The common
+`EventFilter(event_types={"item_received", "storage_delta"})` therefore keeps
+transfer logs quiet while the game hydrates that storage state. Older layouts
+that cannot expose the discriminator retain the legacy `storage_delta` and
+origin-classification behavior with `storage_operation=None`.
+
+An unfamiliar current-wrapper mode starts as a neutral `storage_record`. If a
+calibrated matching source-stack decrement proves `manual`, or a confirmed
+shared-token chain proves `worker`, it is promoted before filtering to
+`event_type="storage_delta"` and `storage_operation="live"`. The promoted event
+also gains `extra["storage_delta"]`, `deposit_origin`, and
+`extra["deposit_origin_evidence"]`, so normal live filters include it. With
+neither independent signal, it remains `storage_record` with
+`deposit_origin=None` and no deposit extras.
+
+Every evidence-promoted neutral record also carries
+`extra["storage_operation_evidence"]` with `wire_operation="unknown"`,
+`inferred_operation="live"`, and `signal="matching_decrement"` or
+`"worker_companions"`. A multi-record neutral wrapper is classified atomically:
+all records are promoted together with the same origin, or the whole batch
+remains neutral. For promoted multi-record manual batches,
+`deposit_origin_evidence` may include `matching_decrement_record_indexes` to
+show which 1-based records supplied the decrement match.
+
+For the current storage wrapper, multi-record decoding does not assume that
+message length is a multiple of a saved stride. Given declared record count
+`N`, current message length `L`, and the calibrated single-record base length
+`B`, the decoder derives `stride = (L - B) / (N - 1)` and accepts it only when
+the geometry divides exactly and every declared record validates. Older
+wrappers retain a strict marker-based fallback; a saved `repeat_stride` is only
+the final compatibility path.
+
+Only the single-record base `B` and ordinary item/context offsets come from the
+opcode profile. The current wrapper's relative record-count field and its
+mode/token signatures are built-in observations from this protocol generation;
+calibration does **not** rediscover those wrapper relationships yet. Making
+count and operation metadata calibration-derived is a separate future
+enhancement.
+
+Character-load inventory hydration is exposed separately as
+`inventory_snapshot`. Its wrapper count is discovered in the framed header,
+then used with the calibrated single-record base length to derive the actual
+per-frame stride; every declared item, quantity, and instance must validate or
+the entire frame fails closed. It never enters ordinary `item_received`
+filters. Hydration is directly observed during both initial login and an
+operator-labeled character switch, but the packet body does not identify which
+trigger occurred.
+
+An experimental queryable inventory/storage summary and a runnable live/offline
+diagnostic are documented in
+[`tools/character_load/README.md`](tools/character_load/README.md). The summary
+reports occupied item stacks and explicitly leaves storage capacity and stable
+inventory tab names provisional. Its experimental model exposes each validated
+raw container code, slot, provisional label/confidence, and known currency
+balance separately from ordinary item stacks. The live tool can also preserve its
+filtered packet evidence with `--save-pcap`; raw captures are sensitive and
+should remain in the git-ignored fixture tree.
+
+The canonical experimental import surface is `bdo_toolkit.item_state`:
+
+```python
+from bdo_toolkit.item_state import (
+    CharacterLoadSession,
+    analyze_item_state_pcap,
+)
+
+state = analyze_item_state_pcap(
+    "character-load.pcapng",
+    opcode_profile="opcodes.local",
+)
+
+heidel = state.storages.named("Heidel")
+same_storage = state.storages.by_id(0x0020)
+stacks = state.storages.find_item(7003)
+locations = state.storages.locations_for(7003)
+total_quantity = state.storages.total_quantity(7003)
+
+print(len(state.storages), heidel.occupied_stacks if heidel else None)
+print(total_quantity, [storage.name for storage in locations])
+
+payload = state.to_dict()
+print(payload["schema_version"])       # 1
+print(state.coverage.completion_status)  # "unknown"
+print(state.provenance.capture_mode)     # "pcap_replay"
+```
+
+`state.storages` remains an immutable tuple, so tuple type checks and operators,
+iteration, integer indexing, and slicing work alongside the query helpers above.
+The older `state.storage()` and
+`state.storage_named()` helpers remain available. Existing
+`bdo_toolkit.character_state` imports and their `CharacterStateSnapshot`,
+`analyze_character_load_pcap()`, and `format_character_state()` names remain
+supported compatibility aliases; the experimental aggregate is not exported
+from the package root.
+
+Coverage is observation metadata, not a completeness promise. There is no
+proven protocol end marker, so `state.coverage.completion_status` remains
+`"unknown"` and `capture_may_be_partial` remains true even when every registered
+storage ID was observed. `state.provenance` records the capture mode, selected
+profile, input or saved-capture path, generation-selection rule, and the fact
+that login versus character-switch reason is not decoded. With an inventory
+boundary it selects the latest observed hydration; storage-only evidence is
+explicitly marked as retaining all observed storage and may span multiple loads.
+Structured
+`to_dict()` output carries `schema_version == 1` plus both objects so consumers
+can audit what was observed and evolve parsers deliberately.
+
+After an opcode patch, the ordinary guided transfer calibration is still the
+first recovery step: it genuinely relearns the receipt/storage opcodes,
+first-item positions, and normalized single-record base lengths shared by live
+transfers and hydration. It does **not** generically rediscover every field:
+quantity and instance still assume `item+4` / `item+35`, inventory context
+search relies on known values, and current storage destination recovery expects
+`item-9`. Inventory snapshot count, repeat stride, and record-tail
+slot/container positions are then discovered structurally at runtime. Storage
+snapshot/live/empty classification is not fully calibration-derived yet: it
+also depends on the observed item-relative mode/token/count/destination wrapper
+relationships. If any of those assumptions move, recalibration alone will not
+restore classification and the decoder or a future snapshot-specific
+calibration phase must be enhanced.
 
 ## Installation
 
@@ -140,6 +353,12 @@ public surface with examples:
   captures into events
 - [`LiveCaptureSession`](https://ychwu.github.io/bdo-toolkit/#livecapturesession)
   — programmatic Start/Stop, polling, cleanup, and background error reporting
+- [Experimental item state](https://ychwu.github.io/bdo-toolkit/#character-state)
+  — character-load inventory/storage queries, coverage, provenance, and
+  structured schema
+- Arena of Solare — opcode-agnostic live/replay snapshots, progress, evidence,
+  player statistics, and opaque raw extensions (reference draft is being prepared
+  for the next documentation publish)
 - [Asyncio integration](https://ychwu.github.io/bdo-toolkit/asyncio.html) —
   `AsyncLiveCaptureSession`, `AsyncCalibrationSession`, cancellation, and
   Start/Stop patterns for async apps
@@ -244,28 +463,43 @@ for event in capture_live(
     print(event.deposit_origin)
 ```
 
-Worker classification uses a three-frame **structure**: the storage delta and
-the next two contiguous companion frames must share the same informative
-8-byte token. The exact companion opcode values are not part of that verdict.
+Worker classification uses a three-message **relationship**. It takes a
+high-entropy transaction token only from the storage-delta prefix before item
+record one, then searches a bounded forward window for two ordered companion
+messages carrying that token. Unrelated messages may be interleaved. A new
+storage delta, eight following messages, or the timeout closes the window;
+incomplete stream data waits only until more bytes arrive or that timeout.
 
-| Shared-token structure | Promoted opcode family | Classification | Audit metadata |
+Character-load `storage_snapshot` messages bypass this classifier completely.
+They have `deposit_origin=None` and cannot become worker deposits merely
+because adjacent snapshot chunks share a timestamp.
+
+A recognized wrapper whose operation is `"unknown"` takes the same bounded
+classifier path before app filtering. Positive manual or worker evidence
+promotes it to a live `storage_delta`; absent evidence leaves it as a neutral
+`storage_record`, not as an `unknown` deposit.
+
+| Bounded token relationship | Family confidence | Classification | Audit metadata |
 | --- | --- | --- | --- |
-| Present | Known | `worker` | `known_family=True` |
-| Present | Unknown | `worker` | `known_family=False` |
-| Absent | Even if the following opcodes look familiar | Not worker from companion evidence | No companion-chain audit record |
+| Present and profile-promoted | Known | `worker` | `known_family=True` |
+| Present and structurally confirmed in-session | Confirmed | `worker` | `confirmed_family=True` |
+| Ambiguous or absent | Unconfirmed/none | Not worker from companion evidence | Candidate evidence or no chain |
 
-A matching calibrated source-stack decrement can classify the remaining case
-as `manual`; incomplete or absent evidence stays `unknown`. In other words,
-**companion frames are required for worker classification, but previously
-learned companion opcode identities are not.**
+A matching calibrated source-stack decrement classifies an already-live delta
+as `manual`; incomplete or absent evidence on an already-live delta stays
+`unknown`. The same positive decrement or companion evidence promotes a neutral
+`storage_record`, while missing evidence leaves that record neutral. Companion
+opcode numbers are not hard-coded as the primary signal, but a structurally
+discovered family must be unambiguous/confirmed or already promoted.
 
-The family lookup is still a cross-check: it reports whether the structural
-match agrees with metadata already promoted into the profile. It never
-upgrades, downgrades, or vetoes `deposit_origin`.
+The evidence reports both whether a family was explicitly promoted
+(`known_family`) and whether the current tracker trusted it
+(`confirmed_family` plus `confirmation`). This makes first-seen patch behavior
+auditable without making a separate learning command mandatory.
 
-The optional `OriginLearner` records which opcode/length families were seen
-after the structural classifier already found a worker chain. This is useful
-for patch auditing; it does not make the classification happen. The workflow
+The optional `OriginLearner` persists which opcode/length families were seen.
+The normal tracker performs its own in-memory confirmation; `OriginLearner` is
+for cross-session patch auditing and explicit profile promotion. The workflow
 has three separate steps:
 
 | Goal | What to use | Writes files? |
@@ -275,9 +509,9 @@ has three separate steps:
 | Save candidates | `learner.save(...)` or `origin-learn` | Candidate JSON only |
 | Mark reviewed families as known | `promote_origin_candidates(...)` or `origin-promote` | Explicitly updates the opcode profile |
 
-`min_observations=2` means a family becomes a confirmed **promotion
-candidate** after two independent observations. It does not mean "run the
-learner twice," and it is not a worker-confidence threshold.
+`min_observations=2` means the separate persisted learner marks a family as a
+confirmed **promotion candidate** after two independent observations. Runtime
+classification has its own bounded-window confirmation evidence.
 
 For the complete workflow, jump to
 [classification](https://ychwu.github.io/bdo-toolkit/#origin-classification),
@@ -324,8 +558,11 @@ profile does.
 - Passive/read-only only: never inject, send, delay, replay, or modify packets.
 - Decode all known categories in the engine, then let apps filter events.
 - Keep opcode profiles data-driven and easy to replace after patches.
-- Classify worker origins structurally; learned opcode families are audit
-  metadata, never the sole verdict.
+- Keep positively recognized character-load snapshots out of origin
+  classification, and require independent evidence before promoting an
+  unfamiliar storage operation to a live mutation.
+- Classify worker origins from a bounded, prefix-token relationship and fail
+  closed when the relationship is ambiguous.
 - Treat packet knowledge as provisional unless repeated captures prove it.
 - Preserve raw fields and add new event fields without breaking old apps.
 
@@ -334,22 +571,30 @@ profile does.
 ```text
 src/bdo_toolkit/
   capture.py            Live capture and pcap replay entry points
+  solare/               Structural Solare snapshot API and models
   events.py             Stable app-facing event model
   filters.py            Event filtering helpers
   profiles.py           Opcode profile loading
   origin_learning.py    Structural companion discovery and opt-in learning
   writers.py            Console and JSONL writers
   calibration.py        Opcode profile calibration and profile updates
+  item_state.py         Canonical experimental item-state facade
+  character_state.py    Compatibility names and aggregate implementation
   cli.py                bdo-toolkit command line
   data/opcodes.json     Bundled default opcode profile
   _*.py                 Internal engine modules (may change without notice)
 
 site/                   API reference, deployed to GitHub Pages
 examples/               Small runnable examples
+tools/character_load/   Experimental live/offline state diagnostic
 tests/                  Test suite (see note on fixtures below)
 ```
 
-Build apps against the public API only; `_`-prefixed modules are internal.
+Build apps against documented public APIs only; `_`-prefixed modules are
+internal. `bdo_toolkit.item_state` is the canonical public-experimental module;
+its names and aggregate semantics are not yet part of the stable package-root
+contract. Existing `bdo_toolkit.character_state` imports remain supported for
+compatibility.
 
 ## Testing
 
@@ -376,6 +621,8 @@ git diff tests/baselines/
 
 ## Roadmap
 
-- Event schema versioning.
-- Inventory snapshot event API.
+- Stable versioning for the lower-level `BDOEvent` stream schema.
+- Promote the experimental item-state/query contract after its count,
+  completeness, and post-patch behavior are validated.
+- Stable inventory container/tab labels and storage-capacity discovery.
 

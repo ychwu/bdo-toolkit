@@ -248,7 +248,9 @@ footer {
       <a class="nl" href="#livecaptureoptions"><code>LiveCaptureOptions</code></a>
       <a class="nl" href="#livecapturesession"><code>LiveCaptureSession</code></a>
       <a class="nl" href="asyncio.html">Asyncio support</a>
+      <a class="nl" href="#character-state">Item state <span class="mono">experimental</span></a>
       <a class="nl" href="#bdoevent"><code>BDOEvent</code></a>
+      <a class="nl" href="#storage-location"><code>StorageLocation</code></a>
       <a class="nl" href="#event-types">Event types &amp; sources</a>
       <a class="nl" href="#eventfilter"><code>EventFilter</code></a>
       <a class="nl" href="#writers">Writers</a>
@@ -325,12 +327,12 @@ footer {
 <span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(<span class="s">"session.pcapng"</span>):
     <span class="f">print</span>(event.<span class="f">format_human</span>())</code></pre>
 
-  <p>Filter to what your app cares about — here, batch-style storage deltas:</p>
+  <p>Filter to what your app cares about — here, live deposits into Heidel:</p>
 <pre><code><span class="k">for</span> event <span class="k">in</span> <span class="f">replay_pcap</span>(
     <span class="s">"session.pcapng"</span>,
     event_filter=<span class="f">EventFilter</span>(
         event_types={<span class="s">"storage_delta"</span>},
-        sources={<span class="s">"Batch Storage Deposit"</span>},
+        sources={<span class="s">"Heidel"</span>},
     ),
 ):
     <span class="f">print</span>(event.item_id, event.quantity)</code></pre>
@@ -361,15 +363,17 @@ footer {
 
 <section class="section" id="choosing">
   <h2>Choosing an entry point</h2>
-  <p>The package has two jobs — decoding events, and maintaining the opcode profile that decoding
-  depends on. Every public entry point serves one of them:</p>
+  <p>The package decodes events and maintains the opcode profile that decoding depends on. Its
+  public-experimental item-state module can also assemble a bounded hydration generation into a
+  queryable inventory/storage report:</p>
   <div class="tablewrap"><table>
     <tr><th>You want to…</th><th>Call</th><th>Returns</th><th>Notes</th></tr>
     <tr><td>Parse a saved capture</td><td class="mono"><a href="#replay-pcap">replay_pcap(path, …)</a></td><td class="mono">Iterator[<a href="#bdoevent">BDOEvent</a>]</td><td>Offline and deterministic — the easiest surface to build and test against.</td></tr>
     <tr><td>Stream live events in a script</td><td class="mono"><a href="#capture-live">capture_live(…)</a></td><td class="mono">Iterator[BDOEvent]</td><td>Blocking iterator; yields as packets decode.</td></tr>
     <tr><td>Start and stop live capture from an app/GUI</td><td class="mono"><a href="#livecapturesession">LiveCaptureSession</a></td><td class="mono">events() / poll()</td><td>Explicit lifecycle control; <code>stop()</code> wakes a quiet consumer from another thread.</td></tr>
     <tr><td>Stream live events in an asyncio app</td><td class="mono"><a href="asyncio.html#async-live-capture-session">AsyncLiveCaptureSession</a></td><td class="mono">AsyncIterator[BDOEvent]</td><td>Use <code>async with</code> and <code>async for</code>; thread bridging and cancellation cleanup are built in.</td></tr>
-    <tr><td>Track worker production</td><td class="mono">capture_live(event_filter=EventFilter(deposit_origins={"worker"}))</td><td class="mono">Iterator[BDOEvent]</td><td>Classification is automatic—no learner required. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
+    <tr><td>Query inventory and town storage at one character load</td><td class="mono"><a href="#character-state">analyze_item_state_pcap() / CharacterLoadSession</a></td><td class="mono">ItemStateSnapshot</td><td>Experimental aggregate; observational rather than on-demand, with explicit coverage and provenance metadata.</td></tr>
+    <tr><td>Track worker production</td><td class="mono">capture_live(event_filter=EventFilter(event_types={"storage_delta"}, deposit_origins={"worker"}))</td><td class="mono">Iterator[BDOEvent]</td><td>Built-in in-session classification; no learner is required. Character-load storage snapshots are excluded by the event-type filter. See <a href="#origin-classification">worker-origin classification</a>.</td></tr>
     <tr><td>Recalibrate from a recording</td><td class="mono"><a href="#calibrate-pcap">calibrate_pcap(path, …)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>Deterministic — ideal for tests and support reports.</td></tr>
     <tr><td>Recalibrate from a terminal</td><td class="mono"><a href="#calibrate-live">calibrate_live(…)</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a></td><td>One blocking call; timer or Ctrl+C to stop.</td></tr>
     <tr><td>Recalibrate <em>and</em> persist in one call</td><td class="mono"><a href="#calibrate-and-update">calibrate_and_update(path, …)</a></td><td class="mono">(<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | None)</td><td>The post-patch recovery path; profile untouched if nothing was found.</td></tr>
@@ -377,7 +381,7 @@ footer {
     <tr><td>Recalibrate inside an asyncio app</td><td class="mono"><a href="asyncio.html#async-calibration-session">AsyncCalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">await stop()</span></td><td>Awaitable capture, analysis, abort, and cancellation-safe cleanup.</td></tr>
     <tr><td>Persist discovered specs</td><td class="mono"><a href="#update-profile">update_profile(result, path)</a></td><td class="mono"><a href="#profileupdate">ProfileUpdate</a></td><td>Merges with dedupe and backup; <span class="mono">replace=True</span> supersedes stale entries.</td></tr>
     <tr><td>Inspect a profile</td><td class="mono"><a href="#load-opcode-profile">load_opcode_profile(path)</a></td><td class="mono"><a href="#load-opcode-profile">OpcodeProfile</a></td><td>Metadata and raw specs, no decoding.</td></tr>
-    <tr><td>Audit worker companion families</td><td class="mono"><a href="#origin-learner">OriginLearner / origin-learn</a></td><td class="mono">candidate families</td><td>Optional maintenance tooling. It observes workers already found by the structural classifier.</td></tr>
+    <tr><td>Audit worker companion families</td><td class="mono"><a href="#origin-learner">OriginLearner / origin-learn</a></td><td class="mono">candidate families</td><td>Optional maintenance tooling. It records structurally discovered companion candidates for audit and persistence.</td></tr>
   </table></div>
 </section>
 
@@ -404,7 +408,7 @@ footer {
     <div class="prow"><div class="pname">ports<span class="ptype">tuple[int, ...]</span></div>
       <div class="pdesc">BDO server source ports to treat as game traffic. <span class="pdefault">Default: (8884, 8885, 8889).</span></div></div>
     <div class="prow"><div class="pname">event_filter<span class="ptype">EventFilter | None</span></div>
-      <div class="pdesc">Yield only matching events. Deposit-origin filters run after classification. See <a href="#eventfilter"><code>EventFilter</code></a>.</div></div>
+      <div class="pdesc"><code>None</code> preserves the complete decoded replay stream, including snapshot records and neutral diagnostics. A supplied filter is honored exactly; deposit-origin filters run after classification. See <a href="#eventfilter"><code>EventFilter</code></a>.</div></div>
     <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
       <div class="pdesc">Optional audit hook; it is not required for classification. Receives each structurally discovered worker companion chain once per storage-delta frame. Use <a href="#origin-learner"><code>OriginLearner.observe</code></a> for in-memory aggregation. No writes occur automatically.</div></div>
   </div>
@@ -435,7 +439,7 @@ worker_deposits = <span class="f">EventFilter</span>(event_types={<span class="s
     <div class="prow"><div class="pname">live_options<span class="ptype">LiveCaptureOptions | None</span></div>
       <div class="pdesc">Interface, destination-IP discovery, ports, BPF, and queue controls. See <a href="#livecaptureoptions"><code>LiveCaptureOptions</code></a>.</div></div>
     <div class="prow"><div class="pname">event_filter<span class="ptype">EventFilter | None</span></div>
-      <div class="pdesc">The same app-facing filter accepted by <code>replay_pcap()</code>.</div></div>
+      <div class="pdesc"><code>None</code> applies <code>EventFilter.activity()</code>, yielding ordinary live activity while excluding hydration and neutral diagnostics. Pass <code>EventFilter.all()</code> for every completed decoded live event or <code>EventFilter.snapshot_records()</code> for hydration records only. Any explicit filter is honored exactly.</div></div>
     <div class="prow"><div class="pname">capture_seconds<span class="ptype">float | None</span></div>
       <div class="pdesc">Stop automatically after this long. <span class="pdefault">Default: run until interrupted, closed, or the capture source ends.</span></div></div>
     <div class="prow"><div class="pname">origin_observer<span class="ptype">Callable[[CompanionObservation], object] | None</span></div>
@@ -543,7 +547,10 @@ session.<span class="f">stop</span>()</code></pre>
   <p>The constructor accepts the same profile, <code>event_filter</code>,
   <code>live_options</code>, and origin-observer options as
   <a href="#capture-live"><code>capture_live()</code></a>, except
-  <code>capture_seconds</code>: the application owns session timing. It is also a context
+  <code>capture_seconds</code>: the application owns session timing. As with
+  <code>capture_live()</code>, <code>event_filter=None</code> means
+  <code>EventFilter.activity()</code>; pass <code>EventFilter.all()</code> for an exhaustive live
+  stream. It is also a context
   manager—<code>with LiveCaptureSession(...) as session:</code> starts on entry and guarantees
   <code>stop()</code> on exit.</p>
 
@@ -552,6 +559,124 @@ session.<span class="f">stop</span>()</code></pre>
   It provides awaitable lifecycle methods and native <code>async for</code> syntax while delegating
   capture, decoding, buffering, finalization, and errors to this same synchronous session.
   See the <a href="asyncio.html">asyncio guide</a> for Start/Stop, cancellation, and calibration patterns.</p>
+</section>
+
+<section class="section" id="character-state">
+  <h2>Item state from character load <span class="tag">Experimental</span></h2>
+  <p>The low-level decoder emits one <code>inventory_snapshot</code> or
+  <code>storage_snapshot</code> event per existing item record. The canonical experimental
+  <code>bdo_toolkit.item_state</code> facade assembles those records into one bounded, queryable
+  hydration report: inventory groups and containers, known currency balances, merged storage
+  chunks and repeated sweeps, and explicit empty storage envelopes.</p>
+  <p>This is observational rather than an on-demand game query. Start capture before an
+  initial login or character switch, or replay a capture containing that hydration. The same
+  message shape is directly observed for both lifecycle actions, but the packet body does not
+  identify which occurred, so <code>state.load_reason</code> remains <code>None</code>.</p>
+
+<pre><code><span class="k">from</span> bdo_toolkit.item_state <span class="k">import</span> CharacterLoadSession, analyze_item_state_pcap
+
+state = <span class="f">analyze_item_state_pcap</span>(
+    <span class="s">"character-switch.pcapng"</span>,
+    opcode_profile=<span class="s">"opcodes.local"</span>,
+)
+
+heidel = state.storages.<span class="f">named</span>(<span class="s">"Heidel"</span>)
+same_storage = state.storages.<span class="f">by_id</span>(<span class="n">0x0020</span>)
+potato_stacks = state.storages.<span class="f">find_item</span>(<span class="n">7003</span>)
+potato_total = state.storages.<span class="f">total_quantity</span>(<span class="n">7003</span>)
+potato_locations = state.storages.<span class="f">locations_for</span>(<span class="n">7003</span>)
+
+main = state.inventory.<span class="f">container</span>(<span class="n">0x00</span>)
+silver = state.inventory.<span class="f">currency</span>(<span class="s">"Silver"</span>)
+
+<span class="f">print</span>(<span class="f">len</span>(state.storages), state.storages[<span class="n">0</span>] <span class="k">if</span> state.storages <span class="k">else</span> <span class="k">None</span>)
+<span class="f">print</span>(heidel.occupied_stacks <span class="k">if</span> heidel <span class="k">else</span> <span class="k">None</span>)
+<span class="f">print</span>(potato_total, [storage.name <span class="k">for</span> storage <span class="k">in</span> potato_locations])
+
+payload = state.<span class="f">to_dict</span>()
+<span class="f">print</span>(payload[<span class="s">"schema_version"</span>])              <span class="c"># 1</span>
+<span class="f">print</span>(state.coverage.completion_status)       <span class="c"># "unknown"</span>
+<span class="f">print</span>(state.provenance.capture_mode)          <span class="c"># "pcap_replay"</span></code></pre>
+
+  <div class="tablewrap"><table>
+    <tr><th>Surface</th><th>Purpose</th></tr>
+    <tr><td class="mono">CharacterLoadSession</td><td>Single-use live capture session returning an <code>ItemStateSnapshot</code>; optional <code>save_pcap=</code> preserves filtered raw evidence.</td></tr>
+    <tr><td class="mono">analyze_item_state_pcap()</td><td>Offline replay and aggregate analysis using one active opcode profile.</td></tr>
+    <tr><td class="mono">ItemStateSnapshot</td><td>Top-level inventory, storage collection, coverage, provenance, and the selected-or-unbounded generation policy.</td></tr>
+    <tr><td class="mono">StorageContents</td><td>Immutable tuple subclass with full historical tuple behavior, destination lookup, and cross-storage item queries.</td></tr>
+    <tr><td class="mono">InventorySnapshotSummary</td><td>Distinct ordinary stacks, separately modeled currency balances, group counts, derived strides, and provisional raw containers.</td></tr>
+    <tr><td class="mono">StorageSnapshotSummary</td><td>One numeric destination, merged by opaque storage instance across chunks and repeated sweeps.</td></tr>
+    <tr><td class="mono">ItemStateCoverage</td><td>Observed record/location counts, registered and unregistered IDs, explicit empty envelopes, and explicit non-completion status.</td></tr>
+    <tr><td class="mono">ItemStateProvenance</td><td>Capture mode, profile and path origins, generation-selection rule, and lifecycle-reason basis.</td></tr>
+  </table></div>
+
+  <p><code>state.storages</code> remains a tuple (and therefore an immutable sequence) and provides
+  <code>by_id()</code>, case-insensitive <code>named()</code>, <code>find_item()</code>,
+  <code>total_quantity()</code>, and <code>locations_for()</code>. Numeric
+  <code>storage_id</code> remains the protocol identity; names are confidence-qualified display
+  metadata. The older <code>state.storage(id)</code> and <code>state.storage_named(name)</code>
+  helpers remain available.</p>
+
+  <h3>Coverage, provenance, and structured output</h3>
+  <p><code>state.to_dict()</code> carries top-level <code>schema_version=1</code> and preserves
+  the existing inventory/storage keys while adding JSON-safe <code>coverage</code> and
+  <code>provenance</code> objects. <code>coverage</code> reports decoded and unique inventory
+  records, groups, unclassified records, storage records and locations, registered IDs seen or
+  missing, unregistered IDs, and explicit empty envelopes.</p>
+  <div class="warn"><span class="tag">No completion claim</span>
+  Registered-location coverage is not a protocol end marker. The toolkit has not decoded a
+  proven hydration-complete signal, so <code>coverage.completion_status</code> is
+  <code>"unknown"</code>, <code>completion_basis</code> is
+  <code>"no_proven_protocol_end_marker"</code>, and <code>capture_may_be_partial</code> is true
+  even when every registered storage ID was observed.</div>
+  <p><code>provenance</code> records <code>capture_mode</code> (<code>pcap_replay</code>,
+  <code>live_capture</code>, or <code>unknown</code>), <code>profile_source</code>, input and
+  saved-capture paths, and the generation-selection rule. That value is
+  <code>latest_observed_inventory_hydration</code> when an inventory boundary exists,
+  <code>all_observed_storage_no_inventory_boundary</code> when storage is retained without
+  one, and <code>none_no_hydration_boundary</code> when no boundary was observed. It also records <code>load_reason=None</code> with
+  <code>load_reason_basis="not_decoded_from_protocol"</code>; initial login versus character
+  switch must not be inferred from the aggregate.</p>
+  <div class="warn"><span class="tag">Storage-only evidence can span loads</span>
+  Without a decoded inventory boundary, all observed storage snapshots are retained and the
+  aggregate warns that multiple loads may have been merged. The provenance value makes that
+  fallback machine-readable instead of calling it the latest generation.</div>
+
+  <div class="note"><span class="tag">Compatibility</span>
+  Existing <code>bdo_toolkit.character_state</code> imports and the names
+  <code>CharacterStateSnapshot</code>, <code>analyze_character_load_pcap()</code>, and
+  <code>format_character_state()</code> remain supported aliases to the same implementation.
+  New code should use <code>bdo_toolkit.item_state</code> and its item-state names. Neither
+  experimental module is re-exported from the package root.</div>
+
+  <p>Current raw container interpretations are provisional: <code>0x00</code> Main,
+  <code>0x10</code> Pearl, <code>0x18</code> Global Currencies, and <code>0x0B</code>
+  Enhancement. The decoder derives per-frame stride and jointly discovers slot/container tail
+  positions; an ambiguous layout or unknown future code leaves metadata unclassified while
+  preserving decoded items. Count-zero wrappers contain no record-level code and cannot be named.</p>
+  <div class="note"><span class="tag">Observed evidence</span>
+  July 17 initial login: 247 serialized inventory records = 243 ordinary stacks + four
+  balances; 1,240 unique occupied storage stacks. Character switch: 246 = 242 + four;
+  1,242 unique storage stacks from 2,484 decoded records. Both observed all 33 registered
+  destinations: 29 non-empty and four explicit empty envelopes. These counts describe those
+  captures, not capacities or fixed protocol totals.</div>
+  <div class="warn"><span class="tag">Limits &amp; privacy</span>
+  Storage capacity, a proven completion marker, and lifecycle trigger are not decoded. The
+  aggregate is not a continuously maintained state database. Raw pcaps can contain network,
+  session/account-related, inventory, and storage data; keep them private and never publish
+  blindly. Human output from <code>format_item_state()</code> is presentation, not a parse
+  contract.</div>
+  <p>Run the diagnostic with
+  <code>py tools\character_load\inspect_character_load.py</code>, add
+  <code>--save-pcap path.pcapng</code> for opt-in evidence, or use <code>--pcap</code> to replay.
+  Existing captures are never overwritten.</p>
+  <p>After a patch, run ordinary guided transfer calibration first. It genuinely relearns shared
+  opcodes, first-item positions, and normalized base lengths, but still assumes quantity at
+  <code>item+4</code>, instance at <code>item+35</code>, known receipt-context values, and the
+  current storage destination relationship. Inventory count/stride/tail fields are then
+  rediscovered structurally. Storage mode/token/count/destination relationships are not fully
+  calibration-derived; if any of these assumptions change, calibration alone is insufficient
+  and snapshot detection must be enhanced.</p>
 </section>
 
 <section class="section" id="bdoevent">
@@ -567,7 +692,7 @@ session.<span class="f">stop</span>()</code></pre>
     <tr><td class="mono">flow</td><td class="mono">Flow</td><td>Server→client network flow. Attributes: <span class="mono">flow.source_ip</span>, <span class="mono">flow.source_port</span>, <span class="mono">flow.destination_ip</span>, <span class="mono">flow.destination_port</span>; <span class="mono">str(flow)</span> renders <span class="mono">"ip:port -&gt; ip:port"</span>, <span class="mono">flow.to_dict()</span> a JSON-safe dict.</td></tr>
     <tr><td class="mono">item_id</td><td class="mono">int</td><td>Raw item id as seen on the wire (may encode enhancement — see below).</td></tr>
     <tr><td class="mono">quantity</td><td class="mono">int</td><td>Item count for this record.</td></tr>
-    <tr><td class="mono">source</td><td class="mono">str | None</td><td>Human label for where the item came from (<span class="mono">"Mob Drop"</span>, <span class="mono">"Batch Storage Deposit"</span>, …). Unrecognized contexts surface as <span class="mono">UNKNOWN(0x…)</span> rather than silently matching a known source.</td></tr>
+    <tr><td class="mono">source</td><td class="mono">str | None</td><td>Human label for the event context. On storage events this is the destination town (<span class="mono">"Velia"</span>, <span class="mono">"Heidel"</span>, …), not an inferred action label. Unknown storage keys surface as <span class="mono">UNKNOWN_STORAGE(0x…)</span>; other unrecognized contexts use <span class="mono">UNKNOWN(0x…)</span>.</td></tr>
     <tr><td class="mono">raw_context</td><td class="mono">str | None</td><td>The raw context bytes as hex — preserved even when <span class="mono">source</span> has a label.</td></tr>
     <tr><td class="mono">opcode</td><td class="mono">int | None</td><td>Message opcode. Serialized as a hex string (<span class="mono">"0x0F16"</span>) in <span class="mono">to_dict()</span>.</td></tr>
     <tr><td class="mono">message_length</td><td class="mono">int | None</td><td>Length of the containing BDO message.</td></tr>
@@ -576,11 +701,15 @@ session.<span class="f">stop</span>()</code></pre>
     <tr><td class="mono">enhancement</td><td class="mono">str | None</td><td>Label for the level: <span class="mono">PRI DUO TRI TET PEN HEX SEP OCT NOV DEC</span>.</td></tr>
     <tr><td class="mono">inventory_slot</td><td class="mono">int | None</td><td>Inventory slot byte when the spec exposes one (hex string in <span class="mono">to_dict()</span>).</td></tr>
     <tr><td class="mono">item_instance</td><td class="mono">str | None</td><td>8-byte per-item instance id as hex — stable across moves of the same item stack.</td></tr>
-    <tr><td class="mono">storage_instance</td><td class="mono">str | None</td><td>8-byte destination storage instance as hex, on storage deltas.</td></tr>
+    <tr><td class="mono">storage_instance</td><td class="mono">str | None</td><td>8-byte destination storage instance as hex, on storage events.</td></tr>
+    <tr><td class="mono">storage_id</td><td class="mono">int | None</td><td>Numeric destination-storage key carried by the packet. This protocol value is the durable identity; use <a href="#storage-location"><code>storage_location()</code></a> to resolve current name metadata.</td></tr>
+    <tr><td class="mono">storage_name</td><td class="mono">str | None</td><td>Best-known destination town name for <span class="mono">storage_id</span>, or <span class="mono">None</span> when the key is not mapped.</td></tr>
+    <tr><td class="mono">storage_name_confidence</td><td class="mono">str | None</td><td>Location-mapping confidence: <span class="mono">"observed"</span>, <span class="mono">"inferred"</span>, or <span class="mono">"probable"</span>.</td></tr>
+    <tr><td class="mono">storage_operation</td><td class="mono">str | None</td><td><span class="mono">"snapshot"</span> for observed character-load storage hydration, <span class="mono">"live"</span> for a live mutation, <span class="mono">"unknown"</span> for a recognized wrapper with an unfamiliar mode and no proof of a live mutation, or <span class="mono">None</span> when an older layout cannot expose the distinction. An unknown operation with positive manual/worker evidence is promoted to <span class="mono">"live"</span> before it reaches the app.</td></tr>
     <tr><td class="mono">record_index / record_count</td><td class="mono">int | None</td><td>Set only on multi-record messages: this is record <em>i</em> of <em>n</em> (1-based).</td></tr>
     <tr><td class="mono">record_offset</td><td class="mono">int | None</td><td>Byte offset of the record inside its message.</td></tr>
     <tr><td class="mono">confidence</td><td class="mono">str | None</td><td>Currently always <span class="mono">"observed"</span> — packet knowledge is provisional by design.</td></tr>
-    <tr><td class="mono">deposit_origin</td><td class="mono">str | None</td><td>On <span class="mono">storage_delta</span> events: <span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>. Classification is automatic and does not require <code>OriginLearner</code>. See the <a href="#origin-classification">classification decision table</a>. <span class="mono">None</span> on other event types.</td></tr>
+    <tr><td class="mono">deposit_origin</td><td class="mono">str | None</td><td>On final <span class="mono">storage_delta</span> events: <span class="mono">"worker"</span> / <span class="mono">"manual"</span> / <span class="mono">"unknown"</span>. This includes legacy layouts and unfamiliar-operation records promoted by positive evidence. Classification is built in and does not require <code>OriginLearner</code>. Positively recognized <span class="mono">storage_snapshot</span> events bypass classification; an unresolved <span class="mono">storage_record</span> keeps <span class="mono">None</span>.</td></tr>
     <tr><td class="mono">extra</td><td class="mono">Mapping</td><td>Provisional fields — access with <span class="mono">event.extra.get(key)</span>. Keys below.</td></tr>
   </table></div>
   <h3>extra keys</h3>
@@ -589,20 +718,49 @@ session.<span class="f">stop</span>()</code></pre>
   <div class="tablewrap"><table>
     <tr><th>Key</th><th>On</th><th>Meaning</th></tr>
     <tr><td class="mono">stream_sequence</td><td>all</td><td>TCP stream position of the message — stable dedup/anchor key within a flow.</td></tr>
-    <tr><td class="mono">storage_delta</td><td class="mono">storage_delta</td><td>Signed storage quantity change for this record.</td></tr>
-    <tr><td class="mono">deposit_origin_evidence</td><td class="mono">storage_delta</td><td>Audit trail for <span class="mono">event.deposit_origin</span>: <span class="mono">worker_companions</span>, <span class="mono">matching_decrement</span>, and on worker matches a <span class="mono">companion_chain</span> object with observed opcodes/lengths, hashed shared token, token offsets, and <a href="#origin-known-family"><span class="mono">known_family</span></a>.</td></tr>
+    <tr><td class="mono">storage_delta</td><td class="mono">storage_delta</td><td>Signed storage quantity change for this record, including an unfamiliar-operation record promoted by positive manual/worker evidence.</td></tr>
+    <tr><td class="mono">storage_quantity</td><td class="mono">storage_snapshot</td><td>Stored quantity reported during character-load hydration. It is current state, not a quantity change.</td></tr>
+    <tr><td class="mono">deposit_origin_evidence</td><td class="mono">storage_delta</td><td>Audit trail for <span class="mono">event.deposit_origin</span>: <span class="mono">worker_companions</span>, <span class="mono">matching_decrement</span>, and on worker matches a <span class="mono">companion_chain</span> object with observed opcodes/lengths, hashed shared token, token offsets, <a href="#origin-known-family"><span class="mono">known_family</span></a>, <span class="mono">confirmed_family</span>, and <span class="mono">confirmation</span>. It is also added when this evidence promotes a neutral storage record; promoted multi-record manual batches may include <span class="mono">matching_decrement_record_indexes</span> with the 1-based records that matched.</td></tr>
+    <tr><td class="mono">storage_operation_evidence</td><td>evidence-promoted <span class="mono">storage_delta</span></td><td>Why a neutral wire record was promoted: <span class="mono">wire_operation="unknown"</span>, <span class="mono">inferred_operation="live"</span>, and <span class="mono">signal="matching_decrement"</span> or <span class="mono">"worker_companions"</span>.</td></tr>
   </table></div>
   <h3>Methods &amp; properties</h3>
   <div class="params">
     <div class="prow"><div class="pname">to_dict()<span class="ptype">→ dict</span></div>
       <div class="pdesc">JSON-safe dict. Optional fields are <em>omitted</em> when <code>None</code>; <code>opcode</code> and <code>inventory_slot</code> become hex strings; deterministic UTC <code>timestamp_iso</code> is included. One event per <code>json.dumps</code> line makes valid JSONL.</div></div>
     <div class="prow"><div class="pname">format_human()<span class="ptype">→ str</span></div>
-      <div class="pdesc">One-line log rendering: <span class="mono">[23:06:01.086] STORAGE_DELTA source='Batch Storage Deposit' item_id=5960 quantity=1 … deposit_origin=worker</span></div></div>
+      <div class="pdesc">One-line log rendering: <span class="mono">[23:06:01.086] STORAGE_DELTA source='Heidel' item_id=5960 quantity=1 … storage_id=0x00000020 storage_operation=live deposit_origin=worker</span></div></div>
     <div class="prow"><div class="pname">timestamp_text<span class="ptype">str (property)</span></div>
       <div class="pdesc">The timestamp rendered as <span class="mono">HH:MM:SS.mmm</span> local time.</div></div>
     <div class="prow"><div class="pname">timestamp_iso<span class="ptype">str (property)</span></div>
       <div class="pdesc">Deterministic UTC ISO-8601 rendering, also emitted by <code>to_dict()</code>.</div></div>
   </div>
+</section>
+
+<section class="section" id="storage-location">
+  <h2 class="api">bdo_toolkit.StorageLocation / storage_location()</h2>
+  <div class="sig"><span class="f">storage_location</span>(storage_id) → StorageLocation | <span class="k">None</span>
+<span class="f">StorageLocation</span>(name: str, confidence: str)</div>
+  <p>Resolve a numeric storage destination key into the toolkit's best-known town metadata.
+  <code>StorageLocation</code> is a frozen dataclass with <code>name</code> and
+  <code>confidence</code> attributes. An unknown key (or <code>None</code>) returns
+  <code>None</code>.</p>
+<pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> storage_location
+
+location = <span class="f">storage_location</span>(<span class="n">0x0020</span>)
+<span class="k">if</span> location <span class="k">is not</span> <span class="k">None</span>:
+    <span class="f">print</span>(location.name, location.confidence)  <span class="c"># Heidel observed</span></code></pre>
+  <div class="tablewrap"><table>
+    <tr><th>confidence</th><th>Meaning</th></tr>
+    <tr><td class="mono">observed</td><td>The initial game-load snapshot uniquely matched this occupied storage key to its town.</td></tr>
+    <tr><td class="mono">inferred</td><td>The key was observed, but its town name was assigned within a group that had the same occupied-record count.</td></tr>
+    <tr><td class="mono">probable</td><td>The destination was empty in the observed initial-load snapshot, so the name remains provisional.</td></tr>
+  </table></div>
+  <div class="note"><span class="tag">Stable identity</span>
+  Use <code>storage_id</code> as the protocol identity in stored data and treat the name as
+  display metadata. A future capture can improve a provisional name without changing the key.
+  The current map contains 33 protocol destinations: 29 occupied keys and four empty envelopes.
+  Empty envelopes carry no item record, so they do not emit a <code>storage_snapshot</code> event;
+  their names remain <code>probable</code>.</div>
 </section>
 
 <section class="section" id="event-types">
@@ -611,33 +769,59 @@ session.<span class="f">stop</span>()</code></pre>
     <tr><th>event_type</th><th>Meaning</th></tr>
     <tr><td class="mono">loot_preview</td><td>A previewed/offered item record — currently gathering-focused.</td></tr>
     <tr><td class="mono">item_received</td><td>Inventory receipt or update: mob drops, gathering, storage pulls.</td></tr>
-    <tr><td class="mono">storage_delta</td><td>Item added to storage — manual deposits and worker deposits; <span class="mono">event.deposit_origin</span> tells them apart (worker / manual / unknown).</td></tr>
+    <tr><td class="mono">inventory_snapshot</td><td>One existing inventory record sent during character-load hydration. It is state, not a receipt or newly acquired item; aggregate queries belong to the experimental <span class="mono">bdo_toolkit.item_state</span> API.</td></tr>
+    <tr><td class="mono">storage_delta</td><td>A live item addition to storage — manual deposits and worker deposits; <span class="mono">event.deposit_origin</span> tells them apart (worker / manual / unknown). This includes unfamiliar-operation records promoted by independent manual/worker evidence, plus older layouts that cannot expose the operation discriminator.</td></tr>
+    <tr><td class="mono">storage_snapshot</td><td>One existing storage record sent during character-load hydration observed on initial login and character switch. Its quantity is available as <span class="mono">extra["storage_quantity"]</span>; it is not a deposit and bypasses deposit-origin classification.</td></tr>
+    <tr><td class="mono">storage_record</td><td>Neutral fail-closed output when a recognized storage wrapper carries an unfamiliar operation mode and the bounded origin tracker finds neither a calibrated matching decrement nor a confirmed shared-token chain. Positive evidence is emitted instead as a promoted live <span class="mono">storage_delta</span>; only unresolved candidates remain <span class="mono">storage_record</span> with <span class="mono">deposit_origin=None</span>.</td></tr>
   </table></div>
-  <p>Known <code>source</code> labels, decoded from the message's context bytes:</p>
+  <p>For <code>storage_delta</code>, <code>storage_snapshot</code>, and
+  <code>storage_record</code>, <code>source</code> is the destination town resolved from
+  <code>storage_id</code>. It does not describe how the item arrived. Examples include
+  <code>Velia</code>, <code>Heidel</code>, <code>Olvia</code>, and <code>Yukjo Street</code>.
+  Other event families retain contextual source labels:</p>
   <div class="tablewrap"><table>
     <tr><th colspan="3">Sources</th></tr>
     <tr><td>Character Load</td><td>Gathering</td><td>Mob Drop</td></tr>
-    <tr><td>Storage</td><td>Batch Storage Deposit</td><td>Royal Workshop</td></tr>
-    <tr><td>Central Market</td><td>Black Spirit Safe</td><td>Challenges</td></tr>
-    <tr><td>In-Game Mail</td><td>Box/Bundle</td><td>NPC Exchange</td></tr>
-    <tr><td>NPC Shop</td><td>Choose Your Rewards Box</td><td>NPC Sell</td></tr>
-    <tr><td class="mono" colspan="3">UNKNOWN(0x…)</td></tr>
+    <tr><td><code>Storage</code> (inventory receipt)</td><td>Central Market</td><td>Black Spirit Safe</td></tr>
+    <tr><td>Challenges</td><td>In-Game Mail</td><td>Box/Bundle</td></tr>
+    <tr><td>NPC Exchange</td><td>NPC Shop</td><td>Choose Your Rewards Box</td></tr>
+    <tr><td>NPC Sell</td><td class="mono">UNKNOWN(0x…)</td><td class="mono">UNKNOWN_STORAGE(0x…)</td></tr>
   </table></div>
   <div class="note"><span class="tag">Unknown sources</span>
-  A context value the toolkit has never seen surfaces as <code>UNKNOWN(0x…)</code> — it will
-  <em>not</em> match a filter like <code>sources={"Storage"}</code>, so new protocol behavior
-  stays visible instead of being silently miscategorized. The raw bytes are always in
-  <code>raw_context</code>.</div>
+  An unmapped destination surfaces as <code>UNKNOWN_STORAGE(0x…)</code>; another context value
+  the toolkit has never seen surfaces as <code>UNKNOWN(0x…)</code>. Neither silently matches a
+  known source filter. The raw bytes are always preserved in <code>raw_context</code>.</div>
+  <div class="note"><span class="tag">Common live filter</span>
+  <code>EventFilter(event_types={"item_received", "storage_delta"})</code> intentionally excludes
+  both <code>inventory_snapshot</code> and recognized-wrapper <code>storage_snapshot</code>
+  hydration while retaining live transfers, including unfamiliar-operation records promoted
+  before filtering.
+  Unresolved <code>storage_record</code> diagnostics remain outside that filter. Older layouts
+  with <code>storage_operation=None</code> cannot make the snapshot/live distinction.</div>
 </section>
 
 <section class="section" id="eventfilter">
   <h2 class="api">bdo_toolkit.EventFilter</h2>
   <div class="sig"><span class="f">EventFilter</span>(*, event_types=<span class="k">None</span>, sources=<span class="k">None</span>, item_ids=<span class="k">None</span>,
               deposit_origins=<span class="k">None</span>)
+<span class="f">EventFilter.activity</span>() → EventFilter
+<span class="f">EventFilter.snapshot_records</span>() → EventFilter
+<span class="f">EventFilter.all</span>() → EventFilter
 <span class="f">filter.allows</span>(event) → bool</div>
   <p>Pass the object as <code>event_filter=</code> to replay, live capture, or a live session,
   or use <code>allows()</code> when your app fans one decoded stream out to multiple consumers.
-  A criterion left as <code>None</code> matches everything; supplied criteria must all match.</p>
+  A criterion left as <code>None</code> matches everything. Values within one supplied set are
+  alternatives, while every supplied criterion must match; string values are exact and
+  case-sensitive.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Preset</th><th>Event types</th><th>Typical use</th></tr>
+    <tr><td class="mono">EventFilter.activity()</td><td class="mono">loot_preview, item_received, storage_delta</td><td>The default delivery policy for <code>capture_live()</code> and <code>LiveCaptureSession</code> when their <code>event_filter</code> is <code>None</code>.</td></tr>
+    <tr><td class="mono">EventFilter.snapshot_records()</td><td class="mono">inventory_snapshot, storage_snapshot</td><td>Low-level character-load hydration records only.</td></tr>
+    <tr><td class="mono">EventFilter.all()</td><td>Unconstrained</td><td>Every completed decoded event; equivalent to direct <code>EventFilter()</code>.</td></tr>
+  </table></div>
+  <p><code>replay_pcap(event_filter=None)</code> is deliberately exhaustive and does not apply
+  the live activity preset. Passing any explicit filter—including a preset—has the same exact
+  meaning in replay and live capture.</p>
   <p>Attributes mirror the constructor: <code>filter.event_types</code>,
   <code>filter.sources</code>, <code>filter.item_ids</code>, <code>filter.deposit_origins</code> —
   each normalized to an immutable <code>frozenset</code> or <code>None</code>.
@@ -681,7 +865,7 @@ writer.<span class="f">write</span>(event)</div>
     <tr><td class="mono">updated_at</td><td class="mono">str | None</td><td>ISO timestamp of the last calibration write.</td></tr>
     <tr><td class="mono">calibration_item_id</td><td class="mono">int | None</td><td>Item used for the last calibration (Potato: 7003).</td></tr>
     <tr><td class="mono">specs</td><td class="mono">dict[str, list[dict]]</td><td>Raw spec entries per event category.</td></tr>
-    <tr><td class="mono">origin_companion_families</td><td class="mono">tuple[OriginCompanionFamily, ...]</td><td>Explicitly <a href="#origin-promotion">promoted</a> worker companion families. They control only the <a href="#origin-known-family"><code>known_family</code> audit flag</a>; opcode presence never creates a worker verdict.</td></tr>
+    <tr><td class="mono">origin_companion_families</td><td class="mono">tuple[OriginCompanionFamily, ...]</td><td>Explicitly <a href="#origin-promotion">promoted</a> worker companion families. A structurally matched promoted family is trusted immediately; new families can instead earn in-session confirmation. Opcode presence without the shared-token structure never creates a worker verdict.</td></tr>
   </table></div>
 </section>
 
@@ -702,7 +886,11 @@ writer.<span class="f">write</span>(event)</div>
   You do not need <code>OriginLearner</code>, <code>origin_observer</code>, a candidate file, or
   promoted companion opcodes. Read <code>event.deposit_origin</code> from a normal
   <a href="#replay-pcap"><code>replay_pcap()</code></a> or
-  <a href="#capture-live"><code>capture_live()</code></a> call.</div>
+  <a href="#capture-live"><code>capture_live()</code></a> call. Character-load
+  <code>storage_snapshot</code> events bypass this classifier and always keep
+  <code>deposit_origin=None</code>. A recognized <code>storage_operation="unknown"</code>
+  candidate takes this same classifier path and becomes a live delta only when independent
+  manual or worker evidence proves it.</div>
 <pre><code><span class="k">from</span> bdo_toolkit <span class="k">import</span> EventFilter, capture_live
 
 <span class="k">for</span> event <span class="k">in</span> <span class="f">capture_live</span>(
@@ -710,46 +898,70 @@ writer.<span class="f">write</span>(event)</div>
     event_filter=<span class="f">EventFilter</span>(event_types={<span class="s">"storage_delta"</span>}),
 ):
     <span class="f">print</span>(event.deposit_origin)  <span class="c"># "worker", "manual", or "unknown"</span></code></pre>
-  <p>For a worker deposit, the tracker starts at the exact end of the decoded storage delta,
-  parses the next two contiguous <em>companion frames</em>, and looks for an informative 8-byte
-  token shared by all three frames. That three-frame relationship—not the exact opcode
-  values—is the worker evidence.</p>
-  <p>Without that structure, a matching source-stack decrement in the immediate pre-delta
+  <p>For a live delta or recognized unknown-operation candidate, the tracker starts at the exact
+  end of the decoded storage record. It takes high-entropy token candidates only from the
+  record prefix before its first item, then tests ordered pairs within the next eight messages
+  for a token shared by all three messages. Unrelated messages may appear between the
+  companions. The bounded scan stops at the next storage record or after eight messages; an
+  incomplete stream waits for more bytes only until the two-second stale timeout. Evidence is
+  never borrowed from a later storage operation.</p>
+  <p>A structural chain becomes worker evidence when its opcode/length family was explicitly
+  promoted or is confirmed during this capture session. An unpromoted family can be confirmed
+  by one unique adjacent chain, by repeated independent chains, or as the sole candidate when a
+  complete bounded window closes. Ambiguous unconfirmed candidates fail closed.</p>
+  <p>Without that structure, a matching source-stack decrement in the immediate pre-record
   chain is <code>manual</code> only when its opcode, minimum calibrated shape, and exact quantity
-  offset come from the selected profile. Incomplete or absent evidence is <code>unknown</code>.</p>
+  offset come from the selected profile. An already-live delta with incomplete or absent
+  evidence is <code>unknown</code>. For a neutral unknown-operation candidate, positive manual or
+  worker evidence promotes it before <code>EventFilter</code> runs to
+  <code>event_type="storage_delta"</code>, <code>storage_operation="live"</code>, with
+  <code>storage_delta</code>, deposit-origin evidence, and
+  <code>storage_operation_evidence</code> in <code>extra</code>. The latter preserves
+  <code>wire_operation="unknown"</code>, records the inferred <code>"live"</code> operation, and
+  names the proving signal. Without either signal it remains <code>storage_record</code> with
+  <code>deposit_origin=None</code>.</p>
+  <p>Multi-record neutral wrappers resolve atomically: every record is promoted together with
+  the same origin, or every record remains neutral. For a promoted manual batch,
+  <code>deposit_origin_evidence["matching_decrement_record_indexes"]</code> may identify the
+  1-based records whose calibrated decrement matched.</p>
 
   <h3 id="origin-known-family">Companion frames vs. companion opcode families</h3>
   <p>The word “companion” appears in both terms, but they play different roles:</p>
   <div class="tablewrap"><table>
     <tr><th>Term</th><th>What it means</th><th>Used for the worker verdict?</th></tr>
-    <tr><td>Companion frames</td><td>The two contiguous frames immediately following the storage delta. They must participate in the shared-token structure.</td><td><strong>Yes</strong></td></tr>
-    <tr><td>Companion opcode family</td><td>The observed delta opcode plus the two companion opcodes and companion lengths.</td><td><strong>No</strong>—used for patch auditing and diagnostics</td></tr>
-    <tr><td class="mono">known_family</td><td>Whether that observed opcode/length family was explicitly promoted into the active profile.</td><td><strong>No</strong>—it describes the evidence; it does not change the verdict</td></tr>
+    <tr><td>Companion messages</td><td>An ordered pair within the bounded eight-message lookahead that repeats a high-entropy token from the delta's pre-record prefix.</td><td><strong>Yes</strong>, after family trust is established</td></tr>
+    <tr><td>Companion opcode family</td><td>The observed delta opcode plus the two companion opcodes and companion lengths.</td><td><strong>Yes</strong>, but only for a complete structural chain: promoted families are immediately trusted; new ones require in-session confirmation</td></tr>
+    <tr><td class="mono">known_family</td><td>Whether that observed opcode/length family was explicitly promoted into the active profile.</td><td>Explains why an otherwise valid chain could be trusted immediately</td></tr>
+    <tr><td class="mono">confirmed_family</td><td>Whether the family is trusted by the current tracker, from the profile or in-session structural confirmation.</td><td>Must be <code>True</code> for the chain selected as worker evidence</td></tr>
+    <tr><td class="mono">confirmation</td><td>The trust path: <span class="mono">profile</span>, <span class="mono">adjacent-structural-chain</span>, <span class="mono">repeated-structural-chain</span>, or <span class="mono">unambiguous-bounded-window</span>.</td><td>Audit explanation for <span class="mono">confirmed_family</span></td></tr>
   </table></div>
 
   <div class="tablewrap"><table>
-    <tr><th>Shared-token structure</th><th>Promoted family match</th><th>Result</th><th>Audit field</th></tr>
-    <tr><td>Present</td><td>Yes</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=True</td></tr>
-    <tr><td>Present</td><td>No</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=False</td></tr>
-    <tr><td>Absent</td><td>Following opcodes look familiar or unfamiliar</td><td>Not a worker from companion evidence; a matching decrement may still produce <code>manual</code>, otherwise <code>unknown</code></td><td>No <code>companion_chain</code>, so no <code>known_family</code> field</td></tr>
+    <tr><th>Shared-token structure</th><th>Family trust</th><th>Result</th><th>Evidence</th></tr>
+    <tr><td>Present</td><td>Promoted profile family</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=True, confirmed_family=True, confirmation="profile"</td></tr>
+    <tr><td>Present and structurally unambiguous or repeated</td><td>Confirmed in this session</td><td class="mono">deposit_origin="worker"</td><td class="mono">known_family=False, confirmed_family=True</td></tr>
+    <tr><td>Present but ambiguous and unconfirmed</td><td>None yet</td><td>A matching decrement may still produce <code>manual</code>. Otherwise an already-live delta is <code>unknown</code>, while a neutral candidate remains <code>storage_record</code>.</td><td>No selected <code>companion_chain</code></td></tr>
+    <tr><td>Absent</td><td>Following opcodes look familiar or unfamiliar</td><td>A matching decrement may still produce <code>manual</code>. Otherwise an already-live delta is <code>unknown</code>, while a neutral candidate remains <code>storage_record</code>.</td><td>No selected <code>companion_chain</code></td></tr>
   </table></div>
 
-  <p>On a structural worker match, inspect the diagnostic flag at
-  <code>event.extra["deposit_origin_evidence"]["companion_chain"]["known_family"]</code>.
-  A value of <code>False</code> is useful after a patch: classification still works, while your
-  tooling can report that a new family appeared. This lookup is the opcode-family
-  cross-check—it tells you whether structural evidence agrees with promoted profile metadata,
-  but it never upgrades, downgrades, or vetoes <code>deposit_origin</code>.</p>
+  <p>On a worker match, inspect <code>known_family</code>, <code>confirmed_family</code>, and
+  <code>confirmation</code> inside
+  <code>event.extra["deposit_origin_evidence"]["companion_chain"]</code>. A false
+  <code>known_family</code> with a true <code>confirmed_family</code> means the built-in tracker
+  safely bootstrapped a new patch family during this session; <code>confirmation</code> records
+  which structural rule established that trust.</p>
   <div class="note"><span class="tag">Patch behavior</span>
   Companion opcodes, lengths, and token offsets may rotate. Classification survives as long as
-  the three-frame shared-token relationship remains. A familiar opcode pair without that
-  relationship never produces <code>worker</code>. The detector is recorded as
-  <code>shared-token-chain-v1</code>.</div>
+  the bounded shared-token relationship remains structurally confirmable. A familiar opcode
+  pair without that relationship never produces <code>worker</code>, and an ambiguous new family
+  remains unclassified. The detector is recorded as <code>shared-token-chain-v1</code>.</div>
 
   <h3 id="origin-learner">2. Learn families (optional maintainer workflow)</h3>
-  <p><code>OriginLearner</code> receives observations <em>after</em> the structural classifier
-  finds a worker chain. It groups the observed opcode/length metadata into candidates. It does
-  not classify events and it is not needed by ordinary applications.</p>
+  <p><code>OriginLearner</code> receives observations from the built-in structural classifier and
+  groups the observed opcode/length metadata into candidates for audit, persistence, and later
+  promotion. It does not classify events and it is not needed by ordinary applications. Its
+  persisted candidate threshold is separate from the tracker's automatic in-session family
+  confirmation.</p>
   <div class="tablewrap"><table>
     <tr><th>Your goal</th><th>Use</th><th>Effect</th></tr>
     <tr><td>Only classify deposits</td><td>Normal capture/replay; leave <code>origin_observer=None</code></td><td>Events still receive <code>deposit_origin</code></td></tr>
@@ -820,7 +1032,7 @@ learner = <span class="f">OriginLearner</span>()
   <h3 class="api">CompanionObservation / OriginCompanionCandidate</h3>
   <div class="tablewrap"><table>
     <tr><th>Type</th><th>Important fields</th><th>Meaning</th></tr>
-    <tr><td class="mono">CompanionObservation</td><td class="mono">timestamp, flow, stream_sequence, delta_opcode, delta_length, companion_opcodes, companion_lengths, token_digest, token_offsets, family_key, observation_id</td><td>One structurally matched three-frame chain, delivered to <code>origin_observer</code> once per storage-delta frame (not once per batch record). <code>to_dict()</code> returns a JSON-safe audit record.</td></tr>
+    <tr><td class="mono">CompanionObservation</td><td class="mono">timestamp, flow, stream_sequence, delta_opcode, delta_length, companion_opcodes, companion_lengths, token_digest, token_offsets, family_key, observation_id</td><td>One structurally matched delta-plus-companion-pair chain, delivered to <code>origin_observer</code> once per storage-delta frame (not once per batch record). <code>to_dict()</code> returns a JSON-safe audit record.</td></tr>
     <tr><td class="mono">OriginCompanionCandidate</td><td class="mono">delta_opcode, companion_opcodes, companion_lengths, observations, distinct_tokens, delta_lengths, delta_token_offsets, first_token_offsets, second_token_offsets, first_seen, last_seen, family_key</td><td>Aggregated family snapshot. <code>confirmed(min_observations)</code> tests promotion eligibility; <code>to_dict(min_observations)</code> returns the persisted form.</td></tr>
   </table></div>
 
@@ -829,8 +1041,10 @@ learner = <span class="f">OriginLearner</span>()
                           backup=<span class="k">True</span>) → OriginPromotion</div>
   <p>Explicitly merge confirmed families into <code>origin_companion_families</code> in the same
   normal opcode profile you pass as <code>opcode_profile=</code>. Promotion makes later structural
-  matches report <code>known_family=True</code>; it does not enable or strengthen worker
-  classification. The profile is strictly validated, backed up, and atomically replaced.
+  matches report <code>known_family=True</code> and trust that family immediately, without waiting
+  for in-session confirmation. The full shared-token structure is still required; matching
+  opcodes alone never produce a worker verdict. The profile is strictly validated, backed up,
+  and atomically replaced.
   Re-promoting the same family is a no-op (<code>result.written == False</code>).
   <code>OriginPromotion</code> exposes <code>path</code>, <code>added</code>,
   <code>backup_path</code>, and <code>written</code>.</p>
@@ -1079,12 +1293,22 @@ result, update = <span class="f">calibrate_and_update</span>(<span class="s">"op
     <tr><td class="mono">destination_instance_offset</td><td class="mono">int | None</td><td>Offset of the destination storage instance (storage deltas).</td></tr>
     <tr><td class="mono">context_offset</td><td class="mono">int | None</td><td>Offset of the 4-byte source-context / reason field.</td></tr>
     <tr><td class="mono">inventory_slot_offset</td><td class="mono">int | None</td><td>Offset of the inventory slot byte, when the layout exposes one.</td></tr>
-    <tr><td class="mono">repeat_stride</td><td class="mono">int | None</td><td>Calibrated byte stride between records in multi-record messages. This is profile-specific and may change after a patch.</td></tr>
+    <tr><td class="mono">repeat_stride</td><td class="mono">int | None</td><td>Calibrated byte stride between records in older/fallback layouts. For the currently observed wrapper, the decoder can instead derive stride from a built-in relative count-field relationship; that wrapper relationship is not itself calibration-derived.</td></tr>
     <tr><td class="mono">confidence</td><td class="mono">str</td><td>Label such as <span class="mono">"calibrated-high"</span> / <span class="mono">"calibrated-medium"</span>.</td></tr>
     <tr><td class="mono">score</td><td class="mono">float | None</td><td>Numeric calibration confidence, 0-1.</td></tr>
     <tr><td class="mono">source</td><td class="mono">str</td><td>How the spec was produced, e.g. <span class="mono">"calibrate inventory-to-storage item_id=7003 qty=3"</span>.</td></tr>
     <tr><td class="mono">observed_at</td><td class="mono">str | None</td><td>ISO timestamp of the frame the spec was calibrated from.</td></tr>
   </table></div>
+  <div class="note"><span class="tag">Multi-record storage hardening</span>
+  In the currently observed wrapper, a relative field supplies record count <code>N</code>. With
+  message length <code>L</code> and calibrated single-record base length <code>B</code>, the decoder
+  derives <code>stride = (L - B) / (N - 1)</code>. It emits the batch only when that geometry
+  divides exactly and every declared item, quantity, and instance validates. Older wrappers
+  retain a strict record-marker fallback, then the profile's <code>repeat_stride</code>
+  compatibility path. Only <code>B</code> and the ordinary record/context offsets come from the
+  opcode profile: the current wrapper's relative count field and mode/token signatures are
+  built-in protocol observations, not relationships rediscovered by calibration. Making those
+  wrapper metadata relations calibration-derived is a separate future enhancement.</div>
   <div class="params">
     <div class="prow"><div class="pname">to_json_dict()<span class="ptype">→ dict</span></div>
       <div class="pdesc">The profile-file form of the spec — what <code>update_profile()</code> writes. <code>None</code> fields are omitted.</div></div>
@@ -1111,8 +1335,8 @@ result, update = <span class="f">calibrate_and_update</span>(<span class="s">"op
   <h2>bdo-toolkit CLI</h2>
   <p>Installed with the package. Every flag maps one-to-one onto a library keyword argument —
   the CLI is a convenience for terminals, not a separate capability.</p>
-<pre><code><span class="c"># decode a capture as JSONL, filtered to worker deposits</span>
-bdo-toolkit replay session.pcapng --jsonl --source <span class="s">"Batch Storage Deposit"</span>
+<pre><code><span class="c"># decode a capture as JSONL, filtered to live deposits into Heidel</span>
+bdo-toolkit replay session.pcapng --jsonl --event-type storage_delta --source <span class="s">"Heidel"</span>
 bdo-toolkit live --event-type storage_delta --deposit-origin worker
 
 <span class="c"># live decode until Ctrl+C</span>
@@ -1130,7 +1354,7 @@ bdo-toolkit reset-profile opcodes.json
 <span class="c"># learn unknown worker companion metadata from captures (or live without --pcap)</span>
 bdo-toolkit origin-learn --profile opcodes.local --pcap worker-one.pcapng --pcap worker-two.pcapng
 
-<span class="c"># explicitly promote confirmed metadata; classification does not require promotion</span>
+<span class="c"># explicitly promote metadata so future structural matches are trusted immediately</span>
 bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.local</code></pre>
   <div class="tablewrap"><table>
     <tr><th>Command</th><th>Purpose</th><th>Key flags</th></tr>
@@ -1139,7 +1363,7 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
     <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --replace --verbose</td></tr>
     <tr><td class="mono">reset-profile &lt;path&gt;</td><td>Write an empty active profile</td><td class="mono">--calibration-item-id</td></tr>
     <tr><td class="mono">origin-learn</td><td>Optionally <a href="#origin-learner">aggregate structural worker companion candidates</a></td><td class="mono">--profile (required) --pcap (repeatable) --candidates --min-observations --iface --capture-seconds</td></tr>
-    <tr><td class="mono">origin-promote &lt;candidates&gt;</td><td><a href="#origin-promotion">Mark reviewed families as known</a> in the normal opcode profile</td><td class="mono">--profile (required) --min-observations</td></tr>
+    <tr><td class="mono">origin-promote &lt;candidates&gt;</td><td><a href="#origin-promotion">Trust reviewed structural families immediately</a> in the normal opcode profile</td><td class="mono">--profile (required) --min-observations</td></tr>
   </table></div>
   <p class="kicker">Events go to stdout; status lines go to stderr — safe to pipe
   <code>--jsonl</code> output directly into other tools.</p>
@@ -1162,7 +1386,10 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
   <ul>
     <li><strong>Public surface:</strong> everything importable from <code>bdo_toolkit</code> and
     <code>bdo_toolkit.calibration</code>. Modules prefixed with <code>_</code> are internal and
-    may change without notice.</li>
+    may change without notice. <code>bdo_toolkit.item_state</code> is the canonical documented
+    exception: it is public-experimental, not currently re-exported from the package root, and
+    its names/aggregate semantics may be refined before stable promotion. Existing
+    <code>bdo_toolkit.character_state</code> imports remain supported compatibility names.</li>
     <li><strong>Additive schema:</strong> new optional <code>BDOEvent</code> fields may appear in
     any release; existing fields keep their meaning. Provisional fields live in
     <code>extra</code> first and graduate to first-class fields once proven —

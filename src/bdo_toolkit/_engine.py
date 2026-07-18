@@ -8,6 +8,7 @@ from typing import Callable, Iterable, Optional
 
 from ._framing import FrameCollectorScanner, TargetMessageScanner
 from ._protocol import (
+    CHARACTER_LOAD_CONTEXT,
     DEDUP_HISTORY_LIMIT,
     BDOFrame,
     EventSpec,
@@ -15,6 +16,7 @@ from ._protocol import (
     LootEvent,
     source_label,
     split_item_id_enhancement,
+    storage_location,
     PacketContext,
 )
 from ._reassembly import FlowManager
@@ -67,14 +69,37 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         decoded_base_item_id if enhancement_level is not None else None
     )
 
+    is_storage = event.label == "INVENTORY_TO_STORAGE"
+    storage_id = event.storage_id
+    if storage_id is not None and not 0 < storage_id <= 0xFFFFFFFF:
+        storage_id = None
+    if (
+        is_storage
+        and storage_id is None
+        and event.source_context_candidate is not None
+        and len(event.source_context_candidate) == 4
+        and event.source_context_candidate != b"\x00" * 4
+    ):
+        storage_id = int.from_bytes(event.source_context_candidate, "little")
+    location = storage_location(storage_id) if is_storage else None
+    source = source_label(event.source_context_candidate, event.default_context)
+    if storage_id is not None:
+        source = (
+            location.name
+            if location is not None
+            else f"UNKNOWN_STORAGE(0x{storage_id:08x})"
+        )
+
     extra = {}
     if event.stream_sequence is not None:
         extra["stream_sequence"] = event.stream_sequence
-    if event.label == "INVENTORY_TO_STORAGE":
+    if is_storage and event.storage_operation == "snapshot":
+        extra["storage_quantity"] = event.quantity
+    elif is_storage and event.storage_operation != "unknown":
         extra["storage_delta"] = event.quantity
 
     return BDOEvent(
-        event_type=_event_type_for_label(event.label),
+        event_type=_event_type_for_record(event),
         timestamp=event.context.timestamp,
         flow=Flow(
             source_ip=event.context.flow.source_ip,
@@ -84,7 +109,7 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         ),
         item_id=event.item_id,
         quantity=event.quantity,
-        source=source_label(event.source_context_candidate, event.default_context),
+        source=source,
         raw_context=_hex(event.source_context_candidate),
         opcode=event.opcode,
         message_length=event.message_length,
@@ -94,6 +119,12 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         inventory_slot=event.inventory_slot,
         item_instance=_hex(event.item_instance),
         storage_instance=_hex(event.storage_instance),
+        storage_id=storage_id,
+        storage_name=location.name if location is not None else None,
+        storage_name_confidence=(
+            location.confidence if location is not None else None
+        ),
+        storage_operation=event.storage_operation,
         record_index=event.record_index,
         record_count=event.record_count,
         record_offset=event.record_offset,
@@ -108,6 +139,20 @@ def _event_type_for_label(label: str) -> str:
         "INVENTORY_TRANSFER": "item_received",
         "INVENTORY_TO_STORAGE": "storage_delta",
     }.get(label, label.lower())
+
+
+def _event_type_for_record(event: LootEvent) -> str:
+    if (
+        event.label == "INVENTORY_TRANSFER"
+        and event.source_context_candidate == CHARACTER_LOAD_CONTEXT
+    ):
+        return "inventory_snapshot"
+    if event.label == "INVENTORY_TO_STORAGE":
+        if event.storage_operation == "snapshot":
+            return "storage_snapshot"
+        if event.storage_operation == "unknown":
+            return "storage_record"
+    return _event_type_for_label(event.label)
 
 
 def _hex(value: Optional[bytes]) -> Optional[str]:

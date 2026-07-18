@@ -13,6 +13,7 @@ from bdo_toolkit import (
     AsyncCalibrationSession,
     AsyncLiveCaptureSession,
     BDOEvent,
+    EventFilter,
     Flow,
 )
 from bdo_toolkit import _async_sessions as async_module
@@ -179,11 +180,16 @@ def fake_async_sessions(monkeypatch):
 
 def test_async_live_context_forwards_configuration_and_stops(fake_async_sessions):
     async def scenario():
-        async with AsyncLiveCaptureSession(opcode_profile="opcodes.local") as session:
+        explicit_all = EventFilter()
+        async with AsyncLiveCaptureSession(
+            opcode_profile="opcodes.local",
+            event_filter=explicit_all,
+        ) as session:
             fake = FakeLiveCaptureSession.instances[-1]
             assert session.running
             assert not session.stopped
             assert fake.kwargs["opcode_profile"] == "opcodes.local"
+            assert fake.kwargs["event_filter"] is explicit_all
 
         assert session.stopped
         assert session.stop_reason == "requested"

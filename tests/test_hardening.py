@@ -351,6 +351,9 @@ def _july17_structural_batch() -> bytes:
     message = bytearray(479)
     message[0:2] = (479).to_bytes(2, "little")
     message[3:5] = (0x126D).to_bytes(2, "little")
+    message[6] = 1
+    message[7:15] = b"\x31\x41\x59\x26\x53\x58\x97\x93"
+    message[16:18] = (2).to_bytes(2, "little")
     message[27:31] = bytes.fromhex("20000000")
     for offset, item_id, quantity, instance_byte in (
         (36, 4802, 1, b"\x11"),
@@ -395,13 +398,193 @@ def test_runtime_derives_changed_batch_stride_from_records(saved_stride):
         (4802, 1, 1, 2),
         (4003, 21, 2, 2),
     ]
+    assert {event.storage_id for event in decoded} == {0x20}
+    assert {event.storage_operation for event in decoded} == {"live"}
 
 
-def test_off_length_transfer_without_complete_record_structure_fails_closed():
+def test_declared_batch_with_invalid_record_instance_fails_closed():
     message = bytearray(_july17_structural_batch())
-    # Remove record 2's sentinel. The 479-byte frame can no longer prove a
-    # second record and must not silently emit only record 1.
-    message[258 + 12 : 258 + 20] = b"\x00" * 8
+    # A valid declaration must not allow a corrupt record to be skipped while
+    # the remaining records are emitted as a partial batch.
+    message[258 + 35 : 258 + 43] = b"\x00" * 8
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert decoded == []
+
+
+def test_current_wrapper_cannot_fall_back_after_count_geometry_conflicts():
+    message = bytearray(_july17_structural_batch())
+    # Both records still have the legacy marker. A contradictory declaration
+    # must invalidate this current-wrapper frame instead of bypassing the
+    # count check through marker recovery.
+    message[16:18] = (3).to_bytes(2, "little")
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert decoded == []
+
+
+def test_current_wrapper_preserves_unfamiliar_operation_mode_as_unknown():
+    message = bytearray(_july17_structural_batch())
+    message[6] = 3
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert len(decoded) == 2
+    assert {event.storage_operation for event in decoded} == {"unknown"}
+
+
+def test_item_minus_nine_context_alone_does_not_disable_legacy_fallback():
+    message = bytearray(261)
+    message[0:2] = (261).to_bytes(2, "little")
+    message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[28:32] = (0x0020).to_bytes(4, "little")
+    message[37:41] = (7003).to_bytes(4, "little")
+    message[41:45] = (3).to_bytes(4, "little")
+    message[45:57] = b"\x00" * 4 + b"\xff" * 8
+    message[72:80] = b"\x22" * 8
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x0E6A,
+        item_offset=37,
+        quantity_offset=41,
+        min_message_length=261,
+        source_context_offset=28,
+        storage_instance_offset=72,
+        single_record_message_length=261,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert [(event.item_id, event.quantity) for event in decoded] == [(7003, 3)]
+    assert decoded[0].storage_operation is None
+
+
+def _july17_arehaza_snapshot() -> bytes:
+    count = 25
+    stride = 222
+    length = 35 + count * stride
+    message = bytearray(length)
+    message[0:2] = length.to_bytes(2, "little")
+    message[3:5] = (0x126D).to_bytes(2, "little")
+    message[6] = 2
+    message[16:18] = count.to_bytes(2, "little")
+    message[27:31] = (0x02B5).to_bytes(4, "little")
+
+    item_ids = [11, 13, 14, *range(7003, 7025)]
+    non_marker_values = (
+        bytes.fromhex("5f70f36400000000"),
+        bytes.fromhex("1e9a866500000000"),
+        bytes.fromhex("b47f926500000000"),
+    )
+    for index, item_id in enumerate(item_ids):
+        offset = 36 + stride * index
+        message[offset : offset + 4] = item_id.to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = (1).to_bytes(4, "little")
+        message[offset + 12 : offset + 20] = (
+            non_marker_values[index] if index < 3 else b"\xff" * 8
+        )
+        message[offset + 35 : offset + 43] = (index + 1).to_bytes(8, "little")
+    return bytes(message)
+
+
+def test_declared_count_decodes_arehaza_records_without_marker():
+    """The first three real Arehaza item types do not carry the FF marker."""
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x126D,
+        item_offset=36,
+        quantity_offset=40,
+        min_message_length=257,
+        source_context_offset=27,
+        storage_instance_offset=71,
+        single_record_message_length=257,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, _july17_arehaza_snapshot())
+    engine.finish()
+
+    assert len(decoded) == 25
+    assert [event.item_id for event in decoded[:4]] == [11, 13, 14, 7003]
+    assert decoded[0].record_index == 1
+    assert decoded[-1].record_index == decoded[-1].record_count == 25
+    assert {event.storage_id for event in decoded} == {0x02B5}
+    assert {event.storage_operation for event in decoded} == {"snapshot"}
+
+
+def test_declared_count_length_mismatch_fails_closed_without_markers():
+    message = bytearray(_july17_arehaza_snapshot())
+    message[16:18] = (24).to_bytes(2, "little")
     decoded: list = []
     spec = EventSpec(
         label="INVENTORY_TO_STORAGE",

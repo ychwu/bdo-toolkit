@@ -364,9 +364,9 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
 
 
 def test_special_production_context_is_intrinsic_into_storage():
-    # 0x8c050000 (special worker production, observed 2026-07-08) is a
-    # storage-delta mode: it must classify into_storage WITHOUT needing a
-    # reference frame, and must never read as a receipt context label.
+    # 0x8c050000 is the little-endian Yukjo Street storage destination. It
+    # must classify into_storage WITHOUT needing a reference frame, and must
+    # never read as a receipt context label.
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
     from bdo_toolkit.calibration import detect_transfer_family
 
@@ -386,3 +386,62 @@ def test_special_production_context_is_intrinsic_into_storage():
     family, ref, ctx, storage_ctx = detect_transfer_family([frame], frame, 37, 821108)
     assert family == "into_storage"
     assert storage_ctx and not ctx and not ref
+
+
+def test_arbitrary_town_sized_integer_is_not_a_storage_direction_signal():
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import detect_transfer_family
+
+    message = bytearray(100)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[10:14] = (0x0034).to_bytes(4, "little")
+    item_offset = 50
+    message[item_offset : item_offset + 4] = (99123).to_bytes(4, "little")
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=1000.0,
+            flow=FlowKey("1.1.1.1", 8889, "2.2.2.2", 50000),
+        ),
+        stream_sequence=1,
+    )
+
+    family, ref, ctx, storage_ctx = detect_transfer_family(
+        [frame], frame, item_offset, 99123
+    )
+
+    assert family is None
+    assert not ref and not ctx and not storage_ctx
+
+
+def test_current_wrapper_town_key_is_structural_storage_signal():
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import detect_transfer_family
+
+    message = bytearray(257)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[6] = 1
+    message[7:15] = bytes.fromhex("3141592653589793")
+    message[16:18] = (1).to_bytes(2, "little")
+    item_offset = 36
+    message[27:31] = (0x0034).to_bytes(4, "little")
+    message[item_offset : item_offset + 4] = (99123).to_bytes(4, "little")
+    message[item_offset + 4 : item_offset + 8] = (1).to_bytes(4, "little")
+    message[item_offset + 35 : item_offset + 43] = b"\x22" * 8
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=1000.0,
+            flow=FlowKey("1.1.1.1", 8889, "2.2.2.2", 50000),
+        ),
+        stream_sequence=1,
+    )
+
+    family, ref, ctx, storage_ctx = detect_transfer_family(
+        [frame], frame, item_offset, 99123
+    )
+
+    assert family == "into_storage"
+    assert storage_ctx and not ref and not ctx

@@ -15,11 +15,16 @@ from ._protocol import (
     EventSpec,
     LootEvent,
     PacketContext,
+    storage_location,
 )
 
 
 _TRANSFER_RECORD_MARKER = b"\x00" * 4 + b"\xff" * 8
 _TRANSFER_RECORD_MARKER_DELTA = 8
+_STORAGE_RECORD_COUNT_DELTA = 20
+_STORAGE_OPERATION_MODE_DELTA = 30
+_STORAGE_OPERATION_TOKEN_START_DELTA = 29
+_STORAGE_OPERATION_TOKEN_END_DELTA = 21
 
 
 def _structural_instance_offset(spec: EventSpec) -> Optional[int]:
@@ -66,6 +71,297 @@ def _looks_like_transfer_record(
     )
 
 
+def _has_plausible_transfer_record_values(
+    message: bytes,
+    *,
+    item_offset: int,
+    quantity_offset: int,
+    instance_offset: int,
+) -> bool:
+    """Validate the value-bearing fields that every transfer record needs."""
+    required_end = max(item_offset + 4, quantity_offset + 4, instance_offset + 8)
+    if min(item_offset, quantity_offset, instance_offset) < 0:
+        return False
+    if required_end > len(message):
+        return False
+
+    item_id = int.from_bytes(message[item_offset : item_offset + 4], "little")
+    quantity = int.from_bytes(
+        message[quantity_offset : quantity_offset + 4], "little"
+    )
+    instance = message[instance_offset : instance_offset + 8]
+    return (
+        0 < item_id <= MAX_PLAUSIBLE_ITEM_ID
+        and quantity > 0
+        and instance not in (b"\x00" * 8, b"\xff" * 8)
+    )
+
+
+def _declared_inventory_snapshot_record_deltas(
+    spec: EventSpec,
+    message: bytes,
+) -> Optional[list[int]]:
+    """Prove a character-load inventory batch from its declared count.
+
+    The wrapper's uint16 count has moved between patches, so search the framed
+    header rather than pinning its offset.  Each viable declaration must imply
+    the same ``length = base + (count - 1) * stride`` geometry, and every
+    declared item/quantity/instance tuple must validate.  This makes a
+    zero-context load atomic: a corrupt record invalidates the whole frame.
+
+    Multiple copies of the same count are harmless.  Competing declarations
+    that imply different geometries are ambiguous and fail closed.
+    """
+    if spec.label != "INVENTORY_TRANSFER":
+        return None
+    instance_offset = spec.item_instance_offset
+    base_length = spec.single_record_message_length
+    if instance_offset is None or base_length is None:
+        return None
+
+    # Counts are wrapper metadata and therefore must precede the calibrated
+    # first item.  Skip the five-byte generic frame header itself.
+    search_end = min(spec.item_offset, len(message))
+    geometries: dict[tuple[int, Optional[int]], list[int]] = {}
+    for count_offset in range(5, max(5, search_end - 1)):
+        declared_count = int.from_bytes(
+            message[count_offset : count_offset + 2], "little"
+        )
+        if declared_count <= 0:
+            continue
+
+        if declared_count == 1:
+            if len(message) != base_length:
+                continue
+            stride: Optional[int] = None
+            deltas = [0]
+        else:
+            extra_length = len(message) - base_length
+            divisor = declared_count - 1
+            if extra_length <= 0 or extra_length % divisor:
+                continue
+            stride = extra_length // divisor
+            prefix_length = base_length - stride
+            if prefix_length < 5 or count_offset + 2 > prefix_length:
+                continue
+            if len(message) - prefix_length != declared_count * stride:
+                continue
+
+            relative_offsets = (
+                spec.item_offset - prefix_length,
+                spec.quantity_offset - prefix_length,
+                instance_offset - prefix_length,
+            )
+            if min(relative_offsets) < 0:
+                continue
+            required_record_end = max(
+                relative_offsets[0] + 4,
+                relative_offsets[1] + 4,
+                relative_offsets[2] + 8,
+            )
+            if required_record_end > stride:
+                continue
+            deltas = [stride * index for index in range(declared_count)]
+
+        if not all(
+            _has_plausible_transfer_record_values(
+                message,
+                item_offset=spec.item_offset + delta,
+                quantity_offset=spec.quantity_offset + delta,
+                instance_offset=instance_offset + delta,
+            )
+            for delta in deltas
+        ):
+            continue
+        geometries[(declared_count, stride)] = deltas
+
+    if len(geometries) != 1:
+        return None
+    return next(iter(geometries.values()))
+
+
+def _storage_operation_fields(
+    spec: EventSpec,
+    message: bytes,
+) -> Optional[tuple[int, bytes]]:
+    """Return current-wrapper mode/token fields when their layout fits."""
+    if (
+        spec.label != "INVENTORY_TO_STORAGE"
+        or spec.source_context_offset not in (None, spec.item_offset - 9)
+        or spec.source_context_length != 4
+    ):
+        return None
+    mode_offset = spec.item_offset - _STORAGE_OPERATION_MODE_DELTA
+    token_start = spec.item_offset - _STORAGE_OPERATION_TOKEN_START_DELTA
+    token_end = spec.item_offset - _STORAGE_OPERATION_TOKEN_END_DELTA
+    if mode_offset < 5 or token_start < 0 or token_end > len(message):
+        return None
+    return message[mode_offset], message[token_start:token_end]
+
+
+def _current_storage_context_candidate(
+    spec: EventSpec,
+    message: bytes,
+    source_context_candidate: Optional[bytes] = None,
+) -> Optional[bytes]:
+    """Return an explicit or safely positioned current-wrapper destination."""
+    if source_context_candidate is not None:
+        return (
+            source_context_candidate
+            if len(source_context_candidate) == 4
+            else None
+        )
+    if spec.source_context_offset is not None:
+        return None
+    context_offset = spec.item_offset - 9
+    if context_offset < 0 or context_offset + 4 > len(message):
+        return None
+    return bytes(message[context_offset : context_offset + 4])
+
+
+def _has_known_storage_operation_signature(
+    spec: EventSpec,
+    message: bytes,
+) -> bool:
+    fields = _storage_operation_fields(spec, message)
+    if fields is None:
+        return False
+    mode, token = fields
+    return (mode == 2 and token == b"\x00" * 8) or (
+        mode == 1 and token != b"\x00" * 8
+    )
+
+
+def _declared_storage_record_deltas(
+    spec: EventSpec,
+    message: bytes,
+) -> Optional[list[int]]:
+    """Use a storage wrapper's declared count to prove its record geometry.
+
+    The current wrapper places a little-endian uint16 count 20 bytes before
+    the calibrated first item.  A single-record calibration supplies the base
+    message length.  For a later batch, those two facts determine the stride
+    and wrapper-prefix length without trusting a saved stride or requiring an
+    item-type-specific marker inside every record.
+
+    ``None`` means this is not demonstrably the declared-count layout and the
+    older marker-based validator may still inspect it.  An empty list means
+    the layout was proven but at least one declared record was invalid, so the
+    whole message must fail closed rather than emitting a partial batch.
+    """
+    if spec.label != "INVENTORY_TO_STORAGE":
+        return None
+    context_candidate = _current_storage_context_candidate(spec, message)
+    inferred_storage_id = (
+        int.from_bytes(context_candidate, "little")
+        if context_candidate is not None
+        else None
+    )
+    strict_declared_layout = _has_known_storage_operation_signature(
+        spec, message
+    ) or storage_location(inferred_storage_id) is not None
+
+    def invalid_geometry() -> Optional[list[int]]:
+        # Once the current wrapper layout is identified, a contradictory
+        # declaration is malformed rather than an invitation to reinterpret
+        # the same bytes through the legacy marker fallback.
+        return [] if strict_declared_layout else None
+
+    instance_offset = _structural_instance_offset(spec)
+    base_length = spec.single_record_message_length
+    if instance_offset is None or base_length is None:
+        return None
+
+    count_offset = spec.item_offset - _STORAGE_RECORD_COUNT_DELTA
+    if count_offset < 5 or count_offset + 2 > len(message):
+        return None
+    declared_count = int.from_bytes(
+        message[count_offset : count_offset + 2], "little"
+    )
+    if declared_count <= 0:
+        return invalid_geometry()
+
+    if declared_count == 1:
+        if len(message) != base_length:
+            return invalid_geometry()
+        deltas = [0]
+    else:
+        extra_length = len(message) - base_length
+        divisor = declared_count - 1
+        if extra_length <= 0 or extra_length % divisor:
+            return invalid_geometry()
+
+        stride = extra_length // divisor
+        prefix_length = base_length - stride
+        if prefix_length < 5 or count_offset + 2 > prefix_length:
+            return invalid_geometry()
+        if len(message) - prefix_length != declared_count * stride:
+            return invalid_geometry()
+
+        # All calibrated fields must fit wholly inside one inferred record.
+        # This rejects coincidental integers in an older wrapper's header.
+        relative_offsets = (
+            spec.item_offset - prefix_length,
+            spec.quantity_offset - prefix_length,
+            instance_offset - prefix_length,
+        )
+        if min(relative_offsets) < 0:
+            return invalid_geometry()
+        required_record_end = max(
+            relative_offsets[0] + 4,
+            relative_offsets[1] + 4,
+            relative_offsets[2] + 8,
+        )
+        if required_record_end > stride:
+            return invalid_geometry()
+        deltas = [stride * index for index in range(declared_count)]
+
+    for delta in deltas:
+        if not _has_plausible_transfer_record_values(
+            message,
+            item_offset=spec.item_offset + delta,
+            quantity_offset=spec.quantity_offset + delta,
+            instance_offset=instance_offset + delta,
+        ):
+            return []
+    return deltas
+
+
+def _storage_wrapper_metadata(
+    spec: EventSpec,
+    message: bytes,
+    source_context_candidate: Optional[bytes],
+) -> tuple[Optional[int], Optional[str], Optional[bytes]]:
+    """Decode metadata only for the observed destination-key wrapper layout."""
+    fields = _storage_operation_fields(spec, message)
+    declared_deltas = _declared_storage_record_deltas(spec, message)
+    if fields is None or not declared_deltas:
+        return None, None, None
+    context_candidate = _current_storage_context_candidate(
+        spec,
+        message,
+        source_context_candidate,
+    )
+    if context_candidate is None:
+        return None, None, None
+    mode, token = fields
+    # The wrapper is recognized, but an unfamiliar mode/token combination is
+    # deliberately neutral. It must not silently become a live deposit after
+    # a patch changes the operation discriminator.
+    operation: Optional[str] = "unknown"
+    if mode == 2 and token == b"\x00" * 8:
+        operation = "snapshot"
+    elif mode == 1 and token != b"\x00" * 8:
+        operation = "live"
+    storage_id = int.from_bytes(context_candidate, "little")
+    if operation == "unknown" and storage_location(storage_id) is None:
+        # The unfamiliar discriminator cannot authenticate an otherwise
+        # arbitrary uint32 at item-9.  Keep the frame neutral without
+        # publishing that value as a destination.
+        return None, operation, None
+    return storage_id, operation, context_candidate
+
+
 def _structural_record_deltas(
     spec: EventSpec,
     message: bytes,
@@ -74,10 +370,15 @@ def _structural_record_deltas(
 
     Profiles calibrated from a single action know the first-record offsets and
     base message length but cannot know the distance to a record that was never
-    observed. The item-record marker and relative instance offset let a later
-    batch reveal that distance directly. The base-length equation guards
-    against marker-like bytes elsewhere in the same message.
+    observed. Prefer a wrapper-declared count when its full geometry and every
+    record validate. Older wrappers fall back to the item-record marker and
+    relative instance offset. The base-length equation guards against
+    marker-like bytes elsewhere in the same message.
     """
+    declared_deltas = _declared_storage_record_deltas(spec, message)
+    if declared_deltas is not None:
+        return declared_deltas
+
     instance_offset = _structural_instance_offset(spec)
     if instance_offset is None or not _supports_structural_record_scan(spec):
         return None
@@ -330,7 +631,7 @@ class TargetMessageScanner:
                 context=context,
                 stream_sequence=stream_sequence,
             )
-            if not decoded_events:
+            if decoded_events is None:
                 self._discard_prefix(message_start + 1)
                 continue
 
@@ -359,50 +660,61 @@ class TargetMessageScanner:
         source_context_candidate: Optional[bytes],
         context: PacketContext,
         stream_sequence: Optional[int],
-    ) -> list[LootEvent]:
-        if (
+    ) -> Optional[list[LootEvent]]:
+        is_inventory_snapshot = (
             spec.label == "INVENTORY_TRANSFER"
             and source_context_candidate == CHARACTER_LOAD_CONTEXT
-        ):
-            return []
+        )
 
-        structural_deltas = _structural_record_deltas(spec, message)
-        if structural_deltas is not None:
-            candidate_deltas = structural_deltas
+        if is_inventory_snapshot:
+            # Character-load frames are all-or-nothing.  They may resemble a
+            # normal transfer record, but must never fall back to record-one
+            # or marker scanning when their declared layout is malformed.
+            snapshot_deltas = _declared_inventory_snapshot_record_deltas(
+                spec,
+                message,
+            )
+            if snapshot_deltas is None:
+                return None
+            candidate_deltas = snapshot_deltas
         else:
-            # Structural discovery is deliberately strict. Preserve support
-            # for older/synthetic layouts through the calibrated stride, but
-            # never accept an off-stride message merely because record 1 fits.
-            if not _configured_message_length_matches_spec(spec, message_length):
-                return []
-            candidate_deltas = []
-            offset_delta = 0
-            while True:
-                required_end = max(
-                    spec.item_offset + offset_delta + 4,
-                    spec.quantity_offset + offset_delta + 4,
-                )
-                if spec.inventory_slot_offset is not None:
+            structural_deltas = _structural_record_deltas(spec, message)
+            if structural_deltas is not None:
+                candidate_deltas = structural_deltas
+            else:
+                # Structural discovery is deliberately strict. Preserve support
+                # for older/synthetic layouts through the calibrated stride, but
+                # never accept an off-stride message merely because record 1 fits.
+                if not _configured_message_length_matches_spec(spec, message_length):
+                    return None
+                candidate_deltas = []
+                offset_delta = 0
+                while True:
                     required_end = max(
-                        required_end,
-                        spec.inventory_slot_offset + offset_delta + 1,
+                        spec.item_offset + offset_delta + 4,
+                        spec.quantity_offset + offset_delta + 4,
                     )
-                if spec.item_instance_offset is not None:
-                    required_end = max(
-                        required_end,
-                        spec.item_instance_offset + offset_delta + 8,
-                    )
-                if spec.storage_instance_offset is not None:
-                    required_end = max(
-                        required_end,
-                        spec.storage_instance_offset + offset_delta + 8,
-                    )
-                if required_end > len(message):
-                    break
-                candidate_deltas.append(offset_delta)
-                if spec.repeat_stride is None:
-                    break
-                offset_delta += spec.repeat_stride
+                    if spec.inventory_slot_offset is not None:
+                        required_end = max(
+                            required_end,
+                            spec.inventory_slot_offset + offset_delta + 1,
+                        )
+                    if spec.item_instance_offset is not None:
+                        required_end = max(
+                            required_end,
+                            spec.item_instance_offset + offset_delta + 8,
+                        )
+                    if spec.storage_instance_offset is not None:
+                        required_end = max(
+                            required_end,
+                            spec.storage_instance_offset + offset_delta + 8,
+                        )
+                    if required_end > len(message):
+                        break
+                    candidate_deltas.append(offset_delta)
+                    if spec.repeat_stride is None:
+                        break
+                    offset_delta += spec.repeat_stride
 
         records: list[tuple[int, int]] = []
         for offset_delta in candidate_deltas:
@@ -418,6 +730,14 @@ class TargetMessageScanner:
             if required_end > len(message):
                 continue
             records.append((offset_delta, item_offset))
+
+        storage_id, storage_operation, inferred_context = _storage_wrapper_metadata(
+            spec,
+            message,
+            source_context_candidate,
+        )
+        if source_context_candidate is None and inferred_context is not None:
+            source_context_candidate = inferred_context
 
         events: list[LootEvent] = []
         for record_index, (offset_delta, item_offset) in enumerate(records, 1):
@@ -481,6 +801,10 @@ class TargetMessageScanner:
                     record_offset=item_offset,
                     record_index=record_index if len(records) > 1 else None,
                     record_count=len(records) if len(records) > 1 else None,
+                    storage_id=storage_id,
+                    storage_operation=storage_operation,
                 )
             )
-        return events
+        if events:
+            return events
+        return [] if is_inventory_snapshot and not candidate_deltas else None

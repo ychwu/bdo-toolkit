@@ -28,8 +28,8 @@ def test_replay_batch_storage_deposit_as_structured_events():
     assert len(events) == 2
     assert [event.event_type for event in events] == ["storage_delta", "storage_delta"]
     assert [event.source for event in events] == [
-        "Batch Storage Deposit",
-        "Batch Storage Deposit",
+        "Heidel",
+        "Heidel",
     ]
     assert [event.item_id for event in events] == [5960, 4015]
     assert [event.quantity for event in events] == [1, 1]
@@ -51,7 +51,7 @@ def test_replay_filters_by_event_type_and_source():
     worker_events = list(
         replay_pcap(
             fixture,
-            event_filter=EventFilter(sources={"Batch Storage Deposit"}),
+            event_filter=EventFilter(sources={"Heidel"}),
         )
     )
     assert len(worker_events) == 2
@@ -61,13 +61,13 @@ def test_replay_filters_by_event_type_and_source():
 
 
 @requires_fixtures
-def test_manual_bulk_deposit_uses_batch_storage_label_not_worker():
+def test_manual_bulk_deposit_uses_destination_storage_label():
     events = list(
         replay_pcap(fixture_path("1000306_qty5_unstackable_i2s.pcapng"))
     )
 
     assert len(events) == 5
-    assert {event.source for event in events} == {"Batch Storage Deposit"}
+    assert {event.source for event in events} == {"Heidel"}
     assert [event.record_index for event in events] == [1, 2, 3, 4, 5]
 
 

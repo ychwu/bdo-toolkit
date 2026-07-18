@@ -17,7 +17,10 @@ from ._protocol import FlowKey, MAX_TARGET_MESSAGE_LENGTH
 from .profiles import ProfileError, load_opcode_profile
 
 TOKEN_WIDTH = 8
-MIN_TOKEN_UNIQUE_BYTES = 5
+# Five-byte diversity was just permissive enough to treat an initial-load
+# timestamp as a transaction token.  A worker token must now contain more than
+# five distinct byte values.
+MIN_TOKEN_UNIQUE_BYTES = 6
 CANDIDATE_FORMAT_VERSION = 1
 COMPANION_DETECTION = "shared-token-chain-v1"
 
@@ -68,23 +71,30 @@ def _shared_token(
     delta_message: bytes,
     first_message: bytes,
     second_message: bytes,
+    delta_prefix_end: int,
 ) -> Optional[tuple[bytes, tuple[int, int, int]]]:
-    """Return the strongest informative 8-byte token shared by three frames."""
+    """Return the strongest informative token shared by three frames.
+
+    ``delta_prefix_end`` is the decoded first-record boundary.  Restricting
+    candidates to that prefix prevents item instances, storage instances, and
+    record timestamps from masquerading as operation tokens.
+    """
     candidates: list[tuple[int, int, bytes, tuple[int, int, int]]] = []
-    for second_offset in range(5, len(second_message) - TOKEN_WIDTH + 1):
-        token = second_message[second_offset : second_offset + TOKEN_WIDTH]
+    prefix_end = min(delta_prefix_end, len(delta_message))
+    for delta_offset in range(5, prefix_end - TOKEN_WIDTH + 1):
+        token = delta_message[delta_offset : delta_offset + TOKEN_WIDTH]
         unique_bytes = len(set(token))
         if unique_bytes < MIN_TOKEN_UNIQUE_BYTES:
-            continue
-        delta_positions = _find_all(delta_message, token)
-        if not delta_positions:
             continue
         first_positions = _find_all(first_message, token)
         if not first_positions:
             continue
-        offsets = (delta_positions[0], first_positions[0], second_offset)
-        # Prefer higher-entropy tokens, then the earliest second-frame token.
-        candidates.append((unique_bytes, -second_offset, token, offsets))
+        second_positions = _find_all(second_message, token)
+        if not second_positions:
+            continue
+        offsets = (delta_offset, first_positions[0], second_positions[0])
+        # Prefer higher-entropy tokens, then the earliest delta-prefix token.
+        candidates.append((unique_bytes, -delta_offset, token, offsets))
     if not candidates:
         return None
     _, _, token, offsets = max(candidates)
@@ -150,8 +160,9 @@ def discover_companion_observation(
     timestamp: float,
     flow: FlowKey,
     stream_sequence: Optional[int],
+    delta_prefix_end: int,
 ) -> Optional[CompanionObservation]:
-    """Recognize a three-frame worker chain without trusting any opcode."""
+    """Recognize a three-frame worker chain without trusting opcode values."""
     for label, message in (
         ("delta", delta_message),
         ("first companion", first_message),
@@ -161,7 +172,30 @@ def discover_companion_observation(
             return None
         if int.from_bytes(message[0:2], "little") != len(message):
             return None
-    shared = _shared_token(delta_message, first_message, second_message)
+    if (
+        isinstance(delta_prefix_end, bool)
+        or not isinstance(delta_prefix_end, int)
+        or not 5 + TOKEN_WIDTH <= delta_prefix_end <= len(delta_message)
+    ):
+        return None
+    delta_opcode = int.from_bytes(delta_message[3:5], "little")
+    first_opcode = int.from_bytes(first_message[3:5], "little")
+    second_opcode = int.from_bytes(second_message[3:5], "little")
+    # A second storage delta is a boundary, not a worker companion.  The two
+    # observed worker companion roles are also distinct message families;
+    # rejecting a repeated ambient opcode removes a known false correlation.
+    if (
+        first_opcode == delta_opcode
+        or second_opcode == delta_opcode
+        or first_opcode == second_opcode
+    ):
+        return None
+    shared = _shared_token(
+        delta_message,
+        first_message,
+        second_message,
+        delta_prefix_end,
+    )
     if shared is None:
         return None
     token, offsets = shared
@@ -169,11 +203,11 @@ def discover_companion_observation(
         timestamp=timestamp,
         flow=flow,
         stream_sequence=stream_sequence,
-        delta_opcode=int.from_bytes(delta_message[3:5], "little"),
+        delta_opcode=delta_opcode,
         delta_length=len(delta_message),
         companion_opcodes=(
-            int.from_bytes(first_message[3:5], "little"),
-            int.from_bytes(second_message[3:5], "little"),
+            first_opcode,
+            second_opcode,
         ),
         companion_lengths=(len(first_message), len(second_message)),
         token_digest=hashlib.blake2b(token, digest_size=8).hexdigest(),

@@ -14,7 +14,10 @@ from bdo_toolkit import (
     replay_pcap,
 )
 from bdo_toolkit._protocol import FlowKey
-from bdo_toolkit.origin_learning import CompanionObservation
+from bdo_toolkit.origin_learning import (
+    CompanionObservation,
+    discover_companion_observation,
+)
 
 FLOW = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 requires_fixtures = pytest.mark.skipif(
@@ -36,6 +39,58 @@ def _observation(
         companion_lengths=(60, 23),
         token_digest=token,
         token_offsets=(16, 47, 5),
+    )
+
+
+def _message(opcode, length, token=None, token_offset=7):
+    message = bytearray(length)
+    message[0:2] = length.to_bytes(2, "little")
+    message[3:5] = opcode.to_bytes(2, "little")
+    if token is not None:
+        message[token_offset : token_offset + 8] = token
+    return bytes(message)
+
+
+def _discover(delta, first, second, prefix_end=37):
+    return discover_companion_observation(
+        delta_message=delta,
+        first_message=first,
+        second_message=second,
+        timestamp=1000.0,
+        flow=FLOW,
+        stream_sequence=1000,
+        delta_prefix_end=prefix_end,
+    )
+
+
+def test_discovery_only_accepts_high_entropy_tokens_before_first_record():
+    informative = bytes.fromhex("07feabbfc91b8e00")
+    low_diversity = bytes.fromhex("0001020304000102")
+    first = _message(0x1A59, 64, informative, 20)
+    second = _message(0x155E, 30, informative, 5)
+
+    assert _discover(_message(0x126D, 80, informative, 7), first, second)
+    assert not _discover(
+        _message(0x126D, 80, low_diversity, 7),
+        _message(0x1A59, 64, low_diversity, 20),
+        _message(0x155E, 30, low_diversity, 5),
+    )
+    assert not _discover(_message(0x126D, 80, informative, 45), first, second)
+
+
+def test_discovery_rejects_storage_and_repeated_opcode_companions():
+    token = bytes.fromhex("07feabbfc91b8e00")
+    delta = _message(0x126D, 80, token, 7)
+
+    assert not _discover(
+        delta,
+        _message(0x126D, 64, token, 20),
+        _message(0x155E, 30, token, 5),
+    )
+    assert not _discover(
+        delta,
+        _message(0x17E8, 42, token, 20),
+        _message(0x17E8, 42, token, 20),
     )
 
 

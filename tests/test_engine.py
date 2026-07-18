@@ -9,7 +9,7 @@ from bdo_toolkit._protocol import (
 
 
 def test_source_label_known_context_wins_over_default():
-    assert source_label(STORAGE_DELTA_CONTEXTS[1], "Storage") == "Batch Storage Deposit"
+    assert source_label(STORAGE_DELTA_CONTEXTS[1], "Storage") == "Heidel"
 
 
 def test_source_label_default_applies_only_without_candidate():
@@ -120,10 +120,9 @@ def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):
     assert events[0].source == "Gathering"
 
 
-def test_royal_workshop_context_labels_and_stays_storage_mode():
-    # 0x8c050000 is both a named source AND a storage-delta mode: the label
-    # must resolve, and because it sits in STORAGE_DELTA_CONTEXTS it must
+def test_yukjo_storage_context_labels_and_stays_storage_mode():
+    # 0x8c050000 is the little-endian Yukjo Street destination key. It must
     # never act as a receipt context signature for direction classification.
-    royal = bytes.fromhex("8c050000")
-    assert source_label(royal, None) == "Royal Workshop"
-    assert royal in STORAGE_DELTA_CONTEXTS
+    yukjo = bytes.fromhex("8c050000")
+    assert source_label(yukjo, None) == "Yukjo Street"
+    assert yukjo in STORAGE_DELTA_CONTEXTS

@@ -85,6 +85,9 @@ class BDOEvent:
     enhancement: Optional[str] = None
     inventory_slot: Optional[int] = None
     item_instance: Optional[str] = None
+    # Opaque per-record instance observed to remain identical while matching
+    # item/quantity records entered different town storages. It is not the
+    # destination identity; ``storage_id`` carries that key.
     storage_instance: Optional[str] = None
     record_index: Optional[int] = None
     record_count: Optional[int] = None
@@ -95,6 +98,13 @@ class BDOEvent:
     # extra["deposit_origin_evidence"]. Graduated from extra 2026-07-08.
     deposit_origin: Optional[str] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    storage_id: Optional[int] = None
+    storage_name: Optional[str] = None
+    storage_name_confidence: Optional[str] = None
+    # "snapshot" for initial-load state synchronization, "live" for a
+    # storage mutation, "unknown" for a recognized wrapper with unfamiliar
+    # semantics, and None when an older layout cannot expose the distinction.
+    storage_operation: Optional[str] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "extra", _freeze_value(self.extra))
@@ -136,6 +146,10 @@ class BDOEvent:
             ),
             "item_instance": self.item_instance,
             "storage_instance": self.storage_instance,
+            "storage_id": self.storage_id,
+            "storage_name": self.storage_name,
+            "storage_name_confidence": self.storage_name_confidence,
+            "storage_operation": self.storage_operation,
             "record_index": self.record_index,
             "record_count": self.record_count,
             "record_offset": self.record_offset,
@@ -177,6 +191,16 @@ class BDOEvent:
             parts.append(f"item_instance={self.item_instance}")
         if self.storage_instance is not None:
             parts.append(f"storage_instance={self.storage_instance}")
+        if self.storage_id is not None:
+            parts.append(f"storage_id=0x{self.storage_id:08x}")
+        if self.storage_name is not None:
+            parts.append(f"storage_name={self.storage_name!r}")
+        if self.storage_name_confidence is not None:
+            parts.append(
+                f"storage_name_confidence={self.storage_name_confidence}"
+            )
+        if self.storage_operation is not None:
+            parts.append(f"storage_operation={self.storage_operation}")
         if self.deposit_origin is not None:
             parts.append(f"deposit_origin={self.deposit_origin}")
         return " ".join(parts)

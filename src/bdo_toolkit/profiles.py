@@ -15,7 +15,7 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class OriginCompanionFamily:
-    """One explicitly promoted companion family used for audit metadata."""
+    """One explicitly promoted structural family trusted by the classifier."""
 
     delta_opcode: int
     companion_opcodes: tuple[int, int]

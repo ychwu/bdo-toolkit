@@ -8,11 +8,13 @@ import pytest
 
 from bdo_toolkit import (
     BDOEvent,
+    EventFilter,
     Flow,
     LiveCaptureOptions,
     LiveCaptureSession,
     PacketCaptureOptions,
 )
+from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit import capture as capture_module
 
 
@@ -88,10 +90,11 @@ def live_fakes(monkeypatch):
                 self.running = False
 
     monkeypatch.setattr(
-        capture_module,
+        capture_runtime,
         "import_scapy",
         lambda: (object(), object(), None, None, None),
     )
+    monkeypatch.setattr(capture_runtime, "_is_windows", lambda: False)
     monkeypatch.setattr(capture_module, "_EventCollector", FakeCollector)
     monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
     return FakeCollector, FakeSniffer
@@ -126,6 +129,48 @@ def test_session_stop_wakes_a_quiet_blocking_consumer(live_fakes):
     session.stop()
     with pytest.raises(RuntimeError, match="already started"):
         session.start()
+
+
+def test_live_session_defaults_to_activity_and_preserves_explicit_filters(live_fakes):
+    FakeCollector, _ = live_fakes
+
+    default_session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    default_session.start()
+    assert FakeCollector.instances[-1].kwargs["event_filter"] == EventFilter.activity()
+    default_session.stop()
+
+    explicit_all = EventFilter()
+    all_session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        event_filter=explicit_all,
+    )
+    all_session.start()
+    assert FakeCollector.instances[-1].kwargs["event_filter"] is explicit_all
+    all_session.stop()
+
+
+def test_replay_none_keeps_the_unfiltered_offline_contract(monkeypatch):
+    observed = {}
+
+    class FakeCollector:
+        def __init__(self, *, event_filter, **kwargs):
+            del kwargs
+            observed["event_filter"] = event_filter
+            self.engine = object()
+
+        def drain_events(self):
+            return iter(())
+
+        def finalize(self):
+            pass
+
+    monkeypatch.setattr(capture_module, "_EventCollector", FakeCollector)
+    monkeypatch.setattr(capture_module, "iter_pcap_file", lambda path, engine: ())
+
+    assert list(capture_module.replay_pcap("unused.pcapng")) == []
+    assert observed["event_filter"] is None
 
 
 def test_session_drains_queue_then_shutdown_tail_without_deadlock(live_fakes):
