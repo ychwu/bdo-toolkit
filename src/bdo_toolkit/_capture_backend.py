@@ -143,16 +143,47 @@ def iter_pcap_file(path: Path, engine: SegmentConsumer) -> Iterator[None]:
         # invalid captures locked on Windows.
         source = path.open("rb")
         packets = PcapReader(source)
-        for packet in packets:
+    except (OSError, ValueError, Scapy_Exception) as exc:
+        if source is not None:
+            try:
+                source.close()
+            except BaseException:
+                pass
+        raise ValueError(f"Could not read capture {path}: {exc}") from exc
+
+    active_error = False
+    close_error: BaseException | None = None
+    try:
+        while True:
+            try:
+                packet = next(packets)
+            except StopIteration:
+                break
+            except (OSError, ValueError, Scapy_Exception) as exc:
+                raise ValueError(f"Could not read capture {path}: {exc}") from exc
+            # Consumer/decoder failures are deliberately outside the reader
+            # error wrapper so callers receive the original exception object.
             handler(packet)
             yield None
-    except (OSError, ValueError, Scapy_Exception) as exc:
-        raise ValueError(f"Could not read capture {path}: {exc}") from exc
+    except BaseException:
+        active_error = True
+        raise
     finally:
         if packets is not None:
-            packets.close()
+            try:
+                packets.close()
+            except BaseException as exc:
+                close_error = exc
         if source is not None:
-            source.close()
+            try:
+                source.close()
+            except BaseException as exc:
+                if close_error is None:
+                    close_error = exc
+        if close_error is not None and not active_error:
+            raise ValueError(
+                f"Could not close capture {path}: {close_error}"
+            ) from close_error
 
     engine.finish()
 

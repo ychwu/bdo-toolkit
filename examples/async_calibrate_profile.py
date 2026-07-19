@@ -33,7 +33,6 @@ async def main() -> None:
         update_profile,
         result,
         PROFILE,
-        replace=True,
     )
     print(update.summary())
 

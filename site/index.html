@@ -379,7 +379,7 @@ footer {
     <tr><td>Recalibrate <em>and</em> persist in one call</td><td class="mono"><a href="#calibrate-and-update">calibrate_and_update(path, …)</a></td><td class="mono">(<a href="#calibrationresult">CalibrationResult</a>, <a href="#profileupdate">ProfileUpdate</a> | None)</td><td>The post-patch recovery path; profile untouched if nothing was found.</td></tr>
     <tr><td>Recalibrate inside your app's UI</td><td class="mono"><a href="#calibrationsession">CalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">stop()</span></td><td>Explicit <span class="mono">start()</span>/<span class="mono">stop()</span>; <span class="mono">frames_collected</span> for UI feedback.</td></tr>
     <tr><td>Recalibrate inside an asyncio app</td><td class="mono"><a href="asyncio.html#async-calibration-session">AsyncCalibrationSession</a></td><td class="mono"><a href="#calibrationresult">CalibrationResult</a> from <span class="mono">await stop()</span></td><td>Awaitable capture, analysis, abort, and cancellation-safe cleanup.</td></tr>
-    <tr><td>Persist discovered specs</td><td class="mono"><a href="#update-profile">update_profile(result, path)</a></td><td class="mono"><a href="#profileupdate">ProfileUpdate</a></td><td>Merges with dedupe and backup; <span class="mono">replace=True</span> supersedes stale entries.</td></tr>
+    <tr><td>Persist discovered specs</td><td class="mono"><a href="#update-profile">update_profile(result, path)</a></td><td class="mono"><a href="#profileupdate">ProfileUpdate</a></td><td>Replaces the applicable stale entries by default and backs up an existing profile; <span class="mono">replace=False</span> is the advanced merge mode.</td></tr>
     <tr><td>Inspect a profile</td><td class="mono"><a href="#load-opcode-profile">load_opcode_profile(path)</a></td><td class="mono"><a href="#load-opcode-profile">OpcodeProfile</a></td><td>Metadata and raw specs, no decoding.</td></tr>
     <tr><td>Audit worker companion families</td><td class="mono"><a href="#origin-learner">OriginLearner / origin-learn</a></td><td class="mono">candidate families</td><td>Optional maintenance tooling. It records structurally discovered companion candidates for audit and persistence.</td></tr>
   </table></div>
@@ -1135,7 +1135,7 @@ session.<span class="f">start</span>()
 <span class="c"># session.frames_collected → live counter for a traffic indicator</span>
 result = session.<span class="f">stop</span>()          <span class="c"># user clicked Done</span>
 <span class="k">if</span> result.specs:
-    <span class="f">update_profile</span>(result, <span class="s">"my_app/opcodes.json"</span>, replace=<span class="k">True</span>)</code></pre>
+    <span class="f">update_profile</span>(result, <span class="s">"my_app/opcodes.json"</span>)</code></pre>
   <div class="params">
     <div class="prow"><div class="pname">start()<span class="ptype">→ None</span></div>
       <div class="pdesc">Begin passive background capture; returns immediately. Raises <code>RuntimeError</code> if already running.</div></div>
@@ -1200,22 +1200,22 @@ result, update = <span class="f">calibrate_and_update</span>(<span class="s">"op
 <span class="f">print</span>(result.<span class="f">summary</span>())
 <span class="k">if</span> update <span class="k">is not</span> <span class="k">None</span>:
     <span class="f">print</span>(update.<span class="f">summary</span>())</code></pre>
-  <p>Unlike <code>update_profile()</code>, <code>replace</code> defaults to <code>True</code>
-  here, so a recalibration supersedes stale profile entries instead of merging with them. To
-  inspect or filter specs before anything is written, use the two-step API instead.</p>
+  <p>Replacement is the default on both persistence APIs, so recalibration supersedes stale
+  profile entries instead of accumulating opcodes under one event type. To inspect or filter
+  specs before anything is written, use the two-step API; pass <code>replace=False</code> only
+  for an intentional reviewed merge.</p>
 </section>
 
 <section class="section" id="update-profile">
   <h2 class="api">calibration.update_profile() / reset_profile()</h2>
-  <div class="sig"><span class="f">update_profile</span>(result, path, *, action=<span class="s">"auto"</span>, replace=<span class="k">False</span>,
+  <div class="sig"><span class="f">update_profile</span>(result, path, *, action=<span class="s">"auto"</span>, replace=<span class="k">True</span>,
                backup=<span class="k">True</span>) → <a href="#profileupdate">ProfileUpdate</a>
 <span class="f">reset_profile</span>(path, calibration_item_id=7003, *, backup=<span class="k">True</span>) → Path | <span class="k">None</span></div>
-  <p><code>update_profile</code> merges promoted specs into a local profile file (creating it if
-  needed) and marks it active. Duplicate specs are skipped via structural dedupe keys, so
-  re-applying a result is a no-op. With <code>replace=True</code>, the profile entries belonging
-  to <code>action</code> are cleared first, so a recalibration fully supersedes stale entries.
-  The previous file is backed up to <code>opcodes_backups/</code> beside it unless
-  <code>backup=False</code>.</p>
+  <p><code>update_profile</code> replaces the profile entries belonging to <code>action</code> by
+  default, then adds the promoted specs and marks the profile active. This prevents stale opcode
+  generations from accumulating under one event type. <code>replace=False</code> is the advanced
+  merge mode: it preserves existing entries and skips structural duplicates. The previous file
+  is backed up to <code>opcodes_backups/</code> beside it unless <code>backup=False</code>.</p>
   <p><code>reset_profile</code> writes an empty active profile — a clean slate before a full
   recalibration.</p>
   <p><code>update_profile</code> returns a
@@ -1319,8 +1319,8 @@ result, update = <span class="f">calibrate_and_update</span>(<span class="s">"op
   <div class="tablewrap"><table>
     <tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr>
     <tr><td class="mono">path</td><td class="mono">Path</td><td>The profile file that was written.</td></tr>
-    <tr><td class="mono">added</td><td class="mono">tuple[<a href="#messagespec">MessageSpec</a>, ...]</td><td>Specs newly merged in (empty = everything was already present).</td></tr>
-    <tr><td class="mono">replaced_events</td><td class="mono">tuple[str, ...]</td><td>Event categories cleared first by <span class="mono">replace=True</span>.</td></tr>
+    <tr><td class="mono">added</td><td class="mono">tuple[<a href="#messagespec">MessageSpec</a>, ...]</td><td>Specs written by this update.</td></tr>
+    <tr><td class="mono">replaced_events</td><td class="mono">tuple[str, ...]</td><td>Event categories cleared by the default replacement mode; empty in advanced merge mode.</td></tr>
     <tr><td class="mono">backup_path</td><td class="mono">Path | None</td><td>Where the previous file was backed up (<span class="mono">None</span> if there was nothing to back up or <span class="mono">backup=False</span>).</td></tr>
   </table></div>
   <div class="params">
@@ -1343,7 +1343,7 @@ bdo-toolkit live --event-type storage_delta --deposit-origin worker
 bdo-toolkit live --event-type storage_delta --jsonl
 
 <span class="c"># calibrate live (auto): move the item to storage and back, then Ctrl+C</span>
-bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
+bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json
 
 <span class="c"># calibrate offline from a recording (dry run without --write)</span>
 bdo-toolkit calibrate --pcap move_both_ways.pcapng --item-id 7003 --qty 3
@@ -1360,7 +1360,7 @@ bdo-toolkit origin-promote opcodes.origin-candidates.json --profile opcodes.loca
     <tr><th>Command</th><th>Purpose</th><th>Key flags</th></tr>
     <tr><td class="mono">replay &lt;pcap&gt;</td><td>Decode a capture file</td><td class="mono">--jsonl --profile --event-type --source --item-id --ports</td></tr>
     <tr><td class="mono">live</td><td>Decode live traffic</td><td class="mono">replay flags + --iface --capture-seconds</td></tr>
-    <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --replace --verbose</td></tr>
+    <tr><td class="mono">calibrate</td><td>Discover opcode specs</td><td class="mono">--item-id (required) --qty --action --pcap --capture-seconds --iface --min-confidence --write --merge --verbose</td></tr>
     <tr><td class="mono">reset-profile &lt;path&gt;</td><td>Write an empty active profile</td><td class="mono">--calibration-item-id</td></tr>
     <tr><td class="mono">origin-learn</td><td>Optionally <a href="#origin-learner">aggregate structural worker companion candidates</a></td><td class="mono">--profile (required) --pcap (repeatable) --candidates --min-observations --iface --capture-seconds</td></tr>
     <tr><td class="mono">origin-promote &lt;candidates&gt;</td><td><a href="#origin-promotion">Trust reviewed structural families immediately</a> in the normal opcode profile</td><td class="mono">--profile (required) --min-observations</td></tr>

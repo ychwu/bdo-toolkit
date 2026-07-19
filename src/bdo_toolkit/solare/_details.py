@@ -6,9 +6,9 @@ performance fields only when the discovered message geometry matches a layout
 that has been validated against a complete capture and every record-level
 invariant still holds.
 
-The raw gear and skill-addon sections are retained byte-for-byte.  Their fixed
-boundaries are stable across the three observed layouts, but their internal
-semantics remain intentionally opaque.
+When explicitly requested, raw gear and skill-addon sections are retained
+byte-for-byte. Their fixed boundaries are stable across the three observed
+layouts, but their internal semantics remain intentionally opaque.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from ._constants import (
     class_name,
 )
 from ._discovery import DiscoveredSolareFamily
+from ._validation import validate_retain_raw_extensions
 from .models import (
     SolareClass,
     SolareClassPerformance,
@@ -193,6 +194,7 @@ class SolareDetailDecode:
 
     layout_id: str
     players: tuple[SolarePlayer, ...]
+    overall_uids: tuple[bytes, ...] = ()
 
 
 def _u32le(data: bytes, offset: int) -> int:
@@ -284,42 +286,69 @@ def _record_locations(
 
 
 def _validate_overall_uids(
-    player_uids: Sequence[bytes],
+    players: Sequence[SolarePlayer],
     frames: Sequence[BDOFrame],
     family: DiscoveredSolareFamily,
     layout: _DetailLayout,
-) -> bool:
+) -> Optional[tuple[bytes, ...]]:
     if (
         family.frame_length,
         family.record_stride,
         family.name_offset,
         family.rank_offset,
     ) != layout.overall_geometry:
-        return False
+        return None
     if len(frames) != _EXPECTED_OVERALL_FRAMES:
-        return False
+        return None
+    if not (
+        len(family.names)
+        == len(family.ranks)
+        == _EXPECTED_OVERALL_RECORDS
+    ):
+        return None
 
-    overall_uids: list[int] = []
+    overall_uids: list[bytes] = []
     for frame in frames:
         if frame.length != layout.overall_frame_length:
-            return False
+            return None
         for base in (0, layout.overall_record_stride):
             start = base + layout.overall_uid_offset
             end = start + 8
             if end > len(frame.message):
-                return False
-            overall_uids.append(int.from_bytes(frame.message[start:end], "little"))
+                return None
+            overall_uids.append(bytes(frame.message[start:end]))
 
-    rich_values = [
-        int.from_bytes(value, "little") >> layout.overall_uid_shift
-        for value in player_uids[:_EXPECTED_OVERALL_RECORDS]
-    ]
-    return (
-        len(overall_uids) == _EXPECTED_OVERALL_RECORDS
-        and len(set(overall_uids)) == _EXPECTED_OVERALL_RECORDS
-        and all(overall_uids)
-        and rich_values == overall_uids
-    )
+    if (
+        len(overall_uids) != _EXPECTED_OVERALL_RECORDS
+        or len(set(overall_uids)) != _EXPECTED_OVERALL_RECORDS
+        or any(uid == b"\x00" * 8 for uid in overall_uids)
+    ):
+        return None
+
+    rich_by_rank = {player.global_rank: player for player in players}
+    rich_by_name = {player.name: player for player in players}
+    overlap = 0
+    for rank, name, overall_uid in zip(
+        family.ranks,
+        family.names,
+        overall_uids,
+    ):
+        ranked_player = rich_by_rank.get(rank)
+        if ranked_player is not None:
+            if ranked_player.name != name or ranked_player.player_uid_raw is None:
+                return None
+            rich_uid = (
+                int.from_bytes(ranked_player.player_uid_raw, "little")
+                >> layout.overall_uid_shift
+            )
+            if rich_uid != int.from_bytes(overall_uid, "little"):
+                return None
+            overlap += 1
+        named_player = rich_by_name.get(name)
+        if named_player is not None and named_player.global_rank != rank:
+            return None
+
+    return tuple(overall_uids) if overlap >= 20 else None
 
 
 def decode_solare_details(
@@ -328,6 +357,7 @@ def decode_solare_details(
     *,
     overall_frames: Sequence[BDOFrame] = (),
     overall: Optional[DiscoveredSolareFamily] = None,
+    retain_raw_extensions: bool = False,
 ) -> Optional[SolareDetailDecode]:
     """Decode a complete rich table or return ``None`` on any contradiction.
 
@@ -337,6 +367,9 @@ def decode_solare_details(
     neither.
     """
 
+    retain_raw_extensions = validate_retain_raw_extensions(
+        retain_raw_extensions
+    )
     if bool(overall_frames) != (overall is not None):
         return None
     layout = _layout_for(rich)
@@ -432,14 +465,31 @@ def decode_solare_details(
                 return None
             occupied_codes.add(class_code)
 
-            gear_offset = layout.gear_offset + slot * _GEAR_SLOT_SIZE
-            addon_offset = layout.addons_offset + slot * _ADDON_SLOT_SIZE
-            gear = bytes(data[base + gear_offset : base + gear_offset + _GEAR_SLOT_SIZE])
-            addons = bytes(
-                data[base + addon_offset : base + addon_offset + _ADDON_SLOT_SIZE]
-            )
-            if len(gear) != _GEAR_SLOT_SIZE or len(addons) != _ADDON_SLOT_SIZE:
-                return None
+            gear_loadout_raw: Optional[SolareRawSection] = None
+            skill_addons_raw: Optional[SolareRawSection] = None
+            if retain_raw_extensions:
+                gear_offset = layout.gear_offset + slot * _GEAR_SLOT_SIZE
+                addon_offset = layout.addons_offset + slot * _ADDON_SLOT_SIZE
+                gear = bytes(
+                    data[
+                        base + gear_offset : base + gear_offset + _GEAR_SLOT_SIZE
+                    ]
+                )
+                addons = bytes(
+                    data[
+                        base + addon_offset : base + addon_offset + _ADDON_SLOT_SIZE
+                    ]
+                )
+                if len(gear) != _GEAR_SLOT_SIZE or len(addons) != _ADDON_SLOT_SIZE:
+                    return None
+                gear_loadout_raw = SolareRawSection(
+                    offset=gear_offset,
+                    data=gear,
+                )
+                skill_addons_raw = SolareRawSection(
+                    offset=addon_offset,
+                    data=addons,
+                )
 
             player_class = SolareClass(class_code, class_name(class_code))
             performances.append(
@@ -454,8 +504,8 @@ def decode_solare_details(
                     losses=slot_losses,
                     recent_results_raw=history_codes,
                     recent_results_wire_text=history_raw,
-                    gear_loadout_raw=SolareRawSection(offset=gear_offset, data=gear),
-                    skill_addons_raw=SolareRawSection(offset=addon_offset, data=addons),
+                    gear_loadout_raw=gear_loadout_raw,
+                    skill_addons_raw=skill_addons_raw,
                 )
             )
 
@@ -479,8 +529,8 @@ def decode_solare_details(
         len(set(player_uids)) != _EXPECTED_RICH_RECORDS
         or len({player.name for player in players}) != _EXPECTED_RICH_RECORDS
         or len({player.global_rank for player in players}) != _EXPECTED_RICH_RECORDS
-        or tuple(player.global_rank for player in players[:100])
-        != tuple(range(1, 101))
+        or tuple(player.global_rank for player in players[:20])
+        != tuple(range(1, 21))
         or any(
             left.global_rank >= right.global_rank
             for left, right in zip(players, players[1:])
@@ -492,9 +542,16 @@ def decode_solare_details(
     if class_counts != rich.class_counts or any(count != 20 for _, count in class_counts):
         return None
 
-    if overall is not None and not _validate_overall_uids(
-        player_uids, overall_frames, overall, layout
-    ):
-        return None
+    overall_uids: tuple[bytes, ...] = ()
+    if overall is not None:
+        validated_uids = _validate_overall_uids(
+            players,
+            overall_frames,
+            overall,
+            layout,
+        )
+        if validated_uids is None:
+            return None
+        overall_uids = validated_uids
 
-    return SolareDetailDecode(layout.layout_id, tuple(players))
+    return SolareDetailDecode(layout.layout_id, tuple(players), overall_uids)

@@ -3,6 +3,17 @@
 This experimental tool passively summarizes the inventory and storage state
 sent by the server during initial login or a character switch.
 
+For the smallest live example built only from the public item-state API, run:
+
+```powershell
+py examples/live_item_state_snapshot.py
+```
+
+It loads the repository `opcodes.local`, starts capture, waits for initial login
+or a character switch to finish, and prints the same default human report via
+`format_item_state()`. Use the tool below when replay, raw-PCAP saving, JSON,
+timed capture, adapter controls, or complete per-item output are needed.
+
 Run it from the repository root, switch characters, wait until loading has
 finished, and press Enter:
 

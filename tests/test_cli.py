@@ -37,7 +37,17 @@ def test_replay_invalid_capture_is_a_clean_cli_error(tmp_path, capsys):
     assert "Traceback" not in captured.err
 
 
-def test_calibrate_cli_writes_mocked_result(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("write_mode", "expected_replace"),
+    [
+        ([], True),
+        (["--merge"], False),
+        (["--replace"], True),
+    ],
+)
+def test_calibrate_cli_writes_mocked_result(
+    tmp_path, monkeypatch, capsys, write_mode, expected_replace
+):
     result = CalibrationResult(
         specs=(
             MessageSpec(
@@ -56,6 +66,14 @@ def test_calibrate_cli_writes_mocked_result(tmp_path, monkeypatch, capsys):
         calibration_item_id=99123,
     )
     monkeypatch.setattr(cli, "calibrate_pcap", lambda *args, **kwargs: result)
+    real_update_profile = cli.update_profile
+    observed = {}
+
+    def recording_update_profile(*args, **kwargs):
+        observed["replace"] = kwargs["replace"]
+        return real_update_profile(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "update_profile", recording_update_profile)
     profile = tmp_path / "nested" / "opcodes.json"
 
     exit_code = cli.main(
@@ -67,6 +85,7 @@ def test_calibrate_cli_writes_mocked_result(tmp_path, monkeypatch, capsys):
             "99123",
             "--write",
             str(profile),
+            *write_mode,
         ]
     )
 
@@ -75,6 +94,7 @@ def test_calibrate_cli_writes_mocked_result(tmp_path, monkeypatch, capsys):
     assert "wrote" in captured.err
     data = json.loads(profile.read_text(encoding="utf-8"))
     assert data["calibration_item_id"] == 99123
+    assert observed["replace"] is expected_replace
 
 
 @pytest.mark.parametrize(
@@ -135,12 +155,17 @@ def test_solare_replay_cli_writes_json_and_uses_domain_exit_status(
     monkeypatch,
     capsys,
 ):
+    observed = {}
     result = SolareCaptureResult(
         status=SolareDetectionStatus.MENU_CONTEXT,
         evidence=SolareEvidence(),
         message="menu only",
     )
-    monkeypatch.setattr(cli, "replay_solare", lambda *args, **kwargs: result)
+    def fake_replay(*args, **kwargs):
+        observed.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "replay_solare", fake_replay)
 
     exit_code = cli.main(["solare", "replay", "unused.pcapng"])
 
@@ -150,6 +175,29 @@ def test_solare_replay_cli_writes_json_and_uses_domain_exit_status(
     assert output["status"] == "menu-context"
     assert output["complete"] is False
     assert captured.err == ""
+    assert observed["retain_raw_extensions"] is False
+
+
+def test_solare_replay_cli_include_raw_controls_decode_and_output(
+    monkeypatch,
+    capsys,
+):
+    observed = {}
+    result = _complete_solare_result()
+
+    def fake_replay(*args, **kwargs):
+        observed.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "replay_solare", fake_replay)
+
+    exit_code = cli.main(
+        ["solare", "replay", "unused.pcapng", "--include-raw"]
+    )
+
+    assert exit_code == 0
+    assert observed["retain_raw_extensions"] is True
+    assert json.loads(capsys.readouterr().out)["status"] == "complete"
 
 
 def test_solare_replay_cli_refuses_to_overwrite_input_capture(
@@ -218,6 +266,32 @@ def test_solare_live_cli_reports_progress_and_passes_capture_options(
     assert options.use_bpf is False
     assert observed["save_pcap"] == Path("next-patch.pcapng")
     assert observed["stop_on_complete"] is True
+    assert observed["capture_seconds"] == 120.0
+    assert observed["retain_raw_extensions"] is False
+
+
+def test_solare_cli_wait_forever_and_include_raw_control_acquisition(
+    monkeypatch,
+    capsys,
+):
+    result = _complete_solare_result()
+    observed = {}
+
+    def fake_capture(**kwargs):
+        observed.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "capture_solare_snapshot", fake_capture)
+
+    exit_code = cli.main(
+        ["solare", "live", "--wait-forever", "--include-raw", "--quiet"]
+    )
+
+    assert exit_code == 0
+    assert observed["capture_seconds"] is None
+    assert observed["retain_raw_extensions"] is True
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "complete"
 
 
 def test_solare_live_cli_refuses_shared_capture_and_json_path(

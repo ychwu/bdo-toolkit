@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
-from typing import Optional
+from dataclasses import replace
+from typing import Deque, Optional
 
 from bdo_toolkit._protocol import BDOFrame
 
@@ -13,9 +14,61 @@ from ._constants import (
     DISCOVERY_MIN_FAMILY_FRAMES,
     DISCOVERY_MIN_FRAME_LENGTH,
     DISCOVERY_MIN_RICH_RECORDS,
+    DISCOVERY_RETENTION_MAX_BYTES,
+    DISCOVERY_RETENTION_MAX_FRAMES,
 )
-from ._discovery import SolareDiscoveryResult, discover_solare
+from ._discovery import (
+    _DiscoveryAnalysisCache,
+    DiscoveredSolareFamily,
+    SolareDiscoveryResult,
+    _family_key,
+    _rank_reset_starts,
+    discover_solare,
+)
 from .models import SolareUpdate, SolareUpdateKind
+
+
+def _discovery_score(result: SolareDiscoveryResult) -> tuple[int, int, int]:
+    ranked = result.rich or result.ranked_candidate
+    partial = result.overall or result.partial_overall
+    if result.confirmed:
+        stage = 5
+    elif result.rich is not None and result.partial_overall is not None:
+        stage = 4
+    elif result.rich is not None:
+        stage = 3
+    elif ranked is not None and partial is not None:
+        stage = 2
+    elif ranked is not None:
+        stage = 1
+    elif result.menu_context is not None:
+        stage = 0
+    else:
+        stage = -1
+    return (
+        stage,
+        ranked.record_count if ranked is not None else 0,
+        partial.record_count if partial is not None else 0,
+    )
+
+
+def _compact_discovery(result: SolareDiscoveryResult) -> SolareDiscoveryResult:
+    """Drop raw frame ownership while retaining compact structural evidence."""
+
+    def compact(
+        family: Optional[DiscoveredSolareFamily],
+    ) -> Optional[DiscoveredSolareFamily]:
+        if family is None:
+            return None
+        return replace(family, frames=())
+
+    return replace(
+        result,
+        rich=compact(result.rich),
+        overall=compact(result.overall),
+        ranked_candidate=compact(result.ranked_candidate),
+        partial_overall=compact(result.partial_overall),
+    )
 
 
 class LiveSolareDiscoveryTracker:
@@ -23,9 +76,23 @@ class LiveSolareDiscoveryTracker:
 
     def __init__(self, emit: Callable[[SolareUpdate], None]) -> None:
         self._emit = emit
-        self._all_frames: list[BDOFrame] = []
-        self._frames: list[BDOFrame] = []
-        self._family_counts: Counter[tuple[object, int, int]] = Counter()
+        self._frames: Deque[BDOFrame] = deque()
+        self._retained_bytes = 0
+        self._peak_retained_frame_count = 0
+        self._peak_retained_bytes = 0
+        self._evicted_frame_count = 0
+        self._evicted_bytes = 0
+        self._observed_frame_count = 0
+        self._rollover_warned = False
+        self._analysis_cache = _DiscoveryAnalysisCache()
+        self._family_counts: Counter[tuple[object, int, int, int]] = Counter()
+        self._retained_family_counts: Counter[
+            tuple[object, int, int, int]
+        ] = Counter()
+        self._family_recent: dict[
+            tuple[object, int, int, int], Deque[BDOFrame]
+        ] = {}
+        self._family_targets: dict[tuple[object, int, int, int], set[int]] = {}
         self._announced_menu = False
         self._announced_ranked_players = 300
         self._announced_rich: Optional[tuple[object, ...]] = None
@@ -33,7 +100,9 @@ class LiveSolareDiscoveryTracker:
         self._announced_confirmed = False
         self._confirmed_frames: Optional[tuple[BDOFrame, ...]] = None
         self._dirty = False
+        self._tail_finalized = False
         self.result = SolareDiscoveryResult(0, ())
+        self._best_result = self.result
 
     def observe(self, frame: BDOFrame) -> None:
         if self._confirmed_frames is not None:
@@ -46,12 +115,40 @@ class LiveSolareDiscoveryTracker:
         ):
             return
 
-        self._all_frames.append(frame)
+        rolled_over = self._make_room_for(frame)
+        if self.complete:
+            return
         self._frames.append(frame)
+        self._retained_bytes += frame.length
+        self._observed_frame_count += 1
+        self._update_peaks()
         self._dirty = True
-        family_key = (frame.context.flow, frame.opcode, frame.length)
+        self._tail_finalized = False
+        family_key = _family_key(frame)
         self._family_counts[family_key] += 1
+        self._retained_family_counts[family_key] += 1
         family_count = self._family_counts[family_key]
+
+        recent = self._family_recent.setdefault(family_key, deque(maxlen=10))
+        recent.append(frame)
+        if len(recent) == 10 and _rank_reset_starts(tuple(recent)) == (0,):
+            first_count = family_count - 9
+            targets = self._family_targets.setdefault(family_key, set())
+            targets.update(
+                {
+                    first_count + 49,
+                    first_count + 199,
+                    first_count + 249,
+                    first_count + 299,
+                    first_count + 309,
+                }
+            )
+        reset_interval = family_count in self._family_targets.get(
+            family_key,
+            (),
+        )
+        if reset_interval:
+            self._family_targets[family_key].discard(family_count)
 
         ranked_known = self.result.ranked_candidate is not None
         rich_interval = family_count in {
@@ -65,8 +162,13 @@ class LiveSolareDiscoveryTracker:
             and family_count >= DISCOVERY_MIN_FAMILY_FRAMES
             and family_count in {10, 50}
         )
-        if family_count == 24 or rich_interval or related_interval:
-            self.refresh()
+        if (
+            family_count == 24
+            or rich_interval
+            or related_interval
+            or reset_interval
+        ) and not rolled_over:
+            self.refresh(end_of_burst=False)
 
     @property
     def complete(self) -> bool:
@@ -78,17 +180,174 @@ class LiveSolareDiscoveryTracker:
 
         return self._confirmed_frames
 
-    def refresh(self) -> SolareDiscoveryResult:
+    @property
+    def retained_frames(self) -> tuple[BDOFrame, ...]:
+        """Current bounded discovery input, or the exact confirmed window."""
+
+        return tuple(self._frames)
+
+    @property
+    def retained_frame_count(self) -> int:
+        return len(self._frames)
+
+    @property
+    def retained_bytes(self) -> int:
+        return self._retained_bytes
+
+    @property
+    def peak_retained_frame_count(self) -> int:
+        return self._peak_retained_frame_count
+
+    @property
+    def peak_retained_bytes(self) -> int:
+        return self._peak_retained_bytes
+
+    @property
+    def evicted_frame_count(self) -> int:
+        return self._evicted_frame_count
+
+    @property
+    def evicted_bytes(self) -> int:
+        return self._evicted_bytes
+
+    @property
+    def observed_frame_count(self) -> int:
+        return self._observed_frame_count
+
+    @property
+    def history_rolled_over(self) -> bool:
+        return self._rollover_warned
+
+    def refresh(
+        self,
+        *,
+        end_of_burst: bool = True,
+    ) -> SolareDiscoveryResult:
         if self._confirmed_frames is not None:
             return self.result
-        if not self._dirty:
+        if not self._dirty and (not end_of_burst or self._tail_finalized):
             return self.result
-        self.result = discover_solare(self._frames)
+        candidate = discover_solare(
+            self._frames,
+            allow_trailing_overall=end_of_burst,
+            _analysis_cache=self._analysis_cache,
+        )
+        candidate = replace(
+            candidate,
+            scanned_frames=self._observed_frame_count,
+        )
         self._dirty = False
-        if self.result.confirmed:
-            self._confirmed_frames = tuple(self._all_frames)
+        self._tail_finalized = end_of_burst
+        if candidate.confirmed:
+            self._analysis_cache.clear()
+            self.result = candidate
+            assert candidate.rich is not None
+            assert candidate.overall is not None
+            selected: list[BDOFrame] = []
+            seen: set[int] = set()
+            for frame in (*candidate.rich.frames, *candidate.overall.frames):
+                if id(frame) in seen:
+                    continue
+                seen.add(id(frame))
+                selected.append(frame)
+            for frame in self._frames:
+                if id(frame) not in seen:
+                    self._evicted_frame_count += 1
+                    self._evicted_bytes += frame.length
+            self._confirmed_frames = tuple(selected)
+            self._frames = deque(self._confirmed_frames)
+            self._retained_bytes = sum(
+                frame.length for frame in self._confirmed_frames
+            )
+            # The selected discovery result and ``_frames`` are the only
+            # intentional owners after confirmation.  The rolling reset
+            # indexes are useful only while acquiring and must not keep
+            # evicted or unrelated packet buffers alive behind the public
+            # retained-frame/byte accounting.
+            self._family_counts.clear()
+            self._retained_family_counts.clear()
+            self._family_recent.clear()
+            self._family_targets.clear()
+        else:
+            compact = _compact_discovery(candidate)
+            if _discovery_score(compact) >= _discovery_score(self._best_result):
+                self._best_result = compact
+            self.result = replace(
+                self._best_result,
+                scanned_frames=self._observed_frame_count,
+            )
         self._announce_progress()
         return self.result
+
+    def _make_room_for(self, frame: BDOFrame) -> bool:
+        if (
+            len(self._frames) < DISCOVERY_RETENTION_MAX_FRAMES
+            and self._retained_bytes + frame.length
+            <= DISCOVERY_RETENTION_MAX_BYTES
+        ):
+            return False
+
+        # Evaluate the complete retained window before making room.  The
+        # low-water marks retain more than the largest structural snapshot, so
+        # the incoming frame can still complete a candidate without ownership
+        # ever exceeding the advertised hard limits.
+        self.refresh(end_of_burst=False)
+        if self.complete:
+            return True
+
+        target_frames = DISCOVERY_RETENTION_MAX_FRAMES - max(
+            64,
+            DISCOVERY_RETENTION_MAX_FRAMES // 8,
+        )
+        target_bytes = (DISCOVERY_RETENTION_MAX_BYTES * 7) // 8
+        self._analysis_cache.clear()
+        while self._frames and (
+            len(self._frames) >= target_frames
+            or self._retained_bytes + frame.length > target_bytes
+        ):
+            evicted = self._frames.popleft()
+            self._retained_bytes -= evicted.length
+            self._evicted_frame_count += 1
+            self._evicted_bytes += evicted.length
+            key = _family_key(evicted)
+            self._retained_family_counts[key] -= 1
+            recent = self._family_recent.get(key)
+            if recent is not None and any(item is evicted for item in recent):
+                kept = (item for item in recent if item is not evicted)
+                replacement: Deque[BDOFrame] = deque(kept, maxlen=10)
+                if replacement:
+                    self._family_recent[key] = replacement
+                else:
+                    self._family_recent.pop(key, None)
+            if self._retained_family_counts[key] <= 0:
+                self._retained_family_counts.pop(key, None)
+                self._family_counts.pop(key, None)
+                self._family_recent.pop(key, None)
+                self._family_targets.pop(key, None)
+
+        if not self._rollover_warned:
+            self._rollover_warned = True
+            self._emit(
+                SolareUpdate(
+                    kind=SolareUpdateKind.WARNING,
+                    message=(
+                        "Solare discovery history reached its bounded retention "
+                        "window; older candidates were discarded after evaluation"
+                    ),
+                )
+            )
+        self._update_peaks()
+        return True
+
+    def _update_peaks(self) -> None:
+        self._peak_retained_frame_count = max(
+            self._peak_retained_frame_count,
+            len(self._frames),
+        )
+        self._peak_retained_bytes = max(
+            self._peak_retained_bytes,
+            self._retained_bytes,
+        )
 
     def _announce_progress(self) -> None:
         result = self.result
@@ -156,17 +415,18 @@ class LiveSolareDiscoveryTracker:
             and partial is not None
             and self._announced_cross_check == 0
         ):
-            self._announced_cross_check = partial.record_count
+            self._announced_cross_check = result.exact_cross_check
             self._emit(
                 SolareUpdate(
                     kind=SolareUpdateKind.CROSS_CHECK,
                     message=(
-                        f"{partial.record_count}/{partial.record_count} recovered "
-                        "overall rank/name pairs match; continuing for 100"
+                        f"{result.exact_cross_check}/{partial.record_count} shared "
+                        "overall rank/name pairs match; continuing for 100 "
+                        "overall entries"
                     ),
                     ranked_players=ranked.record_count,
                     overall_players=partial.record_count,
-                    exact_cross_check=partial.record_count,
+                    exact_cross_check=result.exact_cross_check,
                 )
             )
 
@@ -182,6 +442,6 @@ class LiveSolareDiscoveryTracker:
                     ),
                     ranked_players=result.rich.record_count,
                     overall_players=result.overall.record_count,
-                    exact_cross_check=result.overall.record_count,
+                    exact_cross_check=result.exact_cross_check,
                 )
             )

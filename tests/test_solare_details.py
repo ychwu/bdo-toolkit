@@ -156,21 +156,27 @@ def _write_history(message: bytearray, offset: int, raw: str) -> None:
     message[offset + len(encoded)] = 0
 
 
-def _synthetic_snapshot(layout: _Layout) -> _SyntheticSnapshot:
+def _synthetic_snapshot(
+    layout: _Layout,
+    *,
+    rich_ranks: tuple[int, ...] | None = None,
+) -> _SyntheticSnapshot:
     class_codes = tuple(sorted(CLASS_NAMES))
     assert len(class_codes) == 31
-    names = tuple(f"TestPlayer{rank:04d}" for rank in range(1, 621))
-    ranks = tuple(range(1, 621))
+    if rich_ranks is None:
+        rich_ranks = tuple(range(1, 621))
+    assert len(rich_ranks) == 620
+    ranks = rich_ranks
+    names = tuple(f"TestPlayer{rank:04d}" for rank in ranks)
     primary_codes = tuple(code for code in class_codes for _ in range(20))
     rich_opcode = 0x7070  # Deliberately unrelated to every observed opcode.
 
     rich_frames: list[BDOFrame] = []
-    uids: list[bytes] = []
     for frame_index in range(310):
         message = bytearray(layout.frame_length)
         for in_frame_index, base in enumerate((0, layout.stride)):
             ordinal = frame_index * 2 + in_frame_index
-            rank = ordinal + 1
+            rank = ranks[ordinal]
             name = names[ordinal]
             primary = primary_codes[ordinal]
             classes = [primary, 101, 101]
@@ -193,7 +199,6 @@ def _synthetic_snapshot(layout: _Layout) -> _SyntheticSnapshot:
                 histories = ["1,0,1", "0,1", "1"]
 
             uid = ((10_000 + rank) << 16).to_bytes(8, "little")
-            uids.append(uid)
             message[base + layout.uid : base + layout.uid + 8] = uid
             encoded_name = name.encode("utf-16le") + b"\x00\x00"
             message[
@@ -260,7 +265,8 @@ def _synthetic_snapshot(layout: _Layout) -> _SyntheticSnapshot:
         message = bytearray(layout.overall_length)
         for in_frame_index, base in enumerate((0, layout.overall_stride)):
             ordinal = frame_index * 2 + in_frame_index
-            uid_value = int.from_bytes(uids[ordinal], "little")
+            overall_rank = ordinal + 1
+            uid_value = (10_000 + overall_rank) << 16
             uid_value >>= layout.overall_uid_shift
             start = base + layout.overall_uid
             message[start : start + 8] = uid_value.to_bytes(8, "little")
@@ -282,8 +288,8 @@ def _synthetic_snapshot(layout: _Layout) -> _SyntheticSnapshot:
         record_stride=layout.overall_stride,
         name_offset=layout.overall_name,
         rank_offset=layout.overall_rank,
-        names=names[:100],
-        ranks=ranks[:100],
+        names=tuple(f"TestPlayer{rank:04d}" for rank in range(1, 101)),
+        ranks=tuple(range(1, 101)),
         first_stream_offset=rich.last_stream_end,
         last_stream_end=rich.last_stream_end + 50 * layout.overall_length,
     )
@@ -301,6 +307,7 @@ def test_detailed_layout_extracts_exact_raw_slot_boundaries(layout: _Layout) -> 
         synthetic.rich,
         overall_frames=synthetic.overall_frames,
         overall=synthetic.overall,
+        retain_raw_extensions=True,
     )
 
     assert result is not None
@@ -343,6 +350,138 @@ def test_detailed_layout_extracts_exact_raw_slot_boundaries(layout: _Layout) -> 
 
 
 @pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
+def test_detailed_layout_keeps_performance_without_raw_extensions(
+    layout: _Layout,
+) -> None:
+    synthetic = _synthetic_snapshot(layout)
+
+    result = decode_solare_details(
+        synthetic.rich_frames,
+        synthetic.rich,
+        overall_frames=synthetic.overall_frames,
+        overall=synthetic.overall,
+    )
+
+    assert result is not None
+    first = result.players[0]
+    assert first.elo == 9999
+    assert len(first.classes_played) == 3
+    for performance in first.classes_played:
+        assert performance.record_is_balanced
+        assert performance.recent_results_raw
+        assert performance.gear_loadout_raw is None
+        assert performance.skill_addons_raw is None
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
+def test_detail_decoder_rejects_non_boolean_raw_retention(value: object) -> None:
+    synthetic = _synthetic_snapshot(_LAYOUTS[0])
+
+    with pytest.raises(
+        TypeError,
+        match="retain_raw_extensions must be a boolean",
+    ):
+        decode_solare_details(
+            synthetic.rich_frames,
+            synthetic.rich,
+            retain_raw_extensions=value,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
+def test_detail_uid_cross_check_supports_overall_only_player(layout: _Layout) -> None:
+    rich_ranks = (*range(1, 21), *range(22, 622))
+    synthetic = _synthetic_snapshot(layout, rich_ranks=rich_ranks)
+
+    result = decode_solare_details(
+        synthetic.rich_frames,
+        synthetic.rich,
+        overall_frames=synthetic.overall_frames,
+        overall=synthetic.overall,
+    )
+
+    assert result is not None
+    assert len(result.players) == 620
+    assert len(result.overall_uids) == 100
+    expected_uid = ((10_000 + 21) << 16) >> layout.overall_uid_shift
+    assert result.overall_uids[20] == expected_uid.to_bytes(8, "little")
+
+
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
+def test_detail_uid_cross_check_accepts_minimum_twenty_overlaps(
+    layout: _Layout,
+) -> None:
+    rich_ranks = (*range(1, 21), *range(101, 701))
+    synthetic = _synthetic_snapshot(layout, rich_ranks=rich_ranks)
+
+    result = decode_solare_details(
+        synthetic.rich_frames,
+        synthetic.rich,
+        overall_frames=synthetic.overall_frames,
+        overall=synthetic.overall,
+    )
+
+    assert result is not None
+    assert len(result.overall_uids) == 100
+
+
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
+def test_detail_uid_cross_check_rejects_one_shared_uid_mismatch(
+    layout: _Layout,
+) -> None:
+    rich_ranks = (*range(1, 21), *range(22, 622))
+    synthetic = _synthetic_snapshot(layout, rich_ranks=rich_ranks)
+    ordinal = 21  # Overall rank 22 is shared with the rich table.
+    frame_index = ordinal // 2
+    base = layout.overall_stride if ordinal % 2 else 0
+    message = bytearray(synthetic.overall_frames[frame_index].message)
+    start = base + layout.overall_uid
+    message[start : start + 8] = (9_999_999).to_bytes(8, "little")
+    damaged_frames = (
+        *synthetic.overall_frames[:frame_index],
+        replace(synthetic.overall_frames[frame_index], message=bytes(message)),
+        *synthetic.overall_frames[frame_index + 1 :],
+    )
+
+    assert (
+        decode_solare_details(
+            synthetic.rich_frames,
+            synthetic.rich,
+            overall_frames=damaged_frames,
+            overall=synthetic.overall,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
+def test_detail_uid_cross_check_retains_unmatched_overall_uid(layout: _Layout) -> None:
+    rich_ranks = (*range(1, 21), *range(22, 622))
+    synthetic = _synthetic_snapshot(layout, rich_ranks=rich_ranks)
+    ordinal = 20  # Overall rank 21 is intentionally absent from rich.
+    frame_index = ordinal // 2
+    message = bytearray(synthetic.overall_frames[frame_index].message)
+    replacement_uid = (9_888_777).to_bytes(8, "little")
+    start = layout.overall_uid
+    message[start : start + 8] = replacement_uid
+    changed_frames = (
+        *synthetic.overall_frames[:frame_index],
+        replace(synthetic.overall_frames[frame_index], message=bytes(message)),
+        *synthetic.overall_frames[frame_index + 1 :],
+    )
+
+    result = decode_solare_details(
+        synthetic.rich_frames,
+        synthetic.rich,
+        overall_frames=changed_frames,
+        overall=synthetic.overall,
+    )
+
+    assert result is not None
+    assert result.overall_uids[ordinal] == replacement_uid
+
+
+@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
 def test_detailed_layout_fails_closed_on_one_unbalanced_slot(layout: _Layout) -> None:
     synthetic = _synthetic_snapshot(layout)
     message = bytearray(synthetic.rich_frames[0].message)
@@ -368,4 +507,3 @@ def test_detailed_layout_fails_closed_for_unknown_geometry() -> None:
     unknown = replace(synthetic.rich, name_offset=synthetic.rich.name_offset + 1)
 
     assert decode_solare_details(synthetic.rich_frames, unknown) is None
-

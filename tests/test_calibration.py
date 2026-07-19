@@ -430,7 +430,7 @@ def test_container_companion_discovers_both_known_field_orders(
 
 
 @requires_fixtures
-def test_update_profile_merges_and_backs_up(tmp_path):
+def test_update_profile_explicit_merge_deduplicates_and_backs_up(tmp_path):
     profile_path = tmp_path / "opcodes.json"
     profile_path.write_text(
         json.dumps(
@@ -450,7 +450,9 @@ def test_update_profile_merges_and_backs_up(tmp_path):
         quantity=3,
         action="loot-preview",
     )
-    update = update_profile(result, profile_path, action="loot-preview")
+    update = update_profile(
+        result, profile_path, action="loot-preview", replace=False
+    )
 
     assert len(update.added) == 1
     assert update.backup_path is not None and update.backup_path.exists()
@@ -463,14 +465,16 @@ def test_update_profile_merges_and_backs_up(tmp_path):
     assert entry["quantity_offset"] == 27
 
     # Re-applying the same specs is a no-op thanks to dedupe keys.
-    second = update_profile(result, profile_path, action="loot-preview")
+    second = update_profile(
+        result, profile_path, action="loot-preview", replace=False
+    )
     assert second.added == ()
     data = json.loads(profile_path.read_text(encoding="utf-8"))
     assert len(data["specs"]["LOOT_PREVIEW"]) == 1
 
 
 @requires_fixtures
-def test_update_profile_replace_clears_stale_action_specs(tmp_path):
+def test_update_profile_default_replaces_stale_action_specs(tmp_path):
     profile_path = tmp_path / "opcodes.json"
     profile_path.write_text(
         json.dumps(
@@ -508,9 +512,7 @@ def test_update_profile_replace_clears_stale_action_specs(tmp_path):
         quantity=10,
         action="storage-to-inventory",
     )
-    update = update_profile(
-        result, profile_path, action="storage-to-inventory", replace=True
-    )
+    update = update_profile(result, profile_path, action="storage-to-inventory")
 
     assert set(update.replaced_events) == {
         "INVENTORY_TRANSFER",

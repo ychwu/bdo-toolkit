@@ -15,6 +15,7 @@ from bdo_toolkit import (
     load_opcode_profile,
     replay_pcap,
 )
+from bdo_toolkit import _capture_backend as capture_backend_module
 from bdo_toolkit import capture as capture_module
 from bdo_toolkit._capture_backend import import_scapy
 from bdo_toolkit._engine import PacketEngine
@@ -215,6 +216,58 @@ def test_invalid_capture_is_value_error_and_does_not_remain_locked(tmp_path):
 
     capture.unlink()
     assert not capture.exists()
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_iter_pcap_file_preserves_consumer_exception_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error_type: type[Exception],
+) -> None:
+    capture = tmp_path / "synthetic-valid.pcapng"
+    capture.write_bytes(b"reader input is supplied by the deterministic fake")
+    expected = error_type("consumer sentinel")
+
+    class FakeReader:
+        def __init__(self, _source: object) -> None:
+            self.closed = False
+            self._packets = iter((object(),))
+            readers.append(self)
+
+        def __iter__(self) -> FakeReader:
+            return self
+
+        def __next__(self) -> object:
+            return next(self._packets)
+
+        def close(self) -> None:
+            self.closed = True
+
+    readers: list[FakeReader] = []
+
+    class FakeEngine:
+        def finish(self) -> None:
+            raise AssertionError("failed consumer replay must not be finalized")
+
+    def fail_consumer(_engine: object):
+        def handle(_packet: object) -> None:
+            raise expected
+
+        return handle
+
+    monkeypatch.setattr(
+        capture_backend_module,
+        "import_scapy",
+        lambda: (object(), object(), object(), object(), FakeReader),
+    )
+    monkeypatch.setattr(capture_backend_module, "make_packet_handler", fail_consumer)
+
+    with pytest.raises(error_type) as raised:
+        list(capture_backend_module.iter_pcap_file(capture, FakeEngine()))
+
+    assert raised.value is expected
+    assert len(readers) == 1
+    assert readers[0].closed
 
 
 def test_import_scapy_does_not_mutate_global_ipv6_setting():

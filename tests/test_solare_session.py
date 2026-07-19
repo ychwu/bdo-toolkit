@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from threading import Event as NativeEvent
+from threading import Thread as NativeThread
 from typing import Any, Optional
 
 import pytest
@@ -103,7 +105,11 @@ def _install_live_fakes(
     final_stats: Optional[CaptureStats] = None,
     complete_on_refresh: bool = False,
 ) -> dict[str, Any]:
-    state: dict[str, Any] = {"captures": [], "health": []}
+    state: dict[str, Any] = {
+        "captures": [],
+        "health": [],
+        "build_kwargs": [],
+    }
     _FakeWriter.instances.clear()
 
     class FakeCapture:
@@ -216,8 +222,10 @@ def _install_live_fakes(
     def fake_build(
         _frames: object,
         health: SolareCaptureHealth,
+        **kwargs: object,
     ) -> SolareCaptureResult:
         state["health"].append(health)
+        state["build_kwargs"].append(kwargs)
         return _classified_result(health, complete=complete_after is not None)
 
     def fake_open_writer(path: Path) -> _FakeWriter:
@@ -291,6 +299,143 @@ def test_live_session_reports_progress_auto_stops_and_drains_packets(
     assert writer.closed
 
 
+def test_live_session_forwards_raw_retention_to_result_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+    session = LiveSolareSession(retain_raw_extensions=True)
+
+    session.start()
+    result = session.wait(timeout=2)
+
+    assert result is not None and result.complete
+    assert state["build_kwargs"] == [{"retain_raw_extensions": True}]
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
+def test_live_session_rejects_non_boolean_raw_retention(value: object) -> None:
+    with pytest.raises(
+        TypeError,
+        match="retain_raw_extensions must be a boolean",
+    ):
+        LiveSolareSession(
+            retain_raw_extensions=value,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
+def test_async_session_rejects_non_boolean_raw_retention(value: object) -> None:
+    with pytest.raises(
+        TypeError,
+        match="retain_raw_extensions must be a boolean",
+    ):
+        AsyncLiveSolareSession(
+            retain_raw_extensions=value,  # type: ignore[arg-type]
+        )
+
+
+def test_capture_convenience_forwards_raw_retention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _classified_result(SolareCaptureHealth(), complete=False)
+    observed: dict[str, object] = {}
+
+    class FakeSession:
+        running = False
+
+        def __init__(self, **kwargs: object) -> None:
+            observed.update(kwargs)
+
+        def start(self) -> None:
+            pass
+
+        def stop(self) -> SolareCaptureResult:
+            return expected
+
+    monkeypatch.setattr(session_module, "LiveSolareSession", FakeSession)
+
+    result = session_module.capture_solare_snapshot(
+        capture_seconds=0,
+        retain_raw_extensions=True,
+    )
+
+    assert result is expected
+    assert observed["retain_raw_extensions"] is True
+
+
+def test_capture_convenience_has_a_finite_default_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _classified_result(SolareCaptureHealth(), complete=False)
+    stop_calls = 0
+
+    class FakeSession:
+        running = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> None:
+            pytest.fail(f"deadline should already be expired, got {timeout=}")
+
+        def stop(self) -> SolareCaptureResult:
+            nonlocal stop_calls
+            stop_calls += 1
+            return expected
+
+    monotonic_values = iter((1_000.0, 1_121.0))
+    monkeypatch.setattr(session_module, "LiveSolareSession", FakeSession)
+    monkeypatch.setattr(
+        session_module.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    result = session_module.capture_solare_snapshot()
+
+    assert result is expected
+    assert stop_calls == 1
+
+
+def test_capture_convenience_allows_explicit_infinite_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _classified_result(SolareCaptureHealth(), complete=False)
+    observed_timeouts: list[float | None] = []
+
+    class FakeSession:
+        running = False
+
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def wait(
+            self, timeout: float | None = None
+        ) -> SolareCaptureResult:
+            observed_timeouts.append(timeout)
+            return expected
+
+        def stop(self) -> SolareCaptureResult:
+            pytest.fail("the completed session should not be stopped again")
+
+    monkeypatch.setattr(session_module, "LiveSolareSession", FakeSession)
+
+    result = session_module.capture_solare_snapshot(capture_seconds=None)
+
+    assert result is expected
+    assert observed_timeouts == [session_module._POLL_INTERVAL_SECONDS]
+
+
 def test_live_session_manual_stop_returns_best_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -353,6 +498,45 @@ def test_keep_listening_preserves_health_latched_at_confirmation(
     assert health.pcap_interface_dropped == 0
 
 
+def test_confirmation_health_is_latched_before_snapshot_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+    sessions: list[LiveSolareSession] = []
+    callback_health: list[SolareCaptureHealth] = []
+
+    def add_post_confirmation_loss(update: SolareUpdate) -> None:
+        if update.kind is not SolareUpdateKind.SNAPSHOT_CONFIRMED:
+            return
+        session = sessions[0]
+        assert session._confirmed_health is not None
+        callback_health.append(session._confirmed_health)
+        with session._state_lock:
+            session._packet_queue_overflows += 1
+            session._stop_reason = "resource-limit"
+        session._stop_requested.set()
+
+    session = LiveSolareSession(
+        stop_on_complete=False,
+        on_update=add_post_confirmation_loss,
+    )
+    sessions.append(session)
+    session.start()
+    result = session.wait(timeout=2)
+
+    assert result is not None and result.complete
+    assert len(callback_health) == 1
+    assert callback_health[0].capture_is_clean
+    assert callback_health[0].packet_queue_overflows == 0
+    assert result.evidence.health is callback_health[0]
+    assert session.stop_reason == "resource-limit"
+    assert "already-confirmed snapshot remains valid" in (result.message or "")
+
+
 def test_live_session_auto_stops_when_idle_refresh_confirms_final_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -393,7 +577,10 @@ def test_live_session_refuses_to_overwrite_existing_capture(
 def test_writer_startup_failure_closes_capture_even_if_sniffer_already_ended(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = _install_live_fakes(monkeypatch)
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=tuple(_generic_stream(0x1100 + index * 3) for index in range(25)),
+    )
 
     def fail_writer(_path: Path) -> object:
         state["captures"][0].running = False
@@ -411,6 +598,7 @@ def test_writer_startup_failure_closes_capture_even_if_sniffer_already_ended(
 
     assert state["captures"][0].stop_calls == 1
     assert state["captures"][0].stopped
+    assert session._packet_queue.empty()
     assert not session.running
 
 
@@ -433,6 +621,577 @@ def test_live_capture_failure_is_retained_and_raised(
         session.stop()
 
 
+def test_sync_context_exit_raises_an_already_stored_background_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = RuntimeError("capture failed before sync context exit")
+    _install_live_fakes(monkeypatch, runtime_error=expected)
+    escaped: list[BaseException] = []
+
+    try:
+        with LiveSolareSession() as session:
+            assert session._stopped.wait(timeout=2)
+            assert session.error is expected
+    except BaseException as exc:
+        escaped.append(exc)
+
+    assert len(escaped) == 1
+    assert escaped[0] is expected
+
+
+def test_sync_context_body_exception_remains_primary_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _install_live_fakes(monkeypatch)
+    body_error = LookupError("user body failed")
+    cleanup_error = OSError("capture cleanup failed")
+    escaped: list[BaseException] = []
+
+    try:
+        with LiveSolareSession() as session:
+            capture = state["captures"][0]
+
+            def fail_stop() -> CaptureStats:
+                capture.running = False
+                capture.stopped = True
+                raise cleanup_error
+
+            capture.stop = fail_stop
+            raise body_error
+    except BaseException as exc:
+        escaped.append(exc)
+
+    assert len(escaped) == 1
+    assert escaped[0] is body_error
+    assert session.error is cleanup_error
+    assert session.stopped
+
+
+def test_worker_thread_start_failure_rolls_back_capture_and_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state = _install_live_fakes(monkeypatch)
+    expected = RuntimeError("worker thread could not start")
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise expected
+
+    monkeypatch.setattr(session_module, "Thread", FailingThread)
+    session = LiveSolareSession(save_pcap=tmp_path / "thread-start.pcapng")
+
+    with pytest.raises(RuntimeError) as raised:
+        session.start()
+
+    assert raised.value is expected
+    assert not session.running
+    assert session.stopped
+    assert state["captures"][0].stopped
+    assert state["captures"][0].stop_calls == 1
+    assert len(_FakeWriter.instances) == 1
+    assert _FakeWriter.instances[0].closed
+
+
+def test_first_failure_identity_survives_buffered_updates_and_all_accessors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = RuntimeError("first callback failure")
+
+    def fail_ready(update: SolareUpdate) -> None:
+        if update.kind is SolareUpdateKind.CAPTURE_READY:
+            raise expected
+
+    _install_live_fakes(monkeypatch)
+    session = LiveSolareSession(on_update=fail_ready)
+    session.start()
+    assert session._stopped.wait(timeout=2)
+    assert session.error is expected
+
+    # Progress already queued before the failure remains consumable. Once it
+    # is drained, every terminal accessor must expose the original object.
+    buffered: list[SolareUpdate] = []
+    with pytest.raises(RuntimeError) as raised:
+        while True:
+            update = session.poll(timeout=0)
+            assert update is not None
+            buffered.append(update)
+    assert raised.value is expected
+    assert buffered
+    assert buffered[0].kind is SolareUpdateKind.CAPTURE_READY
+
+    for operation in (lambda: session.wait(timeout=0), session.stop):
+        with pytest.raises(RuntimeError) as raised:
+            operation()
+        assert raised.value is expected
+
+
+@pytest.mark.parametrize("failure_site", ["writer", "decoder", "finalize"])
+def test_worker_failures_stop_and_preserve_the_first_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_site: str,
+) -> None:
+    primary = RuntimeError(f"{failure_site} primary failure")
+    secondary = RuntimeError("later final-result failure")
+    save_pcap: Path | None = None
+
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),) if failure_site != "finalize" else (),
+    )
+
+    def fail_result(*_args: object, **_kwargs: object) -> SolareCaptureResult:
+        raise secondary
+
+    if failure_site == "writer":
+        save_pcap = tmp_path / "writer-runtime-failure.pcapng"
+
+        class FailingWriter(_FakeWriter):
+            def write(self, packet: object) -> None:
+                super().write(packet)
+                raise primary
+
+            def close(self) -> None:
+                self.closed = True
+                raise secondary
+
+        monkeypatch.setattr(
+            LiveSolareSession,
+            "_open_writer",
+            staticmethod(FailingWriter),
+        )
+    elif failure_site == "decoder":
+        def fail_packet_handler(_collector: object):
+            def handle(_packet: object) -> None:
+                raise primary
+
+            return handle
+
+        monkeypatch.setattr(session_module, "make_packet_handler", fail_packet_handler)
+        monkeypatch.setattr(
+            session_module,
+            "build_solare_result",
+            fail_result,
+        )
+    else:
+        def fail_finalize(_collector: object) -> None:
+            raise primary
+
+        monkeypatch.setattr(
+            session_module.SolareFrameCollector,
+            "finish",
+            fail_finalize,
+        )
+        monkeypatch.setattr(
+            session_module,
+            "build_solare_result",
+            fail_result,
+        )
+
+    session = LiveSolareSession(save_pcap=save_pcap)
+    session.start()
+    if failure_site == "finalize":
+        session._stop_requested.set()
+
+    assert session._stopped.wait(timeout=2)
+    assert session.error is primary
+    assert session.stop_reason == "error"
+    assert state["captures"][0].stopped
+    with pytest.raises(RuntimeError) as raised:
+        session.stop()
+    assert raised.value is primary
+
+
+def test_decoder_failure_still_records_every_accepted_packet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    packets = (_generic_stream(0x1100), _generic_stream(0x2200))
+    expected = RuntimeError("decoder failed after capture accepted packets")
+    _install_live_fakes(monkeypatch, packets=packets)
+
+    def fail_packet_handler(_collector: object):
+        def handle(_packet: object) -> None:
+            raise expected
+
+        return handle
+
+    monkeypatch.setattr(session_module, "make_packet_handler", fail_packet_handler)
+    session = LiveSolareSession(save_pcap=tmp_path / "decoder-evidence.pcapng")
+
+    session.start()
+
+    assert session._stopped.wait(timeout=2)
+    assert session.error is expected
+    assert session._saved_packets == len(packets)
+    assert len(_FakeWriter.instances) == 1
+    assert _FakeWriter.instances[0].packets == list(packets)
+    assert _FakeWriter.instances[0].closed
+
+
+def test_uncaught_finalization_stage_failure_still_marks_session_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    expected = RuntimeError("health finalization failed")
+
+    class DeferredThread:
+        def __init__(self, *, target: Any, **_kwargs: object) -> None:
+            self.target = target
+
+        def start(self) -> None:
+            pass
+
+    def fail_health(
+        _session: LiveSolareSession,
+        _collector: object,
+        _stats: object,
+    ) -> SolareCaptureHealth:
+        raise expected
+
+    monkeypatch.setattr(session_module, "Thread", DeferredThread)
+    monkeypatch.setattr(LiveSolareSession, "_collector_health", fail_health)
+    session = LiveSolareSession()
+    session.start()
+    session._stop_requested.set()
+    escaped: list[BaseException] = []
+
+    try:
+        session._run_worker()
+    except BaseException as exc:
+        escaped.append(exc)
+
+    assert not escaped
+    assert session.stopped
+    assert not session.running
+    assert session.error is expected
+    assert session.stop_reason == "error"
+
+
+def test_packet_queue_overflow_is_reported_and_rejects_preoverflow_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "LIVE_PACKET_QUEUE_MAX", 2)
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=(
+            _generic_stream(0x1100),
+            _generic_stream(0x2200),
+            _generic_stream(0x3300),
+        ),
+        complete_after=1,
+    )
+
+    def classify_with_integrity(
+        _frames: object,
+        health: SolareCaptureHealth,
+        **_kwargs: object,
+    ) -> SolareCaptureResult:
+        state["health"].append(health)
+        return _classified_result(health, complete=health.capture_is_clean)
+
+    monkeypatch.setattr(
+        session_module,
+        "build_solare_result",
+        classify_with_integrity,
+    )
+    session = LiveSolareSession()
+
+    session.start()
+    result = session.wait(timeout=2)
+
+    assert result is not None
+    assert not result.complete
+    assert result.snapshot is None
+    assert session.stop_reason == "resource-limit"
+    assert result.evidence.health.packet_queue_peak == 2
+    assert result.evidence.health.packet_queue_overflows == 1
+    assert not result.evidence.health.capture_is_clean
+
+    updates = list(session.updates())
+    warnings = [
+        update for update in updates if update.kind is SolareUpdateKind.WARNING
+    ]
+    finished = [
+        update for update in updates if update.kind is SolareUpdateKind.FINISHED
+    ]
+    assert len(warnings) == 1
+    assert "packet queue overflow" in warnings[0].message
+    assert len(finished) == 1
+    assert updates.index(warnings[0]) < updates.index(finished[0])
+    assert finished[0].result is result
+    assert not finished[0].result.complete
+
+
+def test_flow_state_eviction_emits_one_actionable_warning_before_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+    )
+    session = LiveSolareSession(stop_on_complete=False)
+    session.start()
+
+    while True:
+        update = session.poll(timeout=2)
+        assert update is not None
+        if update.kind is SolareUpdateKind.TRAFFIC:
+            break
+
+    assert session._collector is not None
+    session._collector.flow_state_evictions = 2
+    session.request_stop()
+    result = session.wait(timeout=2)
+
+    assert result is not None and not result.complete
+    updates = list(session.updates())
+    warnings = [
+        update for update in updates if update.kind is SolareUpdateKind.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "forced flow-state eviction" in warnings[0].message
+    assert "reducing capture load" in warnings[0].message
+    assert updates.index(warnings[0]) < next(
+        index
+        for index, update in enumerate(updates)
+        if update.kind is SolareUpdateKind.FINISHED
+    )
+
+
+def test_post_confirmation_resource_limit_preserves_snapshot_and_explains_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+    session = LiveSolareSession(stop_on_complete=False)
+    session.start()
+
+    while True:
+        update = session.poll(timeout=2)
+        assert update is not None
+        if update.kind is SolareUpdateKind.SNAPSHOT_CONFIRMED:
+            break
+    for _ in range(200):
+        if session._confirmed_health is not None:
+            break
+        assert not session._stopped.wait(timeout=0.01)
+    assert session._confirmed_health is not None
+    assert session._confirmed_health.capture_is_clean
+
+    # Model a packet callback hitting the already-tested bounded-queue path
+    # after the clean snapshot was latched.  The worker is intentionally left
+    # to perform normal finalization and update delivery.
+    with session._state_lock:
+        session._packet_queue_overflows += 1
+        session._stop_reason = "resource-limit"
+    session._stop_requested.set()
+    result = session.wait(timeout=2)
+
+    assert result is not None and result.complete
+    assert result.snapshot is not None
+    assert result.evidence.health.capture_is_clean
+    assert result.evidence.health.packet_queue_overflows == 0
+    assert session.stop_reason == "resource-limit"
+    assert "already-confirmed snapshot remains valid" in (result.message or "")
+    assert "continued capture ended due to resource pressure" in (
+        result.message or ""
+    )
+    assert "packet queue overflow" in (result.message or "")
+
+    updates = list(session.updates())
+    terminal = [
+        update
+        for update in updates
+        if update.kind in {SolareUpdateKind.WARNING, SolareUpdateKind.FINISHED}
+    ]
+    assert [update.kind for update in terminal] == [
+        SolareUpdateKind.WARNING,
+        SolareUpdateKind.FINISHED,
+    ]
+    assert "packet queue overflow" in terminal[0].message
+    assert terminal[1].result is result
+
+
+def test_update_queue_stays_bounded_and_keeps_finished_without_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "LIVE_UPDATE_QUEUE_MAX", 2)
+    _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+    session = LiveSolareSession()
+
+    session.start()
+    result = session.wait(timeout=2)
+
+    assert result is not None and result.complete
+    assert session._update_queue.maxsize == 2
+    assert session._update_queue.qsize() <= 2
+    updates = list(session.updates())
+    assert len(updates) <= 2
+    assert updates[-1].kind is SolareUpdateKind.FINISHED
+    assert updates[-1].result is result
+
+
+def test_capture_ready_callback_can_request_stop_without_reentrant_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    sessions: list[LiveSolareSession] = []
+    callback_kinds: list[SolareUpdateKind] = []
+    inside_ready = False
+    reentered = False
+    start_errors: list[BaseException] = []
+
+    def stop_when_ready(update: SolareUpdate) -> None:
+        nonlocal inside_ready, reentered
+        if inside_ready:
+            reentered = True
+        callback_kinds.append(update.kind)
+        if update.kind is SolareUpdateKind.CAPTURE_READY:
+            inside_ready = True
+            sessions[0].request_stop()
+            inside_ready = False
+
+    session = LiveSolareSession(on_update=stop_when_ready)
+    sessions.append(session)
+
+    def start_session() -> None:
+        try:
+            session.start()
+        except BaseException as exc:
+            start_errors.append(exc)
+
+    starter = NativeThread(target=start_session, daemon=True)
+    starter.start()
+    starter.join(timeout=2)
+
+    assert not starter.is_alive(), "CAPTURE_READY callback did not return"
+    assert not start_errors
+    result = session.wait(timeout=2)
+    assert result is session.result
+    assert not reentered
+    assert callback_kinds[0] is SolareUpdateKind.CAPTURE_READY
+    assert callback_kinds[-1] is SolareUpdateKind.FINISHED
+    assert session.stop_reason == "requested"
+
+
+def test_blocking_control_from_progress_callback_fails_instead_of_deadlocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    sessions: list[LiveSolareSession] = []
+
+    def wait_when_ready(update: SolareUpdate) -> None:
+        if update.kind is SolareUpdateKind.CAPTURE_READY:
+            sessions[0].wait()
+
+    session = LiveSolareSession(on_update=wait_when_ready)
+    sessions.append(session)
+    session.start()
+
+    assert session._stopped.wait(timeout=2)
+    assert isinstance(session.error, RuntimeError)
+    assert "cannot block inside on_update" in str(session.error)
+
+
+def test_recursive_start_from_finished_callback_fails_without_deadlocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    sessions: list[LiveSolareSession] = []
+    callback_errors: list[RuntimeError] = []
+
+    def restart_when_finished(update: SolareUpdate) -> None:
+        if update.kind is not SolareUpdateKind.FINISHED:
+            return
+        try:
+            sessions[0].start()
+        except RuntimeError as exc:
+            callback_errors.append(exc)
+
+    session = LiveSolareSession(on_update=restart_when_finished)
+    sessions.append(session)
+    session.start()
+    session.request_stop()
+
+    assert session._stopped.wait(timeout=2), "FINISHED callback deadlocked the worker"
+    assert len(callback_errors) == 1
+    assert "already started" in str(callback_errors[0])
+    assert session.error is None
+    assert session.wait(timeout=0) is session.result
+
+
+def test_callback_cannot_consume_the_public_update_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    sessions: list[LiveSolareSession] = []
+    callback_errors: list[RuntimeError] = []
+
+    def probe_poll(update: SolareUpdate) -> None:
+        if update.kind is not SolareUpdateKind.CAPTURE_READY:
+            return
+        try:
+            sessions[0].poll(timeout=0)
+        except RuntimeError as exc:
+            callback_errors.append(exc)
+        sessions[0].request_stop()
+
+    session = LiveSolareSession(on_update=probe_poll)
+    sessions.append(session)
+    session.start()
+    result = session.wait(timeout=2)
+
+    assert result is not None
+    assert len(callback_errors) == 1
+    assert "cannot consume updates inside on_update" in str(callback_errors[0])
+    updates = list(session.updates())
+    assert updates[0].kind is SolareUpdateKind.CAPTURE_READY
+    assert updates[-1].kind is SolareUpdateKind.FINISHED
+    assert session.error is None
+
+
+def test_finalized_session_releases_capture_pipeline_but_keeps_public_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+    session = LiveSolareSession()
+
+    session.start()
+    endpoint = session.endpoint
+    result = session.wait(timeout=2)
+
+    assert endpoint == SolareCaptureEndpoint(
+        interface="fake-interface",
+        local_ip="192.0.2.50",
+        bpf_filter="tcp",
+    )
+    assert result is not None and result.complete
+    assert session.endpoint == endpoint
+    assert session.result is result
+    assert session.stop() is result
+    assert session._collector is None
+    assert session._tracker is None
+    assert session._capture is None
+    assert session._packet_handler is None
+    assert state["captures"][0].stopped
+
+
 def test_async_live_session_basic_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -446,6 +1205,239 @@ def test_async_live_session_basic_lifecycle(
             result = await session.stop()
             assert result.status is SolareDetectionStatus.NO_TRAFFIC
             assert session.stopped
+
+    asyncio.run(scenario())
+
+
+def test_async_request_stop_is_nonblocking_and_wait_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(stop_on_complete=False)
+        await session.start()
+        session.request_stop()
+        result = await session.wait(timeout=2)
+        assert result is not None
+        assert result.status is SolareDetectionStatus.NO_TRAFFIC
+        assert session.stop_reason == "requested"
+
+    asyncio.run(scenario())
+
+
+def test_async_capture_ready_callback_can_request_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+
+    async def scenario() -> None:
+        sessions: list[AsyncLiveSolareSession] = []
+
+        def stop_when_ready(update: SolareUpdate) -> None:
+            if update.kind is SolareUpdateKind.CAPTURE_READY:
+                sessions[0].request_stop()
+
+        session = AsyncLiveSolareSession(on_update=stop_when_ready)
+        sessions.append(session)
+        await session.start()
+        result = await session.wait(timeout=2)
+        assert result is not None
+        assert result.status is SolareDetectionStatus.NO_TRAFFIC
+        assert session.stop_reason == "requested"
+        assert session.error is None
+
+    asyncio.run(scenario())
+
+
+def test_async_finished_poll_closes_executor_after_callback_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    callback_entered = NativeEvent()
+    release_callback = NativeEvent()
+
+    def gate_finished(update: SolareUpdate) -> None:
+        if update.kind is SolareUpdateKind.FINISHED:
+            callback_entered.set()
+            assert release_callback.wait(timeout=2)
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(on_update=gate_finished)
+        await session.start()
+        session.request_stop()
+
+        finished: SolareUpdate | None = None
+        while finished is None or finished.kind is not SolareUpdateKind.FINISHED:
+            finished = await session.poll(timeout=2)
+            assert finished is not None
+
+        assert callback_entered.is_set()
+        assert not session._closed
+        assert not session.stopped
+        release_callback.set()
+        for _ in range(200):
+            if session.stopped and session._closed:
+                break
+            await asyncio.sleep(0.01)
+        assert session.stopped
+        assert session._closed
+
+    asyncio.run(scenario())
+
+
+def test_async_stop_remains_available_after_finished_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    callback_entered = NativeEvent()
+    release_callback = NativeEvent()
+
+    def gate_finished(update: SolareUpdate) -> None:
+        if update.kind is SolareUpdateKind.FINISHED:
+            callback_entered.set()
+            assert release_callback.wait(timeout=2)
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(on_update=gate_finished)
+        await session.start()
+        session.request_stop()
+
+        finished: SolareUpdate | None = None
+        while finished is None or finished.kind is not SolareUpdateKind.FINISHED:
+            finished = await session.poll(timeout=2)
+            assert finished is not None
+
+        assert callback_entered.is_set()
+        stop_task = asyncio.create_task(session.stop())
+        await asyncio.sleep(0)
+        assert not stop_task.done()
+        release_callback.set()
+
+        result = await asyncio.wait_for(stop_task, timeout=2)
+        assert result is session.result
+        assert session.stopped
+        assert session._closed
+
+    asyncio.run(scenario())
+
+
+def test_async_updates_ends_cleanly_after_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession()
+        await session.start()
+        session.request_stop()
+
+        kinds = [update.kind async for update in session.updates()]
+
+        assert kinds[0] is SolareUpdateKind.CAPTURE_READY
+        assert kinds[-1] is SolareUpdateKind.FINISHED
+        assert session._closed
+
+    asyncio.run(scenario())
+
+
+def test_async_updates_checks_for_finished_callback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_live_fakes(monkeypatch)
+    expected = RuntimeError("terminal callback failed")
+
+    def fail_finished(update: SolareUpdate) -> None:
+        if update.kind is SolareUpdateKind.FINISHED:
+            raise expected
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(on_update=fail_finished)
+        await session.start()
+        session.request_stop()
+
+        observed: list[SolareUpdateKind] = []
+        with pytest.raises(RuntimeError) as raised:
+            async for update in session.updates():
+                observed.append(update.kind)
+
+        assert raised.value is expected
+        assert observed[-1] is SolareUpdateKind.FINISHED
+        assert session._closed
+
+    asyncio.run(scenario())
+
+
+def test_async_live_session_forwards_raw_retention_to_result_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _install_live_fakes(
+        monkeypatch,
+        packets=(_generic_stream(0x1100),),
+        complete_after=1,
+    )
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(retain_raw_extensions=True)
+        await session.start()
+        result = await session.wait(timeout=2)
+        assert result is not None and result.complete
+
+    asyncio.run(scenario())
+    assert state["build_kwargs"] == [{"retain_raw_extensions": True}]
+
+
+def test_async_context_exit_raises_an_already_stored_background_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = RuntimeError("capture failed before async context exit")
+    _install_live_fakes(monkeypatch, runtime_error=expected)
+
+    async def scenario() -> None:
+        escaped: list[BaseException] = []
+        try:
+            async with AsyncLiveSolareSession() as session:
+                while not session.stopped:
+                    await asyncio.sleep(0)
+                assert session.error is expected
+        except BaseException as exc:
+            escaped.append(exc)
+
+        assert len(escaped) == 1
+        assert escaped[0] is expected
+
+    asyncio.run(scenario())
+
+
+def test_async_context_body_exception_remains_primary_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _install_live_fakes(monkeypatch)
+    body_error = LookupError("async user body failed")
+    cleanup_error = OSError("async capture cleanup failed")
+
+    async def scenario() -> None:
+        escaped: list[BaseException] = []
+        wrapper: AsyncLiveSolareSession | None = None
+        try:
+            async with AsyncLiveSolareSession() as wrapper:
+                capture = state["captures"][0]
+
+                def fail_stop() -> CaptureStats:
+                    capture.running = False
+                    capture.stopped = True
+                    raise cleanup_error
+
+                capture.stop = fail_stop
+                raise body_error
+        except BaseException as exc:
+            escaped.append(exc)
+
+        assert wrapper is not None
+        assert len(escaped) == 1
+        assert escaped[0] is body_error
+        assert wrapper.error is cleanup_error
+        assert wrapper.stopped
 
     asyncio.run(scenario())
 

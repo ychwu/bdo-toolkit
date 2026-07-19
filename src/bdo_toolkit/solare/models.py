@@ -5,9 +5,12 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Optional
+from typing import Any, ClassVar, Iterable, Optional
+
+
+_SOLARE_SCHEMA_VERSION = 1
 
 
 class SolareDetectionStatus(str, Enum):
@@ -191,6 +194,52 @@ class SolarePlayer:
 
 
 @dataclass(frozen=True)
+class SolareOverallEntry:
+    """One authoritative rank/name row from the overall top-100 table.
+
+    Overall rows intentionally do not pretend to carry a primary class, Elo,
+    or per-class performance.  Those fields live on :class:`SolarePlayer`
+    records from the independent rich class table and may be joined by exact
+    rank/name when that player occurs in both tables.
+
+    The optional UID is named for its source table because validated protocol
+    generations do not always encode the rich-table and overall-table UID
+    fields identically.  It is therefore literal evidence, not a promise that
+    the two raw byte strings can be compared directly.
+    """
+
+    name: str
+    global_rank: int
+    overall_uid_raw: Optional[bytes] = None
+
+    @property
+    def overall_uid_bytes_le(self) -> Optional[str]:
+        """Return the literal overall-table UID bytes in wire order."""
+
+        if self.overall_uid_raw is None:
+            return None
+        return self.overall_uid_raw.hex()
+
+    @property
+    def overall_uid_value(self) -> Optional[str]:
+        """Return an eight-byte overall UID as a little-endian hex value."""
+
+        if self.overall_uid_raw is None or len(self.overall_uid_raw) != 8:
+            return None
+        return f"0x{int.from_bytes(self.overall_uid_raw, 'little'):016x}"
+
+    def to_dict(self) -> dict[str, object]:
+        output: dict[str, object] = {
+            "name": self.name,
+            "global_rank": self.global_rank,
+        }
+        if self.overall_uid_raw is not None:
+            output["overall_uid_raw"] = self.overall_uid_value
+            output["overall_uid_bytes_le"] = self.overall_uid_bytes_le
+        return output
+
+
+@dataclass(frozen=True)
 class SolareFamilyLayout:
     """Discovered message geometry; opcode is diagnostic, not trusted input."""
 
@@ -251,6 +300,17 @@ class SolareCaptureHealth:
     pcap_interface_dropped: Optional[int] = None
     capture_buffer_bytes: Optional[int] = None
     saved_packets: int = 0
+    candidate_messages_observed: int = 0
+    candidate_frames_retained: int = 0
+    candidate_bytes_retained: int = 0
+    peak_candidate_frames: int = 0
+    peak_candidate_bytes: int = 0
+    candidate_frames_evicted: int = 0
+    candidate_bytes_evicted: int = 0
+    candidate_history_rolled_over: bool = False
+    packet_queue_peak: int = 0
+    packet_queue_overflows: int = 0
+    flow_state_evictions: int = 0
 
     @property
     def capture_is_clean(self) -> bool:
@@ -258,6 +318,8 @@ class SolareCaptureHealth:
             self.tcp_gap_resets == 0
             and (self.pcap_dropped in (None, 0))
             and (self.pcap_interface_dropped in (None, 0))
+            and self.packet_queue_overflows == 0
+            and self.flow_state_evictions == 0
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -268,6 +330,17 @@ class SolareCaptureHealth:
             "retained_large_messages": self.retained_large_messages,
             "tcp_gap_resets": self.tcp_gap_resets,
             "saved_packets": self.saved_packets,
+            "candidate_messages_observed": self.candidate_messages_observed,
+            "candidate_frames_retained": self.candidate_frames_retained,
+            "candidate_bytes_retained": self.candidate_bytes_retained,
+            "peak_candidate_frames": self.peak_candidate_frames,
+            "peak_candidate_bytes": self.peak_candidate_bytes,
+            "candidate_frames_evicted": self.candidate_frames_evicted,
+            "candidate_bytes_evicted": self.candidate_bytes_evicted,
+            "candidate_history_rolled_over": self.candidate_history_rolled_over,
+            "packet_queue_peak": self.packet_queue_peak,
+            "packet_queue_overflows": self.packet_queue_overflows,
+            "flow_state_evictions": self.flow_state_evictions,
             "capture_is_clean": self.capture_is_clean,
         }
         optional = {
@@ -329,7 +402,11 @@ class SolareLeaderboardSnapshot:
     players: tuple[SolarePlayer, ...]
     evidence: SolareEvidence
     capabilities: frozenset[str] = frozenset({"rankings"})
-    schema_version: int = 1
+    overall_top_100: tuple[SolareOverallEntry, ...] = field(
+        default=(),
+        kw_only=True,
+    )
+    schema_version: ClassVar[int] = _SOLARE_SCHEMA_VERSION
 
     @property
     def observed_at_iso(self) -> str:
@@ -341,7 +418,20 @@ class SolareLeaderboardSnapshot:
 
     @property
     def top_100(self) -> tuple[SolarePlayer, ...]:
-        return tuple(sorted(self.players, key=lambda item: item.global_rank)[:100])
+        """Return rich-table detail records whose global rank is in 1..100.
+
+        This compatibility view remains a tuple of :class:`SolarePlayer` and
+        is unchanged for the historical exact-overlap captures.  It can be
+        shorter than 100 when the authoritative overall table contains a
+        player outside the per-class top-20 tables; use :attr:`overall_top_100`
+        when all authoritative overall rows are required.
+        """
+
+        return tuple(
+            player
+            for player in sorted(self.players, key=lambda item: item.global_rank)
+            if 1 <= player.global_rank <= 100
+        )
 
     def class_leaderboard(self, class_code: int) -> tuple[SolarePlayer, ...]:
         return tuple(
@@ -353,9 +443,17 @@ class SolareLeaderboardSnapshot:
     def get_player(self, name: str) -> Optional[SolarePlayer]:
         return next((player for player in self.players if player.name == name), None)
 
+    def get_overall_entry(self, name: str) -> Optional[SolareOverallEntry]:
+        """Return the first exact, case-sensitive overall-table name match."""
+
+        return next(
+            (entry for entry in self.overall_top_100 if entry.name == name),
+            None,
+        )
+
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         return {
-            "schema_version": self.schema_version,
+            "schema_version": _SOLARE_SCHEMA_VERSION,
             "snapshot_id": self.snapshot_id,
             "observed_at": self.observed_at,
             "observed_at_iso": self.observed_at_iso,
@@ -364,6 +462,10 @@ class SolareLeaderboardSnapshot:
             "record_count": len(self.players),
             "players": [
                 player.to_dict(include_raw=include_raw) for player in self.players
+            ],
+            "overall_record_count": len(self.overall_top_100),
+            "overall_top_100": [
+                entry.to_dict() for entry in self.overall_top_100
             ],
             "evidence": self.evidence.to_dict(),
         }
@@ -385,7 +487,7 @@ class SolareCaptureResult:
     evidence: SolareEvidence
     snapshot: Optional[SolareLeaderboardSnapshot] = None
     message: Optional[str] = None
-    schema_version: int = 1
+    schema_version: ClassVar[int] = _SOLARE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.status is SolareDetectionStatus.COMPLETE and self.snapshot is None:
@@ -399,7 +501,7 @@ class SolareCaptureResult:
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         output: dict[str, Any] = {
-            "schema_version": self.schema_version,
+            "schema_version": _SOLARE_SCHEMA_VERSION,
             "status": self.status.value,
             "complete": self.complete,
             "evidence": self.evidence.to_dict(),
@@ -443,11 +545,27 @@ class SolareUpdate:
         return output
 
 
-def solare_snapshot_id(players: Iterable[SolarePlayer]) -> str:
-    """Return a deterministic semantic identifier, excluding opaque raw blobs."""
+def solare_snapshot_id(
+    players: Iterable[SolarePlayer],
+    *,
+    overall_top_100: Iterable[SolareOverallEntry] = (),
+) -> str:
+    """Return a deterministic semantic identifier, excluding opaque raw blobs.
 
+    Exact-overlap snapshots retain the original rich-row-only digest so IDs
+    produced by historical captures remain stable.  A genuinely divergent
+    overall table uses a versioned envelope containing both table identities,
+    preventing two different overall leaderboards from sharing a snapshot ID.
+    Overall UID bytes are deliberately excluded because their encoding is
+    layout-specific evidence rather than a cross-generation semantic key.
+    """
+
+    player_rows = tuple(players)
     rows = []
-    for player in sorted(players, key=lambda item: (item.global_rank, item.name)):
+    for player in sorted(
+        player_rows,
+        key=lambda item: (item.global_rank, item.name),
+    ):
         rows.append(
             {
                 "name": player.name,
@@ -470,5 +588,35 @@ def solare_snapshot_id(players: Iterable[SolarePlayer]) -> str:
                 ],
             }
         )
-    payload = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    overall_rows = [
+        {"name": entry.name, "rank": entry.global_rank}
+        for entry in sorted(
+            overall_top_100,
+            key=lambda item: (item.global_rank, item.name),
+        )
+    ]
+    rich_overall_rows = [
+        {"name": player.name, "rank": player.global_rank}
+        for player in sorted(
+            (
+                player
+                for player in player_rows
+                if 1 <= player.global_rank <= 100
+            ),
+            key=lambda item: (item.global_rank, item.name),
+        )
+    ]
+    if not overall_rows or overall_rows == rich_overall_rows:
+        semantic_payload: object = rows
+    else:
+        semantic_payload = {
+            "format": "solare-snapshot-v2-divergent-overall",
+            "overall_top_100": overall_rows,
+            "players": rows,
+        }
+    payload = json.dumps(
+        semantic_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()

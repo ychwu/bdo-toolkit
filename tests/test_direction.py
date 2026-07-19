@@ -352,7 +352,7 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     assert {"INVENTORY_TRANSFER", "STORAGE_ITEM_DELTA"} <= events
 
     profile_path = tmp_path / "opcodes.json"
-    update_profile(result, profile_path)  # action defaults to auto -> merge all
+    update_profile(result, profile_path)  # auto replaces each discovered family
     from bdo_toolkit._specs import load_spec_profile
 
     profile = load_spec_profile(profile_path)

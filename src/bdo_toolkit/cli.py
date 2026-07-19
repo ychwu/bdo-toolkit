@@ -35,6 +35,7 @@ from .solare import (
     capture_solare_snapshot,
     replay_solare,
 )
+from .solare._constants import SOLARE_DEFAULT_CAPTURE_SECONDS
 
 
 def _positive_int(value: str) -> int:
@@ -216,7 +217,11 @@ def _same_output_path(left: Path | None, right: Path | None) -> bool:
 def _run_solare_replay(args: argparse.Namespace) -> int:
     if _same_output_path(args.pcap, args.output):
         raise ValueError("--output must not overwrite the replay input capture")
-    result = replay_solare(args.pcap, ports=args.ports)
+    result = replay_solare(
+        args.pcap,
+        ports=args.ports,
+        retain_raw_extensions=args.include_raw,
+    )
     _write_solare_result(
         result,
         output=args.output,
@@ -244,6 +249,7 @@ def _run_solare_live(args: argparse.Namespace) -> int:
         capture_seconds=args.capture_seconds,
         save_pcap=args.save_pcap,
         stop_on_complete=args.stop_on_complete,
+        retain_raw_extensions=args.include_raw,
         on_update=report,
     )
     _write_solare_result(
@@ -355,8 +361,13 @@ def _run_calibrate(args: argparse.Namespace) -> int:
 
     if not args.write:
         if result.specs:
+            write_description = (
+                "merge these specs into a profile"
+                if args.merge
+                else "write these specs and replace stale applicable profile entries"
+            )
             print(
-                "dry run: pass --write PATH to merge these specs into a profile",
+                f"dry run: pass --write PATH to {write_description}",
                 file=sys.stderr,
             )
         return 0 if result.specs else 1
@@ -369,7 +380,7 @@ def _run_calibrate(args: argparse.Namespace) -> int:
         result,
         args.write,
         action=args.action,
-        replace=args.replace,
+        replace=not args.merge,
     )
     print(update.summary(), file=sys.stderr)
     return 0
@@ -535,7 +546,9 @@ def build_parser() -> argparse.ArgumentParser:
     solare_replay.add_argument(
         "--include-raw",
         action="store_true",
-        help="include large raw gear and skill-addon buffers as hex",
+        help=(
+            "retain and include large raw gear and skill-addon buffers as hex"
+        ),
     )
     solare_replay.set_defaults(func=_run_solare_replay)
 
@@ -564,12 +577,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use a Python packet filter instead of BPF",
     )
-    solare_live.add_argument(
+    solare_duration = solare_live.add_mutually_exclusive_group()
+    solare_duration.add_argument(
         "--capture-seconds",
         type=_nonnegative_float,
-        default=None,
+        default=SOLARE_DEFAULT_CAPTURE_SECONDS,
         metavar="SECONDS",
-        help="stop after this many seconds (default: Ctrl+C or complete snapshot)",
+        help=(
+            "stop after this many seconds "
+            f"(default: {SOLARE_DEFAULT_CAPTURE_SECONDS:g})"
+        ),
+    )
+    solare_duration.add_argument(
+        "--wait-forever",
+        action="store_const",
+        const=None,
+        dest="capture_seconds",
+        help="disable the default deadline and wait for Ctrl+C or completion",
     )
     solare_live.add_argument(
         "--save-pcap",
@@ -599,7 +623,9 @@ def build_parser() -> argparse.ArgumentParser:
     solare_live.add_argument(
         "--include-raw",
         action="store_true",
-        help="include large raw gear and skill-addon buffers as hex",
+        help=(
+            "retain and include large raw gear and skill-addon buffers as hex"
+        ),
     )
     solare_live.set_defaults(func=_run_solare_live, stop_on_complete=True)
 
@@ -667,19 +693,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         metavar="PATH",
-        help="merge discovered specs into this opcodes.json (default: dry run)",
+        help=(
+            "write discovered specs to this opcodes.json, replacing the "
+            "applicable existing entries (default: dry run)"
+        ),
     )
-    calibrate.add_argument(
-        "--replace",
+    write_mode = calibrate.add_mutually_exclusive_group()
+    write_mode.add_argument(
+        "--merge",
         action="store_true",
-        help="clear this action's existing profile entries before merging",
+        help=(
+            "advanced: preserve and deduplicate existing entries instead of "
+            "replacing the applicable profile-family scope"
+        ),
+    )
+    write_mode.add_argument(
+        "--replace",
+        dest="merge",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
     calibrate.add_argument(
         "--verbose",
         action="store_true",
         help="also print ignored calibration candidates and reasons",
     )
-    calibrate.set_defaults(func=_run_calibrate)
+    calibrate.set_defaults(func=_run_calibrate, merge=False)
 
     reset = subparsers.add_parser(
         "reset-profile", help="write an empty active opcode profile"

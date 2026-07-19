@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol
 
@@ -37,6 +38,7 @@ class TCPFlowState:
     next_sequence: Optional[int] = None
     pending: dict[int, PendingSegment] = field(default_factory=dict)
     gap_started_at: Optional[float] = None
+    generation: int = 0
 
     def reset(self) -> None:
         self.next_sequence = None
@@ -64,6 +66,7 @@ class TCPFlowState:
                 timestamp=context.timestamp,
                 flow=context.flow,
                 stream_start=sequence,
+                flow_generation=context.flow_generation,
             )
             if overlap >= len(payload):
                 # Local Windows captures can occasionally present a complete
@@ -102,6 +105,7 @@ class TCPFlowState:
             timestamp=context.timestamp,
             flow=context.flow,
             stream_start=self.next_sequence,
+            flow_generation=context.flow_generation,
         )
         self.scanner.feed(payload, delivery_context)
         self.next_sequence += len(payload)
@@ -159,10 +163,29 @@ class FlowManager:
         *,
         server_ports,
         scanner_factory: Callable[[], StreamScanner],
+        max_flows: Optional[int] = None,
+        on_flow_eviction: Optional[Callable[[], None]] = None,
+        track_flow_generations: bool = False,
     ) -> None:
+        if max_flows is not None and max_flows <= 0:
+            raise ValueError("max_flows must be positive or None")
         self.server_ports = frozenset(server_ports)
         self._scanner_factory = scanner_factory
-        self._flows: dict[FlowKey, TCPFlowState] = {}
+        self._max_flows = max_flows
+        self._on_flow_eviction = on_flow_eviction
+        self._track_flow_generations = track_flow_generations
+        self._next_flow_generation = 0
+        self._flows: OrderedDict[FlowKey, TCPFlowState] = OrderedDict()
+
+    def _new_flow_state(self) -> TCPFlowState:
+        generation = 0
+        if self._track_flow_generations:
+            self._next_flow_generation += 1
+            generation = self._next_flow_generation
+        return TCPFlowState(
+            scanner=self._scanner_factory(),
+            generation=generation,
+        )
 
     def process_tcp_segment(
         self,
@@ -190,17 +213,41 @@ class FlowManager:
             destination_port=destination_port,
         )
 
+        known_flow = flow in self._flows
+        # A capture may contain an ACK or a late FIN/RST for a connection that
+        # began before capture or whose state was already closed/evicted. Such
+        # a packet cannot contribute stream bytes, so it must not consume a
+        # bounded flow slot (or evict an active flow to make room).
+        if not known_flow and not payload and not syn:
+            return
+
+        if not known_flow and (
+            self._max_flows is not None
+            and len(self._flows) >= self._max_flows
+        ):
+            # OrderedDict order is updated on every observed packet, so the
+            # first entry is the least recently active connection.
+            _oldest, evicted = self._flows.popitem(last=False)
+            if self._on_flow_eviction is not None:
+                self._on_flow_eviction()
+            evicted.finish()
+
         if syn or flow not in self._flows:
-            self._flows[flow] = TCPFlowState(scanner=self._scanner_factory())
+            self._flows[flow] = self._new_flow_state()
 
         state = self._flows[flow]
+        self._flows.move_to_end(flow)
         if payload:
             # SYN consumes one sequence number before any TCP Fast Open data.
             payload_sequence = (sequence + (1 if syn else 0)) & 0xFFFFFFFF
             state.add_segment(
                 sequence=payload_sequence,
                 payload=payload,
-                context=PacketContext(timestamp=timestamp, flow=flow),
+                context=PacketContext(
+                    timestamp=timestamp,
+                    flow=flow,
+                    flow_generation=state.generation,
+                ),
             )
 
         if rst or fin:

@@ -120,10 +120,40 @@ class TestProfileUpdateSummary:
     def test_summary_says_so_when_everything_was_already_present(self, tmp_path):
         profile = tmp_path / "opcodes.json"
         spec = _spec("STORAGE_ITEM_DELTA", 0x0E6A)
-        update_profile([spec], profile)
+        update_profile([spec], profile, replace=False)
 
-        update = update_profile([spec], profile)
+        update = update_profile([spec], profile, replace=False)
         assert "no new specs added" in update.summary()
+
+    def test_default_replaces_stale_specs_in_the_same_event_family(self, tmp_path):
+        profile = tmp_path / "opcodes.json"
+        update_profile([_spec("STORAGE_ITEM_DELTA", 0x9999)], profile)
+
+        update = update_profile([_spec("STORAGE_ITEM_DELTA", 0x0E6A)], profile)
+
+        assert update.replaced_events == ("STORAGE_ITEM_DELTA",)
+        written = json.loads(profile.read_text(encoding="utf-8"))
+        opcodes = [
+            entry["opcode"]
+            for entry in written["specs"]["STORAGE_ITEM_DELTA"]
+        ]
+        assert opcodes == ["0x0E6A"]
+
+    def test_replace_false_is_the_explicit_merge_mode(self, tmp_path):
+        profile = tmp_path / "opcodes.json"
+        update_profile([_spec("STORAGE_ITEM_DELTA", 0x9999)], profile)
+
+        update = update_profile(
+            [_spec("STORAGE_ITEM_DELTA", 0x0E6A)], profile, replace=False
+        )
+
+        assert update.replaced_events == ()
+        written = json.loads(profile.read_text(encoding="utf-8"))
+        opcodes = [
+            entry["opcode"]
+            for entry in written["specs"]["STORAGE_ITEM_DELTA"]
+        ]
+        assert opcodes == ["0x9999", "0x0E6A"]
 
 
 class TestCalibrateAndUpdate:

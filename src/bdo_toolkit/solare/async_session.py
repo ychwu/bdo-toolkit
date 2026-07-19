@@ -11,7 +11,12 @@ from typing import AsyncIterator, Callable, Optional, TypeVar
 
 from bdo_toolkit._capture_options import PacketCaptureOptions
 from ._constants import LIVE_CAPTURE_BUFFER_BYTES
-from .models import SolareCaptureEndpoint, SolareCaptureResult, SolareUpdate
+from .models import (
+    SolareCaptureEndpoint,
+    SolareCaptureResult,
+    SolareUpdate,
+    SolareUpdateKind,
+)
 from .session import LiveSolareSession
 
 
@@ -36,6 +41,7 @@ class AsyncLiveSolareSession:
         capture_options: Optional[PacketCaptureOptions] = None,
         save_pcap: str | Path | None = None,
         stop_on_complete: bool = True,
+        retain_raw_extensions: bool = False,
         on_update: Optional[Callable[[SolareUpdate], None]] = None,
         capture_buffer_bytes: int = LIVE_CAPTURE_BUFFER_BYTES,
     ) -> None:
@@ -43,6 +49,7 @@ class AsyncLiveSolareSession:
             capture_options=capture_options,
             save_pcap=save_pcap,
             stop_on_complete=stop_on_complete,
+            retain_raw_extensions=retain_raw_extensions,
             on_update=on_update,
             capture_buffer_bytes=capture_buffer_bytes,
         )
@@ -58,6 +65,7 @@ class AsyncLiveSolareSession:
         self._poll_active = False
         self._wait_active = False
         self._stop_future: Optional[asyncio.Future[SolareCaptureResult]] = None
+        self._terminal_shutdown_task: Optional[asyncio.Task[None]] = None
 
     @property
     def running(self) -> bool:
@@ -95,6 +103,30 @@ class AsyncLiveSolareSession:
         if not self._closed:
             self._executor.shutdown(wait=False, cancel_futures=False)
             self._closed = True
+
+    def _schedule_terminal_shutdown(self) -> None:
+        task = self._terminal_shutdown_task
+        if task is not None and not task.done():
+            return
+
+        async def close_after_worker_and_calls_settle() -> None:
+            while not self._session.stopped and not self._closed:
+                await asyncio.sleep(0.01)
+            while not self._closed and (
+                self._start_active
+                or self._poll_active
+                or self._wait_active
+                or (
+                    self._stop_future is not None
+                    and not self._stop_future.done()
+                )
+            ):
+                await asyncio.sleep(0.01)
+            self._shutdown()
+
+        self._terminal_shutdown_task = asyncio.create_task(
+            close_after_worker_and_calls_settle()
+        )
 
     async def start(self) -> None:
         """Start capture without blocking the event-loop thread."""
@@ -165,6 +197,14 @@ class AsyncLiveSolareSession:
         self._shutdown()
         return result
 
+    def request_stop(self) -> None:
+        """Request orderly shutdown without blocking the event loop."""
+
+        ready_callback_active = self._start_active and self._session.running
+        if not (self._started or ready_callback_active):
+            raise RuntimeError("live Solare session was not started")
+        self._session.request_stop()
+
     async def wait(
         self, timeout: Optional[float] = None
     ) -> Optional[SolareCaptureResult]:
@@ -234,7 +274,9 @@ class AsyncLiveSolareSession:
                 if self._session.stopped or self._session.error is not None:
                     self._shutdown()
                 raise
-            if self._session.stopped:
+            if update is not None and update.kind is SolareUpdateKind.FINISHED:
+                self._schedule_terminal_shutdown()
+            elif self._session.stopped:
                 self._shutdown()
             return update
         finally:
@@ -261,7 +303,13 @@ class AsyncLiveSolareSession:
         traceback: TracebackType | None,
     ) -> None:
         try:
-            if not self._session.stopped:
+            if exc_value is None:
                 await self.stop()
+            else:
+                try:
+                    await self.stop()
+                except BaseException:
+                    # Preserve the exception already escaping the async block.
+                    pass
         finally:
             self._shutdown()

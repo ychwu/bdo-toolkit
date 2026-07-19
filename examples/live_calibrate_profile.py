@@ -36,7 +36,7 @@ def main() -> None:
     if not result.specs:
         raise SystemExit(1)
 
-    update = update_profile(result, PROFILE, replace=True)
+    update = update_profile(result, PROFILE)
     print(update.summary())
 
 

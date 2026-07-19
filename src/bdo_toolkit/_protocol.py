@@ -241,6 +241,10 @@ class PacketContext:
     timestamp: float
     flow: FlowKey
     stream_start: Optional[int] = None
+    # A FlowKey identifies a TCP four-tuple, not one connection lifetime.
+    # FlowManager assigns a new generation whenever that tuple is opened
+    # again so consumers that retain frames cannot merge independent streams.
+    flow_generation: int = 0
 
 
 @dataclass(frozen=True)

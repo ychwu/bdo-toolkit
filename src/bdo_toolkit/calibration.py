@@ -11,7 +11,7 @@ local opcode profile from a capture of a known in-game action:
         quantity=3,            # how many were moved
         action="inventory-to-storage",
     )
-    update_profile(result, "opcodes.json", action="inventory-to-storage", replace=True)
+    update_profile(result, "opcodes.json", action="inventory-to-storage")
 
 Then point the decoding APIs at the local profile:
 
@@ -333,7 +333,7 @@ class CalibrationResult:
 
 @dataclass(frozen=True)
 class ProfileUpdate:
-    """Outcome of merging calibration specs into a profile file."""
+    """Outcome of persisting calibration specs into a profile file."""
 
     path: Path
     added: tuple[MessageSpec, ...]
@@ -545,7 +545,7 @@ class CalibrationSession:
         #     then have them click "Done" in your UI ...
         result = session.stop()
         if result.specs:
-            update_profile(result, my_profile_path, replace=True)
+            update_profile(result, my_profile_path)
 
     Auto calibration (the default) classifies each transfer direction from
     packet structure, so the user only needs to move an item to storage and
@@ -757,15 +757,17 @@ def update_profile(
     path: str | Path,
     *,
     action: str = "auto",
-    replace: bool = False,
+    replace: bool = True,
     backup: bool = True,
     calibration_item_id: Optional[int] = None,
 ) -> ProfileUpdate:
-    """Merge promoted specs into a local opcode profile file.
+    """Persist promoted specs into a local opcode profile file.
 
-    With ``replace=True`` the profile entries belonging to ``action`` are
-    cleared first, so a recalibration fully supersedes stale entries. The
-    previous file is backed up next to it unless ``backup=False``.
+    By default, the profile entries belonging to ``action`` are cleared first,
+    so a recalibration supersedes stale entries instead of accumulating opcode
+    generations under one event type. Pass ``replace=False`` only for an
+    intentional advanced merge that preserves and deduplicates existing specs.
+    The previous file is backed up next to it unless ``backup=False``.
     """
     if action != "auto" and action not in CALIBRATION_ACTIONS:
         raise ValueError(
@@ -868,19 +870,19 @@ def calibrate_and_update(
     capture runs (``capture_seconds`` timer, or Ctrl+C to stop, exactly like
     :func:`calibrate_live`). ``pcap_ports`` applies only to the recording;
     ``capture_options`` applies only to live packet acquisition. If calibration
-    promoted specs they are merged into ``profile_path`` and both objects come
-    back; if it found nothing the profile file is left untouched and the update
-    slot is ``None``::
+    promoted specs, they replace the applicable scope in ``profile_path`` by
+    default and both objects come back; if it found nothing the profile file
+    is left untouched and the update slot is ``None``::
 
         result, update = calibrate_and_update("opcodes.local", item_id=7003)
         print(result.summary())
         if update is not None:
             print(update.summary())
 
-    Unlike :func:`update_profile`, ``replace`` defaults to ``True`` here: the
-    one-call path exists for post-patch recalibration, where superseding the
-    stale entries is what you want. Devs who need to inspect or filter specs
-    before persisting should stay on the two-step API.
+    Replacement is also the default on :func:`update_profile`: normal
+    post-patch recalibration supersedes stale entries. Pass ``replace=False``
+    only for an intentional reviewed merge, or use the two-step API when specs
+    must be inspected or filtered before persistence.
     """
     if pcap is not None:
         for name, value in (

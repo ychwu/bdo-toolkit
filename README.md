@@ -12,7 +12,7 @@ The toolkit goal is simple:
 ```text
 packet capture or pcap replay
   -> item-event decoder -> structured BDOEvent stream
-  -> Solare decoder     -> atomic leaderboard snapshot
+  -> Solare decoder     -> SolareCaptureResult -> complete result.snapshot
 ```
 
 Only the API/session you select runs its decoder; choosing the item route does
@@ -42,8 +42,9 @@ apps:
 
 - `replay_pcap(..., event_filter=None)` yields the complete decoded replay
   stream, including snapshot records and neutral diagnostics.
-- `capture_live(..., event_filter=None)` and `LiveCaptureSession(event_filter=None)`
-  use `EventFilter.activity()`: `loot_preview`, `item_received`, and
+- `capture_live(..., event_filter=None)`, `LiveCaptureSession(event_filter=None)`,
+  and `AsyncLiveCaptureSession(event_filter=None)` use
+  `EventFilter.activity()`: `loot_preview`, `item_received`, and
   `storage_delta`.
 - Pass `EventFilter.all()` for every completed decoded live event, or
   `EventFilter.snapshot_records()` for only `inventory_snapshot` and
@@ -83,27 +84,6 @@ decoded events before ending. A session is single-use; create a new one when
 the feature is started again. See the runnable
 [`controlled_live_capture.py`](examples/controlled_live_capture.py) example.
 
-Asyncio apps can use the same capture engine without writing their own thread
-bridge:
-
-```python
-import asyncio
-
-from bdo_toolkit import AsyncLiveCaptureSession
-
-async def main():
-    async with AsyncLiveCaptureSession() as session:
-        async for event in session:
-            print(event.format_human())
-
-asyncio.run(main())
-```
-
-`AsyncLiveCaptureSession` and `AsyncCalibrationSession` are additive facades
-over the synchronous sessions. See the dedicated
-[asyncio guide](https://ychwu.github.io/bdo-toolkit/asyncio.html) and the
-runnable [`async_live_capture.py`](examples/async_live_capture.py) example.
-
 Packet acquisition controls shared with live calibration live in
 `PacketCaptureOptions`. `LiveCaptureOptions` extends those settings with the
 decoded-event queue size used by `capture_live()`, `LiveCaptureSession`, and
@@ -125,22 +105,33 @@ session = LiveCaptureSession(live_options=options)
 
 Solare is a separate public domain inside the same package. It shares passive
 packet acquisition and TCP reassembly with the item-event APIs, but it returns
-one atomic leaderboard snapshot instead of mixing finite leaderboard state into
-the open-ended `BDOEvent` stream:
+one terminal `SolareCaptureResult` instead of mixing finite leaderboard state
+into the open-ended `BDOEvent` stream. Only a complete result contains the
+atomic leaderboard at `result.snapshot`:
 
 ```python
 from bdo_toolkit.solare import replay_solare
 
 result = replay_solare("solare-session.pcapng")
-if result.snapshot is not None:
-    for player in result.snapshot.top_100:
-        print(player.global_rank, player.name, player.elo)
+if not result.complete:
+    raise RuntimeError(f"{result.status.value}: {result.message}")
+
+snapshot = result.snapshot
+assert snapshot is not None
+for entry in snapshot.overall_top_100:
+    details = snapshot.get_player(entry.name)
+    print(entry.global_rank, entry.name, details.elo if details else None)
 ```
 
-Live capture structurally discovers the ranked, class-balanced, and overall
-families without accepting a known opcode as classifier input. It reports
-progress while the table arrives and stops automatically only after all 620
-rich records are present and the independent overall top 100 matches exactly:
+Replay and live capture use the same incremental classifier. It discovers the
+ranked, class-balanced, and overall families without accepting a known opcode
+as identity; opcode is only an opaque key that keeps observed message families
+apart. Reset-aligned generations allow a complete refresh between partial
+ones, and the first snapshot to complete in observation order is selected and
+latched.
+
+The blocking live convenience reports progress, stops after confirmation, and
+has a 120-second default deadline:
 
 ```python
 from bdo_toolkit.solare import capture_solare_snapshot
@@ -151,31 +142,67 @@ result = capture_solare_snapshot(
 )
 ```
 
+Start capture before opening or refreshing the Leaderboard tab. Pass
+`capture_seconds=None` only for an intentional indefinite wait. Explicit
+`LiveSolareSession` and `AsyncLiveSolareSession` instances have no built-in
+deadline: the caller controls `start()`, `wait()`, `request_stop()`, and
+`stop()`. An `on_update` callback must stay lightweight; it may call the
+non-blocking `request_stop()`, but it must not call blocking control or update
+consumption methods on the same session.
+
+The two wire tables stay separate in the public snapshot. `players` contains
+the 31 class top-20 groups and their optional details;
+`overall_top_100` is the authoritative overall board. A highly represented
+class can place a 21st player in the overall top 100 even though its class board
+stops at 20. In that case `get_player(entry.name)` returns `None` for the
+overall-only entry. The compatibility `top_100` property contains only the
+detailed rich-table players whose global rank is 1 through 100, so it may be
+shorter than 100 in this legitimate case.
+
 Snapshot publication also requires clean acquisition health: any TCP gap or
-reported packet drop before confirmation returns `detected-incomplete`, even
-if the remaining rows happen to match. With `stop_on_complete=False`, the
-first snapshot and its health are latched while optional PCAP recording may
-continue; later decoder messages are not retained or allowed to mutate it.
+reported packet drop, packet-queue overflow, or active-flow eviction before
+confirmation returns `detected-incomplete`, even if the remaining rows happen
+to match. Candidate discovery is bounded to 768 frames and 16 MiB and evaluates
+the retained window before discarding older candidates. The live packet queue
+is bounded to 4,096 packets, the progress queue to 64 updates, and active TCP
+reassembly to 64 flows; the related counters live under
+`result.evidence.health`. A rollover `warning` is progress, not an unbounded
+audit log, while the newest terminal `finished` update remains available.
+
+With `stop_on_complete=False`, the first snapshot and its health are latched
+while capture may continue; later decoder messages are not retained or allowed
+to mutate it. If `save_pcap` is also enabled, the recording can still grow for
+as long as capture runs. That disk lifetime is caller-owned: set a deadline,
+stop explicitly, or rotate files outside the toolkit.
 
 The June 24, July 14, and July 17 capture generations use different opcodes
 and record geometry; the structural classifier confirms all three. Deeper
 player statistics are enabled only when a geometry-specific decoder validates
 every record. Check `snapshot.capabilities`: `"rankings"` is independent from
-`"performance"` and `"raw_extensions"`.
+`"performance"`. `"raw_extensions"` is additionally opt-in.
 
 Each occupied class slot can expose matches, wins, draws, losses, raw recent
-result codes, and exact opaque gear/addon sections. In Python,
-`gear_loadout_raw.data` and `skill_addons_raw.data` are literal `bytes` (2,001
-and 501 bytes respectively). Their internal format is not claimed yet. Normal
-`to_dict()` / `to_json()` output omits these large blobs; pass
-`include_raw=True` to serialize them as hex.
+result codes, and, when retained explicitly, exact opaque gear/addon sections.
+Pass `retain_raw_extensions=True` to `replay_solare()`,
+`capture_solare_snapshot()`, or either session constructor before decoding. In
+Python, `gear_loadout_raw.data` and `skill_addons_raw.data` are literal `bytes`
+(2,001 and 501 bytes respectively). Their internal format is not claimed. Normal
+`to_dict()` / `to_json()` output omits these large blobs; after retaining them,
+pass `include_raw=True` to serialize them as hex. Serialization cannot recover
+raw bytes that were not retained during capture or replay; replay the saved
+PCAP again with retention enabled if needed.
 
 Command-line equivalents keep progress on stderr and result JSON on stdout:
 
 ```powershell
 bdo-toolkit solare live --save-pcap solare-next-patch.pcapng
 bdo-toolkit solare replay solare-next-patch.pcapng --output snapshot.json
+bdo-toolkit solare replay solare-next-patch.pcapng --include-raw --output raw.json
+bdo-toolkit solare live --wait-forever
 ```
+
+`solare live` shares the 120-second default. `--wait-forever` opts out, and
+`--include-raw` both retains the opaque sections and includes them in JSON.
 
 See [`solare_live_snapshot.py`](examples/solare_live_snapshot.py) and
 [`solare_replay_snapshot.py`](examples/solare_replay_snapshot.py). Raw pcaps,
@@ -244,14 +271,17 @@ filters. Hydration is directly observed during both initial login and an
 operator-labeled character switch, but the packet body does not identify which
 trigger occurred.
 
-An experimental queryable inventory/storage summary and a runnable live/offline
-diagnostic are documented in
+The smallest public-API live path is the runnable
+[`live_item_state_snapshot.py`](examples/live_item_state_snapshot.py) example.
+Run it after calibration, perform initial login or switch characters, wait for
+the playable world, and press Enter to print the aggregate diagnostic. The
+richer live/offline tool is documented in
 [`tools/character_load/README.md`](tools/character_load/README.md). The summary
 reports occupied item stacks and explicitly leaves storage capacity and stable
 inventory tab names provisional. Its experimental model exposes each validated
 raw container code, slot, provisional label/confidence, and known currency
-balance separately from ordinary item stacks. The live tool can also preserve its
-filtered packet evidence with `--save-pcap`; raw captures are sensitive and
+balance separately from ordinary item stacks. The live tool can also preserve
+its filtered packet evidence with `--save-pcap`; raw captures are sensitive and
 should remain in the git-ignored fixture tree.
 
 The canonical experimental import surface is `bdo_toolkit.item_state`:
@@ -353,15 +383,14 @@ public surface with examples:
   captures into events
 - [`LiveCaptureSession`](https://ychwu.github.io/bdo-toolkit/#livecapturesession)
   — programmatic Start/Stop, polling, cleanup, and background error reporting
+- [Asyncio integration](https://ychwu.github.io/bdo-toolkit/#asyncio) —
+  awaitable item-event capture and interactive calibration lifecycle facades
 - [Experimental item state](https://ychwu.github.io/bdo-toolkit/#character-state)
   — character-load inventory/storage queries, coverage, provenance, and
   structured schema
 - Arena of Solare — opcode-agnostic live/replay snapshots, progress, evidence,
-  player statistics, and opaque raw extensions (reference draft is being prepared
-  for the next documentation publish)
-- [Asyncio integration](https://ychwu.github.io/bdo-toolkit/asyncio.html) —
-  `AsyncLiveCaptureSession`, `AsyncCalibrationSession`, cancellation, and
-  Start/Stop patterns for async apps
+  player statistics, and opaque raw extensions (the completed reference draft
+  is included in the next documentation publish)
 - [`LiveCaptureOptions`](https://ychwu.github.io/bdo-toolkit/#livecaptureoptions)
   and [`EventFilter`](https://ychwu.github.io/bdo-toolkit/#eventfilter) — reusable
   live-event and event-selection configuration; `PacketCaptureOptions` carries
@@ -389,7 +418,7 @@ don't declare which action is which — just move the item to storage and back:
 
 ```powershell
 # start listening, move the item to storage and back, press Ctrl+C
-bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json --replace
+bdo-toolkit calibrate --item-id 7003 --qty 3 --write opcodes.json
 ```
 
 ```python
@@ -409,27 +438,13 @@ session.start()
 # ... user moves the item to storage and back, then clicks "Done" ...
 result = session.stop()
 if "STORAGE_ITEM_DELTA" in result.events_found:
-    update_profile(result, "opcodes.json", replace=True)
+    update_profile(result, "opcodes.json")
 ```
 
-In an asyncio app, await the calibration lifecycle directly:
-
-```python
-import asyncio
-
-from bdo_toolkit import AsyncCalibrationSession
-
-async def main():
-    async with AsyncCalibrationSession(item_id=7003, quantity=3) as session:
-        await asyncio.to_thread(
-            input,
-            "Move 3 Potatoes to storage and back, then press Enter...",
-        )
-        result = await session.stop()
-    print(result.summary())
-
-asyncio.run(main())
-```
+Profile writes replace the applicable event-family scope by default so stale
+opcodes do not accumulate under one event type. Advanced maintenance tools can
+request an intentional merge with `update_profile(..., replace=False)` or the
+CLI's `--merge` flag.
 
 When the network defaults are not suitable, pass
 `capture_options=PacketCaptureOptions(...)` to `CalibrationSession`,
