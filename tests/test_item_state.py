@@ -14,6 +14,8 @@ from bdo_toolkit.character_state import (
 )
 from bdo_toolkit.item_state import (
     CharacterLoadSession,
+    ItemStateCaptureLimitError,
+    ItemStateCaptureLimits,
     ItemStateSnapshot,
     analyze_item_state_pcap,
     format_item_state,
@@ -136,6 +138,11 @@ def test_item_state_serialization_exposes_honest_coverage_and_provenance():
     assert 0x0005 in coverage.registered_storage_ids_not_observed
     assert coverage.unregistered_storage_ids_observed == (0xDEAD,)
     assert coverage.explicitly_empty_storage_locations_observed == 1
+    assert coverage.identity_complete
+    assert coverage.identity_status == "complete"
+    assert coverage.inventory_records_missing_instance == 0
+    assert coverage.storage_records_missing_instance == 0
+    assert coverage.accumulation_status == "not_reported"
 
     provenance = state.provenance
     assert provenance.capture_mode == "pcap_replay"
@@ -145,9 +152,12 @@ def test_item_state_serialization_exposes_honest_coverage_and_provenance():
     assert provenance.generation_selection == "latest_observed_inventory_hydration"
     assert provenance.load_reason is None
     assert provenance.load_reason_basis == "not_decoded_from_protocol"
+    assert provenance.instance_identity_policy == "observed_instance_only"
+    assert provenance.identity_status == "complete"
+    assert provenance.accumulation_policy == "not_reported"
 
     payload = state.to_dict()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 3
     assert payload["coverage"] == coverage.to_dict()
     assert payload["provenance"] == provenance.to_dict()
     assert payload["storage"]["destinations"][0]["storage_id"] == 0x0020
@@ -187,5 +197,7 @@ def test_item_state_facade_is_additive_and_not_package_root_exported():
     assert analyze_item_state_pcap is analyze_character_load_pcap
     assert format_item_state is format_character_state
     assert CharacterLoadSession.__module__ == "bdo_toolkit.character_state"
+    assert ItemStateCaptureLimits.__module__ == "bdo_toolkit.character_state"
+    assert issubclass(ItemStateCaptureLimitError, RuntimeError)
     assert "ItemStateSnapshot" not in package_exports
     assert "analyze_item_state_pcap" not in package_exports

@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 from collections import deque
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Callable, Iterable, Optional
 
 from ._protocol import MAX_TARGET_MESSAGE_LENGTH, BDOFrame, FlowKey, PacketContext
@@ -41,6 +42,8 @@ class DecrementSpec:
     opcode: int
     min_message_length: int
     quantity_offset: int
+    source_instance_offset: Optional[int] = None
+    repeat_stride: Optional[int] = None
 
     def __post_init__(self) -> None:
         if (
@@ -61,6 +64,64 @@ class DecrementSpec:
             or not 0 <= self.quantity_offset <= self.min_message_length - 4
         ):
             raise ValueError("decrement quantity offset must fit its minimum shape")
+        if self.source_instance_offset is not None and (
+            isinstance(self.source_instance_offset, bool)
+            or not isinstance(self.source_instance_offset, int)
+            or self.source_instance_offset < 0
+            or self.source_instance_offset + 8 > self.min_message_length
+        ):
+            raise ValueError(
+                "decrement source instance offset must fit its minimum shape"
+            )
+        if self.repeat_stride is not None and (
+            isinstance(self.repeat_stride, bool)
+            or not isinstance(self.repeat_stride, int)
+            or self.repeat_stride <= 0
+        ):
+            raise ValueError("decrement repeat stride must be positive or None")
+        if self.repeat_stride is not None:
+            prefix_length = self.min_message_length - self.repeat_stride
+            if (
+                prefix_length < 5
+                or self.quantity_offset < prefix_length
+                or (
+                    self.source_instance_offset is not None
+                    and self.source_instance_offset < prefix_length
+                )
+            ):
+                raise ValueError(
+                    "decrement repeat stride must place repeated fields "
+                    "after the frame prefix"
+                )
+
+
+@dataclass(frozen=True)
+class _ManualDecrementMatch:
+    """Strength and anchored geometry of one manual-deposit signal."""
+
+    opcode: int
+    message_length: int
+    quantity_offset: int
+    source_instance_offset: Optional[int]
+    match_kind: str
+    confidence: str
+    instance_matches_destination: Optional[bool]
+
+    def to_dict(self) -> dict[str, object]:
+        output: dict[str, object] = {
+            "opcode": f"0x{self.opcode:04X}",
+            "message_length": self.message_length,
+            "quantity_offset": self.quantity_offset,
+            "match_kind": self.match_kind,
+            "confidence": self.confidence,
+        }
+        if self.source_instance_offset is not None:
+            output["source_instance_offset"] = self.source_instance_offset
+        if self.instance_matches_destination is not None:
+            output["instance_matches_destination"] = (
+                self.instance_matches_destination
+            )
+        return output
 
 
 @dataclass
@@ -72,6 +133,9 @@ class _PendingDeposit:
     matching_decrement: bool
     events: tuple[BDOEvent, ...] = ()
     matching_decrement_record_indexes: tuple[int, ...] = ()
+    manual_decrement_matches: tuple[
+        tuple[int, _ManualDecrementMatch], ...
+    ] = ()
     frames_after: int = 0
     end_sequence: Optional[int] = None
     companion_observation: Optional[CompanionObservation] = None
@@ -139,8 +203,17 @@ class DepositOriginTracker:
             matches = self._decrement_specs.setdefault(spec.opcode, [])
             if spec not in matches:
                 matches.append(spec)
-        self._emit = emit
+        self._emit_callback = emit
         self._origin_observer = origin_observer
+        # Live capture previously mutated correlation state from Scapy's
+        # producer thread while the application consumer called
+        # ``flush_stale``.  Keep every state transition under one lock and
+        # dispatch application callbacks only after releasing it.  A separate
+        # re-entrant dispatch lock preserves outbox order while allowing a
+        # callback to re-enter the tracker without deadlocking.
+        self._state_lock = RLock()
+        self._dispatch_lock = RLock()
+        self._outbox: deque[tuple[str, object]] = deque()
         self._known_companion_families = {
             family.family_key for family in known_families
         }
@@ -192,6 +265,12 @@ class DepositOriginTracker:
     # --- frame stream ---
 
     def observe_stream(self, data: bytes, context: PacketContext) -> None:
+        """Observe reassembled bytes as one serialized tracker operation."""
+        with self._state_lock:
+            self._observe_stream_locked(data, context)
+        self._drain_outbox()
+
+    def _observe_stream_locked(self, data: bytes, context: PacketContext) -> None:
         """Retain raw reassembled bytes for alignment-independent correlation.
 
         The generic frame tap can begin in the middle of an application frame
@@ -225,6 +304,12 @@ class DepositOriginTracker:
         self._pending = still
 
     def observe_frame(self, frame: BDOFrame) -> None:
+        """Observe one generic frame as one serialized tracker operation."""
+        with self._state_lock:
+            self._observe_frame_locked(frame)
+        self._drain_outbox()
+
+    def _observe_frame_locked(self, frame: BDOFrame) -> None:
         window = self._recent.setdefault(
             frame.context.flow,
             deque(maxlen=self.BACKWARD_WINDOW),
@@ -272,6 +357,15 @@ class DepositOriginTracker:
         raw_message: Optional[bytes] = None,
     ) -> None:
         """Defer one live-or-neutral storage event until evidence resolves."""
+        with self._state_lock:
+            self._register_locked(event, raw_message)
+        self._drain_outbox()
+
+    def _register_locked(
+        self,
+        event: BDOEvent,
+        raw_message: Optional[bytes] = None,
+    ) -> None:
         flow = FlowKey(
             source_ip=event.flow.source_ip,
             source_port=event.flow.source_port,
@@ -363,7 +457,7 @@ class DepositOriginTracker:
 
     def _emit_neutral_entries(self, staged: _StagedNeutralBatch) -> None:
         for record_index in sorted(staged.entries):
-            self._emit(staged.entries[record_index][0])
+            self._queue_emit(staged.entries[record_index][0])
 
     def _register_group(
         self,
@@ -413,11 +507,18 @@ class DepositOriginTracker:
             else:
                 delta_prefix_end = min(previous, delta_prefix_end)
                 self._first_record_boundaries[boundary_key] = delta_prefix_end
-        matching_indexes = tuple(
-            candidate.record_index or index
-            for index, candidate in enumerate(events, 1)
-            if self._has_matching_decrement(flow, stream_sequence, candidate)
-        )
+        manual_matches: list[tuple[int, _ManualDecrementMatch]] = []
+        for index, candidate_event in enumerate(events, 1):
+            match = self._matching_decrement(
+                flow,
+                stream_sequence,
+                candidate_event,
+            )
+            if match is not None:
+                manual_matches.append(
+                    (candidate_event.record_index or index, match)
+                )
+        matching_indexes = tuple(index for index, _match in manual_matches)
         pending = _PendingDeposit(
             event=event,
             flow=flow,
@@ -426,6 +527,7 @@ class DepositOriginTracker:
             matching_decrement=bool(matching_indexes),
             events=events,
             matching_decrement_record_indexes=matching_indexes,
+            manual_decrement_matches=tuple(manual_matches),
             end_sequence=end_sequence,
             delta_message=delta_message,
             delta_prefix_end=delta_prefix_end,
@@ -695,17 +797,18 @@ class DepositOriginTracker:
         self._observed_chains.add(key)
         self._observed_chain_order.append(key)
         if self._origin_observer is not None:
-            self._origin_observer(observation)
+            self._outbox.append(("observer", observation))
 
     # --- calibrated manual-decrement signal ---
 
-    def _has_matching_decrement(
+    def _matching_decrement(
         self,
         flow: FlowKey,
         stream_sequence: Optional[int],
         event: BDOEvent,
-    ) -> bool:
+    ) -> Optional[_ManualDecrementMatch]:
         quantity_bytes = event.quantity.to_bytes(4, "little")
+        destination_instance = self._event_storage_instance(event)
         eligible = [
             frame
             for frame in self._recent.get(flow, ())
@@ -715,22 +818,232 @@ class DepositOriginTracker:
                 and frame.stream_sequence >= stream_sequence
             )
         ][-self.MANUAL_LOOKBACK_FRAMES :]
+        matches: list[_ManualDecrementMatch] = []
         for frame in eligible:
             for spec in self._decrement_specs.get(frame.opcode, ()):
                 # Profile lengths are calibrated single-record minima. Batch
                 # decrements append more records to the same frame.
                 if len(frame.message) < spec.min_message_length:
                     continue
-                end = spec.quantity_offset + 4
-                if end <= len(frame.message) and (
-                    frame.message[spec.quantity_offset:end] == quantity_bytes
+                inferred_repeat_stride: Optional[int] = None
+                if spec.repeat_stride is not None:
+                    extra_length = len(frame.message) - spec.min_message_length
+                    if extra_length % spec.repeat_stride:
+                        continue
+                    record_deltas: Iterable[int] = range(
+                        0,
+                        extra_length + 1,
+                        spec.repeat_stride,
+                    )
+                elif (
+                    spec.source_instance_offset is not None
+                    and destination_instance is not None
+                    and isinstance(event.record_index, int)
+                    and not isinstance(event.record_index, bool)
+                    and isinstance(event.record_count, int)
+                    and not isinstance(event.record_count, bool)
+                    and event.record_count > 1
+                    and 1 <= event.record_index <= event.record_count
                 ):
-                    return True
-        return False
+                    # Older calibrated profiles predate repeat_stride, but
+                    # their multi-record captures still expose enough
+                    # geometry to recover it safely: the captured decrement
+                    # and storage batch cardinalities align, while exact
+                    # source/destination instance equality validates every
+                    # inferred record after the first. This never expands
+                    # quantity-only matching.
+                    extra_length = len(frame.message) - spec.min_message_length
+                    divisor = event.record_count - 1
+                    if extra_length <= 0 or extra_length % divisor:
+                        record_deltas = (0,)
+                    else:
+                        inferred_stride = extra_length // divisor
+                        prefix_length = (
+                            spec.min_message_length - inferred_stride
+                        )
+                        if (
+                            inferred_stride <= 0
+                            or prefix_length < 5
+                            or spec.quantity_offset < prefix_length
+                            or spec.source_instance_offset < prefix_length
+                        ):
+                            record_deltas = (0,)
+                        else:
+                            inferred_repeat_stride = inferred_stride
+                            record_deltas = range(
+                                0,
+                                extra_length + 1,
+                                inferred_stride,
+                            )
+                else:
+                    record_deltas = (0,)
+
+                for delta in record_deltas:
+                    quantity_offset = spec.quantity_offset + delta
+                    quantity_end = quantity_offset + 4
+                    if (
+                        quantity_end > len(frame.message)
+                        or frame.message[quantity_offset:quantity_end]
+                        != quantity_bytes
+                    ):
+                        continue
+
+                    source_offset = spec.source_instance_offset
+                    if source_offset is None:
+                        matches.append(
+                            _ManualDecrementMatch(
+                                opcode=frame.opcode,
+                                message_length=len(frame.message),
+                                quantity_offset=quantity_offset,
+                                source_instance_offset=None,
+                                match_kind="quantity-only",
+                                confidence="heuristic",
+                                instance_matches_destination=None,
+                            )
+                        )
+                        continue
+
+                    source_offset += delta
+                    source_end = source_offset + 8
+                    if source_end > len(frame.message):
+                        continue
+                    source_instance = bytes(
+                        frame.message[source_offset:source_end]
+                    )
+                    if not self._nonempty_source_instance(source_instance):
+                        # A declared instance field that is empty invalidates
+                        # this candidate. Do not fall back to a common
+                        # quantity elsewhere in the frame.
+                        continue
+
+                    exact = (
+                        destination_instance is not None
+                        and source_instance == destination_instance
+                    )
+                    if not exact:
+                        if inferred_repeat_stride is not None and delta:
+                            # The profile did not declare this repeated field
+                            # location. Exact identity is the guard that makes
+                            # the inferred nonzero record offset trustworthy.
+                            continue
+                        # A partial stack move can allocate a different
+                        # destination instance: the controlled legacy
+                        # new_potato_1_1_1 capture proves that mismatch is not
+                        # contradictory. Retain it as anchored structural
+                        # evidence, but require entropy in both halves. Exact
+                        # cross-frame equality needs no such heuristic guard.
+                        if not self._structural_source_instance(
+                            source_instance
+                        ):
+                            continue
+                    matches.append(
+                        _ManualDecrementMatch(
+                            opcode=frame.opcode,
+                            message_length=len(frame.message),
+                            quantity_offset=quantity_offset,
+                            source_instance_offset=source_offset,
+                            match_kind=(
+                                "instance-and-quantity"
+                                if exact
+                                else "anchored-instance-and-quantity"
+                            ),
+                            confidence="observed" if exact else "structural",
+                            instance_matches_destination=(
+                                exact if destination_instance is not None else None
+                            ),
+                        )
+                    )
+
+        if not matches:
+            return None
+        rank = {"observed": 0, "structural": 1, "heuristic": 2}
+        matches.sort(key=lambda match: rank[match.confidence])
+        return matches[0]
+
+    @staticmethod
+    def _event_storage_instance(event: BDOEvent) -> Optional[bytes]:
+        value = event.storage_instance
+        if not isinstance(value, str) or not value.startswith("0x"):
+            return None
+        try:
+            decoded = bytes.fromhex(value[2:])
+        except ValueError:
+            return None
+        return decoded if len(decoded) == 8 else None
+
+    @staticmethod
+    def _nonempty_source_instance(value: bytes) -> bool:
+        return len(value) == 8 and value not in (b"\x00" * 8, b"\xff" * 8)
+
+    @classmethod
+    def _structural_source_instance(cls, value: bytes) -> bool:
+        if not cls._nonempty_source_instance(value):
+            return False
+        empty_halves = {b"\x00" * 4, b"\xff" * 4}
+        return value[:4] not in empty_halves and value[4:] not in empty_halves
 
     # --- flushing ---
 
     def flush_stale(self, now: float) -> None:
+        """Finalize expired evidence without racing producer-side mutation."""
+        with self._state_lock:
+            self._flush_stale_locked(now)
+        self._drain_outbox()
+
+    def close_flow(self, flow: FlowKey) -> None:
+        """Finalize one closed TCP flow and release all flow-keyed history."""
+
+        with self._state_lock:
+            staged_keys = [
+                key for key in self._staged_neutral_batches if key[0] == flow
+            ]
+            for key in staged_keys:
+                self._emit_neutral_entries(self._staged_neutral_batches.pop(key))
+
+            for pending in tuple(self._pending):
+                if pending.flow == flow and not pending.finalized:
+                    self._close_pending(pending)
+            self._pending = [
+                pending
+                for pending in self._pending
+                if pending.flow != flow and not pending.finalized
+            ]
+            self._purge_flow_history_locked(flow)
+        self._drain_outbox()
+
+    def _purge_flow_history_locked(self, flow: FlowKey) -> None:
+        self._recent.pop(flow, None)
+        self._stream_spans.pop(flow, None)
+
+        self._family_chain_order = deque(
+            (family, chain)
+            for family, chain in self._family_chain_order
+            if chain[0] != flow
+        )
+        for family, chains in tuple(self._family_chains.items()):
+            remaining = {chain for chain in chains if chain[0] != flow}
+            if remaining:
+                self._family_chains[family] = remaining
+            else:
+                self._family_chains.pop(family, None)
+
+        self._observed_chain_order = deque(
+            key for key in self._observed_chain_order if key[0] != flow
+        )
+        self._observed_chains = {
+            key for key in self._observed_chains if key[0] != flow
+        }
+
+        self._first_record_boundary_order = deque(
+            key for key in self._first_record_boundary_order if key[0] != flow
+        )
+        self._first_record_boundaries = {
+            key: value
+            for key, value in self._first_record_boundaries.items()
+            if key[0] != flow
+        }
+
+    def _flush_stale_locked(self, now: float) -> None:
         stale_batches = [
             key
             for key, staged in self._staged_neutral_batches.items()
@@ -751,6 +1064,12 @@ class DepositOriginTracker:
         self._pending = still
 
     def finalize_all(self) -> None:
+        """Finalize every pending decision and dispatch it in tracker order."""
+        with self._state_lock:
+            self._finalize_all_locked()
+        self._drain_outbox()
+
+    def _finalize_all_locked(self) -> None:
         staged, self._staged_neutral_batches = self._staged_neutral_batches, {}
         for batch in staged.values():
             self._emit_neutral_entries(batch)
@@ -758,14 +1077,23 @@ class DepositOriginTracker:
         pending, self._pending = self._pending, []
         for deposit in pending:
             self._close_pending(deposit)
+        self._recent.clear()
+        self._stream_spans.clear()
+        self._family_chains.clear()
+        self._family_chain_order.clear()
+        self._observed_chains.clear()
+        self._observed_chain_order.clear()
+        self._first_record_boundaries.clear()
+        self._first_record_boundary_order.clear()
 
     def _finalize(self, pending: _PendingDeposit) -> None:
         if pending.finalized:
             return
         pending.finalized = True
         companions = pending.companion_observation is not None
-        # The shared-token chain is stronger than a quantity-only decrement,
-        # which can collide for common quantities in ambient traffic.
+        # The shared-token chain remains stronger than any backward manual
+        # signal, including an exact instance match, because it proves the
+        # worker-specific three-frame relation for this operation.
         if companions:
             origin = ORIGIN_WORKER
         elif pending.matching_decrement:
@@ -781,13 +1109,30 @@ class DepositOriginTracker:
             # fail-closed event exactly when neither independent live signal
             # was present.
             for event in events:
-                self._emit(event)
+                self._queue_emit(event)
             return
 
         evidence: dict[str, object] = {
             "worker_companions": companions,
             "matching_decrement": pending.matching_decrement,
         }
+        if pending.manual_decrement_matches:
+            rank = {"observed": 0, "structural": 1, "heuristic": 2}
+            record_index, selected_manual = min(
+                pending.manual_decrement_matches,
+                key=lambda item: rank[item[1].confidence],
+            )
+            selected_payload = selected_manual.to_dict()
+            selected_payload["record_index"] = record_index
+            evidence["manual_decrement"] = selected_payload
+            if len(pending.manual_decrement_matches) > 1:
+                evidence["manual_decrement_matches"] = tuple(
+                    {
+                        "record_index": candidate_index,
+                        **candidate.to_dict(),
+                    }
+                    for candidate_index, candidate in pending.manual_decrement_matches
+                )
         if pending.companion_observation is not None:
             companion_evidence = pending.companion_observation.to_dict()
             companion_evidence["known_family"] = (
@@ -839,4 +1184,26 @@ class DepositOriginTracker:
                 deposit_origin=origin,
                 extra=extra,
             )
-            self._emit(event)
+            self._queue_emit(event)
+
+    def _queue_emit(self, event: BDOEvent) -> None:
+        """Queue an application event while tracker state is locked."""
+        self._outbox.append(("emit", event))
+
+    def _drain_outbox(self) -> None:
+        """Dispatch callbacks outside the state lock in mutation order."""
+        with self._dispatch_lock:
+            while True:
+                with self._state_lock:
+                    if not self._outbox:
+                        return
+                    kind, payload = self._outbox.popleft()
+                if kind == "emit":
+                    assert isinstance(payload, BDOEvent)
+                    self._emit_callback(payload)
+                else:
+                    assert kind == "observer"
+                    assert isinstance(payload, CompanionObservation)
+                    observer = self._origin_observer
+                    if observer is not None:
+                        observer(payload)

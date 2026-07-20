@@ -20,7 +20,7 @@ from bdo_toolkit import capture as capture_module
 from bdo_toolkit._capture_backend import import_scapy
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
-from bdo_toolkit._specs import load_spec_profile
+from bdo_toolkit._specs import event_specs_from_profile
 from bdo_toolkit.calibration import (
     CalibrationResult,
     DirectionMismatchError,
@@ -309,7 +309,7 @@ def test_post_patch_storage_profile_keeps_context_and_stride(tmp_path):
 
     profile_path = tmp_path / "nested" / "opcodes.json"
     update_profile(result, profile_path, action="inventory-to-storage")
-    loaded = load_spec_profile(profile_path)
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
     decode_spec = next(spec for spec in loaded.specs if spec.opcode == 0x9999)
     assert decode_spec.source_context_offset == 8
     assert decode_spec.repeat_stride == 226
@@ -362,7 +362,7 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
         profile_path,
         backup=False,
     )
-    loaded = load_spec_profile(profile_path, missing_ok=False)
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
     by_label = {spec.label: spec for spec in loaded.specs}
 
     assert by_label["INVENTORY_TRANSFER"].single_record_message_length == 254
@@ -718,7 +718,7 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
 
     profile_path = tmp_path / "opcodes.local"
     update_profile(result, profile_path, backup=False)
-    loaded = load_spec_profile(profile_path, missing_ok=False)
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
     decoded: list = []
     engine = PacketEngine(
         server_ports=(8889,),
@@ -797,6 +797,27 @@ def test_event_collector_loads_profile_once(monkeypatch):
     assert len(calls) == 1
 
 
+def test_event_collector_skips_origin_graph_for_nonstorage_filter():
+    collector = capture_module._EventCollector(
+        server_ports=(8889,),
+        event_filter=EventFilter(event_types={"item_received"}),
+    )
+
+    assert collector._tracker is None
+    collector.flush_stale(1000.0)
+    collector.finalize()
+
+
+def test_origin_observer_keeps_origin_graph_for_nonstorage_filter():
+    collector = capture_module._EventCollector(
+        server_ports=(8889,),
+        event_filter=EventFilter(event_types={"item_received"}),
+        origin_observer=lambda _observation: None,
+    )
+
+    assert collector._tracker is not None
+
+
 def test_empty_profile_update_is_a_true_noop(tmp_path):
     path = tmp_path / "opcodes.json"
     original = '{"sentinel": true}\n'
@@ -832,6 +853,46 @@ def test_profile_dedupe_includes_context_and_inventory_slot(tmp_path):
     update = update_profile([first, second], tmp_path / "opcodes.json")
 
     assert len(update.added) == 2
+
+
+def test_runtime_profile_preserves_distinct_same_opcode_layouts(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    first = MessageSpec(
+        "STORAGE_ITEM_DELTA",
+        0x126D,
+        257,
+        item_id_offset=36,
+        quantity_added_offset=40,
+        context_offset=27,
+        destination_instance_offset=71,
+        repeat_stride=222,
+    )
+    second = MessageSpec(
+        "STORAGE_ITEM_DELTA",
+        0x126D,
+        260,
+        item_id_offset=36,
+        quantity_added_offset=40,
+        context_offset=27,
+        destination_instance_offset=71,
+        repeat_stride=225,
+    )
+
+    update_profile([first, second], profile_path, backup=False)
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+
+    assert len(loaded.specs) == 2
+    assert {
+        (
+            spec.min_message_length,
+            spec.single_record_message_length,
+            spec.repeat_stride,
+        )
+        for spec in loaded.specs
+    } == {
+        (257, 257, 222),
+        (260, 260, 225),
+    }
 
 
 def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
@@ -937,6 +998,9 @@ def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
 
         def __exit__(self, exc_type, exc_value, traceback):
             state["exited"] = True
+
+        def raise_if_failed(self):
+            return None
 
         def stop(self):
             state["stopped"] = True

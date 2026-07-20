@@ -1,21 +1,36 @@
 {
   "calibration_item_id": 7003,
+  "origin_companion_families": [
+    {
+      "companion_lengths": [
+        64,
+        30
+      ],
+      "companion_opcodes": [
+        "0x1A59",
+        "0x155E"
+      ],
+      "delta_opcode": "0x126D",
+      "detection": "shared-token-chain-v1",
+      "observations": 114,
+      "promoted_at": "2026-07-19T23:38:03Z"
+    }
+  ],
   "profile_active": true,
   "specs": {
     "INVENTORY_TRANSFER": [
       {
-        "confidence": "calibrated-potato-medium",
-        "context_offset": 23,
+        "confidence": "calibrated-high",
+        "context_offset": 27,
         "event": "INVENTORY_TRANSFER",
-        "item_id_offset": 33,
-        "item_instance_offset": 68,
-        "length": 255,
-        "observed_at": "2026-07-06T15:50:20",
-        "opcode": "0x0F16",
-        "quantity_offset": 37,
-        "repeat_stride": 228,
-        "score": 0.9,
-        "source": "calibrate-potato storage-to-inventory"
+        "item_id_offset": 31,
+        "item_instance_offset": 66,
+        "length": 254,
+        "observed_at": "2026-07-17T23:26:49Z",
+        "opcode": "0x194A",
+        "quantity_offset": 35,
+        "score": 1.0,
+        "source": "calibrate storage-to-inventory item_id=7003 qty=5"
       }
     ],
     "LOOT_PREVIEW": [
@@ -34,60 +49,58 @@
     ],
     "SOURCE_CONTAINER_DECREMENT": [
       {
-        "confidence": "calibrated-potato-medium",
-        "context_offset": 7,
+        "confidence": "calibrated-medium",
+        "context_offset": 13,
         "event": "SOURCE_CONTAINER_DECREMENT",
-        "length": 40,
-        "observed_at": "2026-07-06T15:50:20",
-        "opcode": "0x13A5",
-        "quantity_removed_offset": 32,
+        "length": 42,
+        "observed_at": "2026-07-17T23:26:38Z",
+        "opcode": "0x17E8",
+        "quantity_removed_offset": 17,
         "score": 0.86,
-        "source": "calibrate-potato storage-to-inventory",
-        "source_instance_offset": 23
+        "source": "calibrate storage-to-inventory item_id=7003 qty=5",
+        "source_instance_offset": 5
       }
     ],
     "SOURCE_ITEM_REFERENCE": [
       {
-        "confidence": "calibrated-potato-medium",
+        "confidence": "calibrated-medium",
         "event": "SOURCE_ITEM_REFERENCE",
-        "item_id_offset": 10,
-        "length": 24,
-        "observed_at": "2026-07-02T11:51:05",
-        "opcode": "0x0C3B",
+        "item_id_offset": 9,
+        "length": 23,
+        "observed_at": "2026-07-17T23:26:48Z",
+        "opcode": "0x0F63",
         "score": 0.82,
-        "source": "calibrate-potato inventory-to-storage qty=3"
+        "source": "calibrate inventory-to-storage item_id=7003 qty=5"
       }
     ],
     "SOURCE_STACK_DECREMENT": [
       {
-        "confidence": "calibrated-potato-medium",
+        "confidence": "calibrated-medium",
         "event": "SOURCE_STACK_DECREMENT",
-        "length": 52,
-        "observed_at": "2026-07-02T11:51:05",
-        "opcode": "0x1A32",
-        "quantity_removed_offset": 42,
+        "length": 47,
+        "observed_at": "2026-07-17T23:26:48Z",
+        "opcode": "0x11AD",
+        "quantity_removed_offset": 27,
         "score": 0.88,
-        "source": "calibrate-potato inventory-to-storage qty=3",
-        "source_instance_offset": 34
+        "source": "calibrate inventory-to-storage item_id=7003 qty=5",
+        "source_instance_offset": 35
       }
     ],
     "STORAGE_ITEM_DELTA": [
       {
-        "confidence": "calibrated-potato-high",
-        "context_offset": 8,
-        "destination_instance_offset": 72,
+        "confidence": "calibrated-high",
+        "destination_instance_offset": 71,
         "event": "STORAGE_ITEM_DELTA",
-        "item_id_offset": 37,
-        "length": 261,
-        "observed_at": "2026-07-02T11:51:05",
-        "opcode": "0x0E6A",
-        "quantity_added_offset": 41,
-        "repeat_stride": 226,
+        "item_id_offset": 36,
+        "length": 257,
+        "observed_at": "2026-07-17T23:26:48Z",
+        "opcode": "0x126D",
+        "quantity_added_offset": 40,
         "score": 1.0,
-        "source": "calibrate-potato inventory-to-storage qty=3"
+        "source": "calibrate inventory-to-storage item_id=7003 qty=5"
       }
     ]
   },
-  "updated_at": "2026-07-06T15:50:22",
+  "updated_at": "2026-07-19T23:38:03Z",
   "version": 1
 }

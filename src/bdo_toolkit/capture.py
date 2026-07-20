@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import math
 import time
 from pathlib import Path
 from queue import Empty, Full, Queue
-from threading import Event, Lock, RLock
+from threading import Event, Lock, RLock, Thread, Timer, current_thread
 from typing import Callable, Iterator, Optional
 
 from ._capture_backend import (
@@ -16,7 +17,11 @@ from ._capture_backend import (
     validate_server_ports,
 )
 from ._capture_options import LiveCaptureOptions
-from ._capture_runtime import LivePacketCapture
+from ._capture_runtime import (
+    CaptureEndpoint,
+    CaptureStats,
+    LivePacketCapture,
+)
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
@@ -36,6 +41,71 @@ from .profiles import (
 )
 
 
+_PACKET_WORKER_STOP = object()
+
+
+class CaptureIntegrityError(RuntimeError):
+    """Live acquisition lost data before the decoder could inspect it."""
+
+
+@dataclass(frozen=True)
+class LiveCaptureHealth:
+    """Bounded-queue, TCP-reassembly, and native-capture diagnostics.
+
+    A non-clean result means the event stream may be incomplete.  Queue
+    overflow is fail-closed: the session records :class:`CaptureIntegrityError`
+    and requests shutdown instead of silently continuing with missing packets.
+    """
+
+    packets_accepted: int = 0
+    packet_queue_peak: int = 0
+    packet_queue_overflows: int = 0
+    event_queue_peak: int = 0
+    tcp_gap_resets: int = 0
+    flow_state_evictions: int = 0
+    pcap_received: Optional[int] = None
+    pcap_dropped: Optional[int] = None
+    pcap_interface_dropped: Optional[int] = None
+    capture_buffer_bytes: Optional[int] = None
+    capture_buffer_fallback: bool = False
+
+    @property
+    def capture_is_clean(self) -> bool:
+        """Whether known acquisition-loss indicators remained clear."""
+
+        return (
+            self.packet_queue_overflows == 0
+            and self.tcp_gap_resets == 0
+            and self.flow_state_evictions == 0
+            and self.pcap_dropped in (None, 0)
+            and self.pcap_interface_dropped in (None, 0)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-ready diagnostic mapping."""
+
+        result: dict[str, object] = {
+            "packets_accepted": self.packets_accepted,
+            "packet_queue_peak": self.packet_queue_peak,
+            "packet_queue_overflows": self.packet_queue_overflows,
+            "event_queue_peak": self.event_queue_peak,
+            "tcp_gap_resets": self.tcp_gap_resets,
+            "flow_state_evictions": self.flow_state_evictions,
+            "capture_buffer_fallback": self.capture_buffer_fallback,
+            "capture_is_clean": self.capture_is_clean,
+        }
+        optional = {
+            "pcap_received": self.pcap_received,
+            "pcap_dropped": self.pcap_dropped,
+            "pcap_interface_dropped": self.pcap_interface_dropped,
+            "capture_buffer_bytes": self.capture_buffer_bytes,
+        }
+        result.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
+        return result
+
+
 def _load_selected_profile(path: Path) -> OpcodeProfile:
     if not path.is_file():
         raise FileNotFoundError(f"Opcode profile does not exist: {path}")
@@ -51,12 +121,19 @@ def _load_selected_profile(path: Path) -> OpcodeProfile:
 def _decrement_specs(
     profile: OpcodeProfile,
 ) -> tuple[DecrementSpec, ...]:
-    """Position-exact source-stack-decrement shapes from the active profile."""
+    """Position-exact source-stack-decrement shapes from the active profile.
+
+    Missing optional geometry deliberately remains a lower-confidence
+    quantity-only shape. Malformed declared geometry is different: skip that
+    entry instead of silently degrading it to the collision-prone heuristic.
+    """
     specs: list[DecrementSpec] = []
     for entry in profile.specs.get("SOURCE_STACK_DECREMENT", []):
         opcode = _parse_opcode(entry.get("opcode"))
         length = entry.get("length")
         offset = entry.get("quantity_removed_offset")
+        source_instance_offset = entry.get("source_instance_offset")
+        repeat_stride = entry.get("repeat_stride")
         if (
             opcode is not None
             and isinstance(length, int)
@@ -67,7 +144,39 @@ def _decrement_specs(
             and offset >= 0
             and offset + 4 <= length
         ):
-            specs.append(DecrementSpec(opcode, length, offset))
+            if source_instance_offset is not None and not (
+                isinstance(source_instance_offset, int)
+                and not isinstance(source_instance_offset, bool)
+                and source_instance_offset >= 0
+                and source_instance_offset + 8 <= length
+            ):
+                continue
+            if repeat_stride is not None and not (
+                isinstance(repeat_stride, int)
+                and not isinstance(repeat_stride, bool)
+                and repeat_stride > 0
+            ):
+                continue
+            if repeat_stride is not None:
+                prefix_length = length - repeat_stride
+                if (
+                    prefix_length < 5
+                    or offset < prefix_length
+                    or (
+                        source_instance_offset is not None
+                        and source_instance_offset < prefix_length
+                    )
+                ):
+                    continue
+            specs.append(
+                DecrementSpec(
+                    opcode,
+                    length,
+                    offset,
+                    source_instance_offset=source_instance_offset,
+                    repeat_stride=repeat_stride,
+                )
+            )
     return tuple(specs)
 
 
@@ -75,6 +184,17 @@ def _origin_companion_families(
     profile: OpcodeProfile,
 ) -> tuple[OriginCompanionFamily, ...]:
     return profile.origin_companion_families
+
+
+def _needs_origin_tracking(
+    event_filter: Optional[EventFilter],
+    origin_observer: Optional[Callable[[CompanionObservation], object]],
+) -> bool:
+    if origin_observer is not None or event_filter is None:
+        return True
+    return event_filter.event_types is None or bool(
+        event_filter.event_types & {"storage_delta", "storage_record"}
+    )
 
 
 class _EventCollector:
@@ -109,28 +229,35 @@ class _EventCollector:
         self.event_filter = event_filter
         self.on_event = on_event
         self.profile_source = f"{loaded_specs.source} active profile"
-        self._tracker = DepositOriginTracker(
-            decrement_specs=_decrement_specs(profile),
-            emit=self._deliver,
-            origin_observer=origin_observer,
-            known_companion_families=_origin_companion_families(profile),
-            storage_delta_opcodes=(
-                spec.opcode
-                for spec in loaded_specs.specs
-                if spec.label == "INVENTORY_TO_STORAGE"
-            ),
-        )
+        self._tracker: Optional[DepositOriginTracker] = None
+        if _needs_origin_tracking(event_filter, origin_observer):
+            self._tracker = DepositOriginTracker(
+                decrement_specs=_decrement_specs(profile),
+                emit=self._deliver,
+                origin_observer=origin_observer,
+                known_companion_families=_origin_companion_families(profile),
+                storage_delta_opcodes=(
+                    spec.opcode
+                    for spec in loaded_specs.specs
+                    if spec.label == "INVENTORY_TO_STORAGE"
+                ),
+            )
+        tracker = self._tracker
         self.engine = PacketEngine(
             server_ports=server_ports,
             event_specs=loaded_specs.specs,
             on_event=self._handle_record,
-            frame_observer=self._tracker.observe_frame,
-            stream_observer=self._tracker.observe_stream,
+            frame_observer=(tracker.observe_frame if tracker is not None else None),
+            stream_observer=(tracker.observe_stream if tracker is not None else None),
+            flow_close_observer=(tracker.close_flow if tracker is not None else None),
         )
 
     def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
         event = toolkit_event_from_record(record)
-        if event.event_type in {"storage_delta", "storage_record"}:
+        if (
+            self._tracker is not None
+            and event.event_type in {"storage_delta", "storage_record"}
+        ):
             # Filtering happens at delivery, AFTER classification, so filters
             # on event_type/deposit_origin see any evidence-based promotion and
             # the final origin verdict.
@@ -152,10 +279,12 @@ class _EventCollector:
             yield self._events.popleft()
 
     def flush_stale(self, now: float) -> None:
-        self._tracker.flush_stale(now)
+        if self._tracker is not None:
+            self._tracker.flush_stale(now)
 
     def finalize(self) -> None:
-        self._tracker.finalize_all()
+        if self._tracker is not None:
+            self._tracker.finalize_all()
 
 
 def replay_pcap(
@@ -228,9 +357,13 @@ class LiveCaptureSession:
         self._queue: Queue[BDOEvent] = Queue(
             maxsize=resolved_live_options.event_queue_size
         )
+        self._packet_queue: Queue[object] = Queue(
+            maxsize=resolved_live_options.packet_queue_size
+        )
         self._tail_events: deque[BDOEvent] = deque()
         self._tail_lock = Lock()
         self._delivery_lock = RLock()
+        self._decoder_lock = Lock()
         self._state_lock = Lock()
         self._cleanup_lock = Lock()
         self._stop_requested = Event()
@@ -239,8 +372,16 @@ class LiveCaptureSession:
         self._started = False
         self._capture: Optional[LivePacketCapture] = None
         self._collector: Optional[_EventCollector] = None
+        self._packet_handler: Optional[Callable[[object], None]] = None
+        self._packet_worker: Optional[Thread] = None
+        self._stop_monitor: Optional[Thread] = None
         self._error: Optional[BaseException] = None
         self._stop_reason: Optional[str] = None
+        self._capture_stats = CaptureStats()
+        self._packets_accepted = 0
+        self._packet_queue_peak = 0
+        self._packet_queue_overflows = 0
+        self._event_queue_peak = 0
 
     @property
     def running(self) -> bool:
@@ -268,8 +409,49 @@ class LiveCaptureSession:
         with self._state_lock:
             return self._error
 
+    @property
+    def endpoint(self) -> Optional[CaptureEndpoint]:
+        """Resolved interface, local address, and packet filter after start."""
+
+        capture = self._capture
+        return capture.endpoint if capture is not None else None
+
+    @property
+    def health(self) -> LiveCaptureHealth:
+        """Return a stable snapshot of live-capture integrity diagnostics."""
+
+        capture = self._capture
+        stats = self._capture_stats
+        if capture is not None and not capture.stopped:
+            # Reading native counters is best-effort and must never turn a
+            # diagnostic property into a capture failure.
+            try:
+                stats = capture.snapshot_stats()
+            except BaseException:
+                stats = capture.stats
+        collector = self._collector
+        engine = collector.engine if collector is not None else None
+        with self._state_lock:
+            return LiveCaptureHealth(
+                packets_accepted=self._packets_accepted,
+                packet_queue_peak=self._packet_queue_peak,
+                packet_queue_overflows=self._packet_queue_overflows,
+                event_queue_peak=self._event_queue_peak,
+                tcp_gap_resets=int(getattr(engine, "tcp_gap_resets", 0)),
+                flow_state_evictions=int(
+                    getattr(engine, "flow_state_evictions", 0)
+                ),
+                pcap_received=stats.received,
+                pcap_dropped=stats.dropped,
+                pcap_interface_dropped=stats.interface_dropped,
+                capture_buffer_bytes=stats.capture_buffer_bytes,
+                capture_buffer_fallback=(
+                    capture is not None and capture.buffer_error is not None
+                ),
+            )
+
     def start(self) -> None:
-        """Open the capture handle, then process packets in the background."""
+        """Open capture and hand packets to a bounded decoder worker."""
         with self._cleanup_lock:
             if self._started:
                 raise RuntimeError("live capture session was already started")
@@ -282,32 +464,45 @@ class LiveCaptureSession:
             )
 
             packet_handler = make_packet_handler(collector.engine)
-
-            def handle_packet(packet: object) -> None:
-                try:
-                    packet_handler(packet)
-                except BaseException as exc:
-                    self._record_error(exc)
-                    self._stop_requested.set()
-                    # Scapy catches callback exceptions and closes the failed
-                    # capture socket. Preserve that behavior while retaining
-                    # the exception for the public consumer.
-                    raise
-
             live_capture = LivePacketCapture(
                 capture_options=self._live_options,
-                on_packet=handle_packet,
+                # This callback deliberately performs only one non-blocking
+                # queue handoff. Protocol decode and event backpressure live
+                # on the worker below, not Scapy's native capture thread.
+                on_packet=self._enqueue_packet,
+            )
+            worker = Thread(
+                target=self._run_packet_worker,
+                name="bdo-toolkit-items",
+                daemon=True,
             )
             self._collector = collector
             self._capture = live_capture
+            self._packet_handler = packet_handler
+            self._packet_worker = worker
             self._started = True
+            worker.start()
             try:
                 live_capture.start()
             except BaseException:
+                self._stop_requested.set()
+                self._signal_packet_worker_stop()
+                worker.join(timeout=2.0)
                 self._collector = None
                 self._capture = None
+                self._packet_handler = None
+                self._packet_worker = None
                 self._started = False
+                self._stop_requested.clear()
                 raise
+
+            monitor = Thread(
+                target=self._monitor_stop_request,
+                name="bdo-toolkit-items-stop",
+                daemon=True,
+            )
+            self._stop_monitor = monitor
+            monitor.start()
 
     def stop(self) -> None:
         """Stop capture and finalize queued events; safe from a control thread."""
@@ -385,6 +580,112 @@ class LiveCaptureSession:
             elif self._stopped.is_set():
                 return
 
+    def _enqueue_packet(self, packet: object) -> None:
+        """Perform the native-callback handoff without blocking Scapy."""
+
+        if self._stop_requested.is_set():
+            return
+        try:
+            self._packet_queue.put_nowait(packet)
+        except Full:
+            with self._state_lock:
+                self._packet_queue_overflows += 1
+            self._record_error(
+                CaptureIntegrityError(
+                    "live packet queue overflowed; the event stream may be incomplete"
+                )
+            )
+            self._stop_requested.set()
+            return
+        depth = self._packet_queue.qsize()
+        with self._state_lock:
+            self._packets_accepted += 1
+            self._packet_queue_peak = max(self._packet_queue_peak, depth)
+
+    def _run_packet_worker(self) -> None:
+        """Decode accepted packets in FIFO order away from capture callback."""
+
+        decode_enabled = True
+        while True:
+            packet = self._packet_queue.get()
+            if packet is _PACKET_WORKER_STOP:
+                return
+            if not decode_enabled:
+                # After decoder state fails, retain deterministic shutdown by
+                # draining accepted packets without invoking a corrupt decoder.
+                continue
+            handler = self._packet_handler
+            if handler is None:
+                self._record_error(RuntimeError("live packet decoder was unavailable"))
+                self._stop_requested.set()
+                decode_enabled = False
+                continue
+            try:
+                with self._decoder_lock:
+                    handler(packet)
+            except BaseException as exc:
+                self._record_error(exc)
+                self._stop_requested.set()
+                decode_enabled = False
+
+    def _monitor_stop_request(self) -> None:
+        """Service idle state and stop failures without an active consumer."""
+
+        while not self._stop_requested.wait(self._POLL_INTERVAL_SECONDS):
+            capture = self._capture
+            capture_error = capture.error if capture is not None else None
+            if isinstance(capture_error, BaseException):
+                self._record_error(capture_error)
+                self._stop_requested.set()
+                break
+            if capture is not None and not capture.running:
+                self._stop_requested.set()
+                break
+            self._service_engine_clock()
+        if not self._stopped.is_set():
+            capture = self._capture
+            capture_error = capture.error if capture is not None else None
+            if isinstance(capture_error, BaseException):
+                self._record_error(capture_error)
+            reason = (
+                "error"
+                if self.error is not None
+                else "requested"
+                if capture is None or capture.running
+                else "capture-ended"
+            )
+            self._finish_stop(reason)
+
+    def _service_engine_clock(self) -> None:
+        collector = self._collector
+        service_gaps = (
+            getattr(collector.engine, "service_gaps", None)
+            if collector is not None
+            else None
+        )
+        if service_gaps is None:
+            return
+        try:
+            with self._decoder_lock:
+                service_gaps(time.time())
+        except BaseException as exc:
+            self._record_error(exc)
+            self._stop_requested.set()
+
+    def _signal_packet_worker_stop(self) -> None:
+        worker = self._packet_worker
+        if worker is None:
+            return
+        while worker.is_alive():
+            try:
+                self._packet_queue.put(
+                    _PACKET_WORKER_STOP,
+                    timeout=self._POLL_INTERVAL_SECONDS,
+                )
+                return
+            except Full:
+                continue
+
     def _enqueue(self, event: BDOEvent) -> None:
         # During shutdown the sniffer is joined before the consumer necessarily
         # drains its bounded queue. Route finalized events to a short-lived
@@ -397,6 +698,12 @@ class LiveCaptureSession:
             while not self._stop_requested.is_set():
                 try:
                     self._queue.put(event, timeout=self._POLL_INTERVAL_SECONDS)
+                    depth = self._queue.qsize()
+                    with self._state_lock:
+                        self._event_queue_peak = max(
+                            self._event_queue_peak,
+                            depth,
+                        )
                     return
                 except Full:
                     if self._finalizing.is_set():
@@ -444,21 +751,37 @@ class LiveCaptureSession:
 
             if capture is not None and not capture.stopped:
                 try:
-                    capture.stop()
+                    self._capture_stats = capture.stop()
                 except BaseException as exc:
                     self._record_error(exc)
                 capture_error = capture.error
                 if isinstance(capture_error, BaseException):
                     self._record_error(capture_error)
+            elif capture is not None:
+                self._capture_stats = capture.stats
+
+            # Capture is joined before the sentinel is queued, so every packet
+            # accepted by the callback appears ahead of it in FIFO order.
+            self._signal_packet_worker_stop()
+            worker = self._packet_worker
+            if worker is not None and worker is not current_thread():
+                worker.join(timeout=5.0)
+                if worker.is_alive():
+                    self._record_error(
+                        RuntimeError("live packet decoder did not stop cleanly")
+                    )
             if collector is not None:
                 try:
-                    collector.engine.finish()
+                    with self._decoder_lock:
+                        collector.engine.finish()
                 except BaseException as exc:
                     self._record_error(exc)
                 try:
                     collector.finalize()
                 except BaseException as exc:
                     self._record_error(exc)
+
+            self._packet_handler = None
 
             with self._state_lock:
                 self._stop_reason = "error" if self._error is not None else reason
@@ -507,6 +830,19 @@ def capture_live(
     )
     session.start()
     started_at = time.monotonic()
+    deadline_timer: Optional[Timer] = None
+    if capture_seconds is not None:
+        # The deadline belongs to capture ownership, not generator progress.
+        # It therefore fires even while the consumer is suspended after a
+        # yielded event.
+        deadline_timer = Timer(
+            capture_seconds,
+            session._finish_stop,
+            args=("timeout",),
+        )
+        deadline_timer.name = "bdo-toolkit-items-deadline"
+        deadline_timer.daemon = True
+        deadline_timer.start()
     try:
         while True:
             if capture_seconds is None:
@@ -528,6 +864,8 @@ def capture_live(
             elif session.stopped:
                 break
     finally:
+        if deadline_timer is not None:
+            deadline_timer.cancel()
         # No yields during generator close. The session finalizes pending TCP
         # and origin state; a normal stop path drains it in the loop above.
         if not session.stopped:

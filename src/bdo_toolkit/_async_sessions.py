@@ -15,15 +15,23 @@ from pathlib import Path
 from types import TracebackType
 from typing import AsyncIterator, Callable, Optional, TypeVar
 
+from ._capture_runtime import CaptureEndpoint
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
-from .calibration import CalibrationResult, CalibrationSession
-from .capture import LiveCaptureSession
+from .calibration import (
+    DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+    DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+    CalibrationResult,
+    CalibrationRetention,
+    CalibrationSession,
+)
+from .capture import LiveCaptureHealth, LiveCaptureSession
 from .events import BDOEvent
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
 
 
 T = TypeVar("T")
+_ASYNC_EVENT_BATCH_SIZE = 64
 
 
 async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
@@ -40,6 +48,26 @@ async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
 
 def _thread_task(function: Callable[[], T]) -> asyncio.Task[T]:
     return asyncio.create_task(asyncio.to_thread(function))
+
+
+def _poll_event_batch(
+    session: LiveCaptureSession,
+    max_items: int = _ASYNC_EVENT_BATCH_SIZE,
+    *,
+    block: bool = True,
+) -> tuple[BDOEvent, ...]:
+    """Block for one event, then drain an immediately available small batch."""
+
+    first = session.poll(timeout=None if block else 0)
+    if first is None:
+        return ()
+    events = [first]
+    while len(events) < max_items:
+        event = session.poll(timeout=0)
+        if event is None:
+            break
+        events.append(event)
+    return tuple(events)
 
 
 class AsyncLiveCaptureSession:
@@ -73,6 +101,7 @@ class AsyncLiveCaptureSession:
         self._executor_closed = False
         self._stop_future: asyncio.Future[None] | None = None
         self._poll_active = False
+        self._start_attempted = False
         self._start_complete = False
 
     @property
@@ -90,6 +119,14 @@ class AsyncLiveCaptureSession:
     @property
     def error(self) -> Optional[BaseException]:
         return self._session.error
+
+    @property
+    def endpoint(self) -> Optional[CaptureEndpoint]:
+        return self._session.endpoint
+
+    @property
+    def health(self) -> LiveCaptureHealth:
+        return self._session.health
 
     def raise_if_failed(self) -> None:
         """Re-raise a retained background capture failure."""
@@ -116,6 +153,12 @@ class AsyncLiveCaptureSession:
     async def start(self) -> None:
         """Start capture without blocking the asyncio event loop."""
 
+        # Reject repeat/concurrent starts before submitting work.  In
+        # particular, a rejected second start must not close the executor that
+        # still owns a running first session and its eventual cleanup.
+        if self._start_attempted:
+            raise RuntimeError("async live capture session was already started")
+        self._start_attempted = True
         start_future = self._submit(self._session.start)
         try:
             await asyncio.shield(start_future)
@@ -220,13 +263,56 @@ class AsyncLiveCaptureSession:
             self._poll_active = False
 
     async def events(self) -> AsyncIterator[BDOEvent]:
-        """Yield events until capture stops and finalized events are drained."""
+        """Yield events in order until capture stops and final events drain.
+
+        The blocking bridge fetches up to 64 immediately available events per
+        executor submission. Individual :meth:`poll` calls retain their
+        one-event semantics for UI and timeout-driven consumers.
+        """
 
         while True:
-            event = await self.poll()
-            if event is None:
+            batch = await self._poll_batch()
+            if not batch:
                 return
-            yield event
+            for event in batch:
+                yield event
+
+    async def _poll_batch(self) -> tuple[BDOEvent, ...]:
+        if self._poll_active:
+            raise RuntimeError("async live capture session supports one consumer")
+        if not self._start_complete and not self._session.stopped:
+            raise RuntimeError("live capture session was not started")
+
+        self._poll_active = True
+        try:
+            if self._session.stopped:
+                return _poll_event_batch(self._session, block=False)
+
+            poll_future = self._submit(partial(_poll_event_batch, self._session))
+            try:
+                events = await asyncio.shield(poll_future)
+            except asyncio.CancelledError:
+                try:
+                    stop_future = self._ensure_stop_future()
+                    await _wait_ignoring_cancellation(stop_future)
+                except BaseException:
+                    pass
+                try:
+                    await _wait_ignoring_cancellation(poll_future)
+                except BaseException:
+                    pass
+                self._shutdown_executor()
+                raise
+            except BaseException:
+                if self._session.stopped:
+                    self._shutdown_executor()
+                raise
+
+            if self._session.stopped:
+                self._shutdown_executor()
+            return events
+        finally:
+            self._poll_active = False
 
     def __aiter__(self) -> AsyncIterator[BDOEvent]:
         return self.events()
@@ -265,6 +351,8 @@ class AsyncCalibrationSession:
         capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
         min_confidence: float = 0.80,
+        max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+        max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
     ) -> None:
         self._session = CalibrationSession(
             item_id=item_id,
@@ -273,6 +361,8 @@ class AsyncCalibrationSession:
             capture_options=capture_options,
             context_frames=context_frames,
             min_confidence=min_confidence,
+            max_retained_frames=max_retained_frames,
+            max_retained_bytes=max_retained_bytes,
         )
         self._active = False
         self._terminal_action: str | None = None
@@ -287,6 +377,38 @@ class AsyncCalibrationSession:
     @property
     def frames_collected(self) -> int:
         return self._session.frames_collected
+
+    @property
+    def frames_observed(self) -> int:
+        return self._session.frames_observed
+
+    @property
+    def frames_retained(self) -> int:
+        return self._session.frames_retained
+
+    @property
+    def frames_discarded(self) -> int:
+        return self._session.frames_discarded
+
+    @property
+    def bytes_observed(self) -> int:
+        return self._session.bytes_observed
+
+    @property
+    def bytes_retained(self) -> int:
+        return self._session.bytes_retained
+
+    @property
+    def bytes_discarded(self) -> int:
+        return self._session.bytes_discarded
+
+    @property
+    def retention_truncated(self) -> bool:
+        return self._session.retention_truncated
+
+    @property
+    def retention(self) -> CalibrationRetention:
+        return self._session.retention
 
     @property
     def result(self) -> CalibrationResult | None:

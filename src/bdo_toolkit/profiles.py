@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Optional
 
 
@@ -56,8 +58,22 @@ class OpcodeProfile:
     version: Optional[int]
     updated_at: Optional[str]
     calibration_item_id: Optional[int]
-    specs: dict[str, list[dict[str, Any]]]
+    specs: Mapping[str, tuple[Mapping[str, Any], ...]]
     origin_companion_families: tuple[OriginCompanionFamily, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "specs",
+            MappingProxyType(
+                {
+                    event: tuple(
+                        _freeze_profile_mapping(entry) for entry in entries
+                    )
+                    for event, entries in self.specs.items()
+                }
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,7 +82,10 @@ class OpcodeProfile:
             "version": self.version,
             "updated_at": self.updated_at,
             "calibration_item_id": self.calibration_item_id,
-            "specs": self.specs,
+            "specs": {
+                event: [_thaw_profile_value(entry) for entry in entries]
+                for event, entries in self.specs.items()
+            },
             "origin_companion_families": [
                 family.to_dict() for family in self.origin_companion_families
             ],
@@ -152,15 +171,45 @@ def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
         _origin_companion_family(profile_path, index, entry)
         for index, entry in enumerate(raw_families)
     )
+    immutable_specs = MappingProxyType(
+        {
+            event: tuple(_freeze_profile_mapping(entry) for entry in entries)
+            for event, entries in normalized_specs.items()
+        }
+    )
     return OpcodeProfile(
         path=profile_path,
         active=active_value,
         version=version_value,
         updated_at=updated_at_value,
         calibration_item_id=calibration_item_value,
-        specs=normalized_specs,
+        specs=immutable_specs,
         origin_companion_families=families,
     )
+
+
+def _freeze_profile_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _freeze_profile_value(item) for key, item in value.items()}
+    )
+
+
+def _freeze_profile_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _freeze_profile_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_profile_value(item) for item in value)
+    return value
+
+
+def _thaw_profile_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _thaw_profile_value(item) for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_thaw_profile_value(item) for item in value]
+    return value
 
 
 def _profile_opcode(value: object, location: str) -> int:

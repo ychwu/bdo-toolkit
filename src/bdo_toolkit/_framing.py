@@ -18,7 +18,6 @@ from ._protocol import (
     storage_location,
 )
 
-
 _TRANSFER_RECORD_MARKER = b"\x00" * 4 + b"\xff" * 8
 _TRANSFER_RECORD_MARKER_DELTA = 8
 _STORAGE_RECORD_COUNT_DELTA = 20
@@ -54,9 +53,7 @@ def _looks_like_transfer_record(
         return False
     item_id = int.from_bytes(message[item_offset : item_offset + 4], "little")
     quantity = int.from_bytes(message[item_offset + 4 : item_offset + 8], "little")
-    instance = message[
-        item_offset + instance_delta : item_offset + instance_delta + 8
-    ]
+    instance = message[item_offset + instance_delta : item_offset + instance_delta + 8]
     return (
         0 < item_id <= MAX_PLAUSIBLE_ITEM_ID
         and quantity > 0
@@ -86,9 +83,7 @@ def _has_plausible_transfer_record_values(
         return False
 
     item_id = int.from_bytes(message[item_offset : item_offset + 4], "little")
-    quantity = int.from_bytes(
-        message[quantity_offset : quantity_offset + 4], "little"
-    )
+    quantity = int.from_bytes(message[quantity_offset : quantity_offset + 4], "little")
     instance = message[instance_offset : instance_offset + 8]
     return (
         0 < item_id <= MAX_PLAUSIBLE_ITEM_ID
@@ -206,11 +201,7 @@ def _current_storage_context_candidate(
 ) -> Optional[bytes]:
     """Return an explicit or safely positioned current-wrapper destination."""
     if source_context_candidate is not None:
-        return (
-            source_context_candidate
-            if len(source_context_candidate) == 4
-            else None
-        )
+        return source_context_candidate if len(source_context_candidate) == 4 else None
     if spec.source_context_offset is not None:
         return None
     context_offset = spec.item_offset - 9
@@ -227,9 +218,7 @@ def _has_known_storage_operation_signature(
     if fields is None:
         return False
     mode, token = fields
-    return (mode == 2 and token == b"\x00" * 8) or (
-        mode == 1 and token != b"\x00" * 8
-    )
+    return (mode == 2 and token == b"\x00" * 8) or (mode == 1 and token != b"\x00" * 8)
 
 
 def _declared_storage_record_deltas(
@@ -257,9 +246,10 @@ def _declared_storage_record_deltas(
         if context_candidate is not None
         else None
     )
-    strict_declared_layout = _has_known_storage_operation_signature(
-        spec, message
-    ) or storage_location(inferred_storage_id) is not None
+    strict_declared_layout = (
+        _has_known_storage_operation_signature(spec, message)
+        or storage_location(inferred_storage_id) is not None
+    )
 
     def invalid_geometry() -> Optional[list[int]]:
         # Once the current wrapper layout is identified, a contradictory
@@ -275,9 +265,7 @@ def _declared_storage_record_deltas(
     count_offset = spec.item_offset - _STORAGE_RECORD_COUNT_DELTA
     if count_offset < 5 or count_offset + 2 > len(message):
         return None
-    declared_count = int.from_bytes(
-        message[count_offset : count_offset + 2], "little"
-    )
+    declared_count = int.from_bytes(message[count_offset : count_offset + 2], "little")
     if declared_count <= 0:
         return invalid_geometry()
 
@@ -331,10 +319,10 @@ def _storage_wrapper_metadata(
     spec: EventSpec,
     message: bytes,
     source_context_candidate: Optional[bytes],
+    declared_deltas: Optional[list[int]],
 ) -> tuple[Optional[int], Optional[str], Optional[bytes]]:
     """Decode metadata only for the observed destination-key wrapper layout."""
     fields = _storage_operation_fields(spec, message)
-    declared_deltas = _declared_storage_record_deltas(spec, message)
     if fields is None or not declared_deltas:
         return None, None, None
     context_candidate = _current_storage_context_candidate(
@@ -365,6 +353,7 @@ def _storage_wrapper_metadata(
 def _structural_record_deltas(
     spec: EventSpec,
     message: bytes,
+    declared_storage_deltas: Optional[list[int]],
 ) -> Optional[list[int]]:
     """Find every repeated transfer record without trusting a saved stride.
 
@@ -375,9 +364,8 @@ def _structural_record_deltas(
     relative instance offset. The base-length equation guards against
     marker-like bytes elsewhere in the same message.
     """
-    declared_deltas = _declared_storage_record_deltas(spec, message)
-    if declared_deltas is not None:
-        return declared_deltas
+    if declared_storage_deltas is not None:
+        return declared_storage_deltas
 
     instance_offset = _structural_instance_offset(spec)
     if instance_offset is None or not _supports_structural_record_scan(spec):
@@ -436,17 +424,33 @@ def _configured_message_length_matches_spec(
 
 
 class FrameCollectorScanner:
-    """Collect every generic length-framed BDO message, used by calibration."""
+    """Collect generic length-framed BDO messages with midstream recovery.
 
-    def __init__(self, callback: Callable[[BDOFrame], None]) -> None:
+    A live capture can attach in the middle of an established application
+    frame.  In that state the first two bytes are arbitrary payload, not a
+    trustworthy length.  Known target opcodes provide an immediate anchor;
+    opcode-free calibration instead waits for two consecutive complete frame
+    boundaries (or one exact standalone frame) before declaring sync.
+    """
+
+    _MAX_UNSYNCHRONIZED_BUFFER = MAX_TARGET_MESSAGE_LENGTH + 4
+
+    def __init__(
+        self,
+        callback: Callable[[BDOFrame], None],
+        known_opcodes: Iterable[int] = (),
+    ) -> None:
         self._callback = callback
+        self._known_opcodes = frozenset(known_opcodes)
         self._buffer = bytearray()
         self._buffer_start_sequence: Optional[int] = None
         self._frame_index = 0
+        self._synchronized = False
 
     def reset(self) -> None:
         self._buffer.clear()
         self._buffer_start_sequence = None
+        self._synchronized = False
 
     def feed(self, data: bytes, context: PacketContext) -> None:
         if not data:
@@ -461,13 +465,16 @@ class FrameCollectorScanner:
             return
         saved_buffer = self._buffer
         saved_buffer_start_sequence = self._buffer_start_sequence
+        saved_synchronized = self._synchronized
         self._buffer = bytearray(data)
         self._buffer_start_sequence = context.stream_start
+        self._synchronized = False
         try:
             self._scan(context)
         finally:
             self._buffer = saved_buffer
             self._buffer_start_sequence = saved_buffer_start_sequence
+            self._synchronized = saved_synchronized
 
     def _discard_prefix(self, byte_count: int) -> None:
         if byte_count <= 0:
@@ -480,12 +487,26 @@ class FrameCollectorScanner:
 
     def _scan(self, context: PacketContext) -> None:
         while len(self._buffer) >= 5:
+            if not self._synchronized:
+                candidate_start = self._find_synchronization_candidate()
+                if candidate_start is None:
+                    self._bound_unsynchronized_buffer()
+                    return
+                if candidate_start:
+                    self._discard_prefix(candidate_start)
+                self._synchronized = True
+
             message_length = int.from_bytes(self._buffer[0:2], "little")
             if not 5 <= message_length <= MAX_TARGET_MESSAGE_LENGTH:
+                self._synchronized = False
                 self._discard_prefix(1)
                 continue
 
             if message_length > len(self._buffer):
+                # Fragmentation is normal after a boundary has been proven.
+                # Do not reinterpret item bytes inside this incomplete frame
+                # as a later opcode anchor; FlowManager.reset() explicitly
+                # drops synchronization after a real TCP gap.
                 return
 
             message = bytes(self._buffer[:message_length])
@@ -498,6 +519,48 @@ class FrameCollectorScanner:
             self._frame_index += 1
             self._callback(frame)
             self._discard_prefix(message_length)
+
+    def _find_synchronization_candidate(
+        self,
+        *,
+        start_at: int = 0,
+    ) -> Optional[int]:
+        """Return the earliest defensible frame boundary in the buffer."""
+        limit = len(self._buffer) - 4
+        for start in range(start_at, max(start_at, limit)):
+            first_length = int.from_bytes(self._buffer[start : start + 2], "little")
+            if not 5 <= first_length <= MAX_TARGET_MESSAGE_LENGTH:
+                continue
+            first_end = start + first_length
+            if first_end > len(self._buffer):
+                continue
+
+            opcode = int.from_bytes(self._buffer[start + 3 : start + 5], "little")
+            if opcode in self._known_opcodes:
+                return start
+
+            # Preserve exact standalone/single-frame collection when capture
+            # begins at a real boundary.  A candidate found after discarded
+            # prefix bytes still needs stronger evidence.
+            if start == 0 and first_end == len(self._buffer):
+                return start
+
+            if first_end + 5 <= len(self._buffer):
+                second_length = int.from_bytes(
+                    self._buffer[first_end : first_end + 2], "little"
+                )
+                if (
+                    5 <= second_length <= MAX_TARGET_MESSAGE_LENGTH
+                    and first_end + second_length <= len(self._buffer)
+                ):
+                    return start
+        return None
+
+    def _bound_unsynchronized_buffer(self) -> None:
+        """Retain at most one maximum frame plus a split header."""
+        excess = len(self._buffer) - self._MAX_UNSYNCHRONIZED_BUFFER
+        if excess > 0:
+            self._discard_prefix(excess)
 
 
 class TargetMessageScanner:
@@ -549,7 +612,7 @@ class TargetMessageScanner:
 
     def _scan(self, context: PacketContext) -> None:
         while True:
-            complete_candidate: Optional[tuple[int, int, EventSpec]] = None
+            complete_candidates: list[tuple[int, int, EventSpec]] = []
             incomplete_candidate: Optional[tuple[int, int, EventSpec]] = None
 
             # Search all known opcode signatures. A signature begins at header
@@ -581,17 +644,19 @@ class TargetMessageScanner:
                     candidate = (message_start, message_length, spec)
                     if message_start + message_length <= len(self._buffer):
                         if (
-                            complete_candidate is None
-                            or message_start < complete_candidate[0]
+                            not complete_candidates
+                            or message_start < complete_candidates[0][0]
                         ):
-                            complete_candidate = candidate
+                            complete_candidates = [candidate]
+                        elif message_start == complete_candidates[0][0]:
+                            complete_candidates.append(candidate)
                     elif (
                         incomplete_candidate is None
                         or message_start < incomplete_candidate[0]
                     ):
                         incomplete_candidate = candidate
 
-            if complete_candidate is None:
+            if not complete_candidates:
                 if incomplete_candidate is not None:
                     # Retain the incomplete target frame and wait for more TCP
                     # bytes. Bytes before it cannot be part of that frame.
@@ -605,7 +670,19 @@ class TargetMessageScanner:
                         self._discard_prefix(len(self._buffer) - 4)
                 return
 
-            message_start, message_length, spec = complete_candidate
+            # An earlier incomplete frame may contain a later complete-looking
+            # signature in its payload.  Preserve it until its declared bytes
+            # arrive instead of skipping ahead and decoding the nested bytes.
+            if (
+                incomplete_candidate is not None
+                and incomplete_candidate[0] < complete_candidates[0][0]
+            ):
+                message_start = incomplete_candidate[0]
+                if message_start:
+                    self._discard_prefix(message_start)
+                return
+
+            message_start, message_length, _ = complete_candidates[0]
             message_end = message_start + message_length
             message = bytes(self._buffer[message_start:message_end])
             stream_sequence = (
@@ -614,28 +691,36 @@ class TargetMessageScanner:
                 else None
             )
 
-            source_context_candidate = None
-            if spec.source_context_offset is not None:
-                source_context_end = (
-                    spec.source_context_offset + spec.source_context_length
-                )
-                source_context_candidate = bytes(
-                    message[spec.source_context_offset:source_context_end]
-                )
+            valid_decodes: list[list[LootEvent]] = []
+            for _, candidate_length, spec in complete_candidates:
+                source_context_candidate = None
+                if spec.source_context_offset is not None:
+                    source_context_end = (
+                        spec.source_context_offset + spec.source_context_length
+                    )
+                    source_context_candidate = bytes(
+                        message[spec.source_context_offset : source_context_end]
+                    )
 
-            decoded_events = self._decode_events_from_message(
-                spec=spec,
-                message=message,
-                message_length=message_length,
-                source_context_candidate=source_context_candidate,
-                context=context,
-                stream_sequence=stream_sequence,
-            )
-            if decoded_events is None:
+                decoded_events = self._decode_events_from_message(
+                    spec=spec,
+                    message=message,
+                    message_length=candidate_length,
+                    source_context_candidate=source_context_candidate,
+                    context=context,
+                    stream_sequence=stream_sequence,
+                )
+                if decoded_events is not None:
+                    valid_decodes.append(decoded_events)
+
+            # Same-opcode layouts are alternatives, not an order-dependent
+            # fallback list.  Decode only when exactly one layout proves its
+            # geometry; reject both malformed and genuinely ambiguous frames.
+            if len(valid_decodes) != 1:
                 self._discard_prefix(message_start + 1)
                 continue
 
-            for event in decoded_events:
+            for event in valid_decodes[0]:
                 self._callback(event, message)
 
             # Consume through the end of the decoded message and continue in
@@ -665,6 +750,11 @@ class TargetMessageScanner:
             spec.label == "INVENTORY_TRANSFER"
             and source_context_candidate == CHARACTER_LOAD_CONTEXT
         )
+        declared_storage_deltas = (
+            _declared_storage_record_deltas(spec, message)
+            if spec.label == "INVENTORY_TO_STORAGE"
+            else None
+        )
 
         if is_inventory_snapshot:
             # Character-load frames are all-or-nothing.  They may resemble a
@@ -678,7 +768,11 @@ class TargetMessageScanner:
                 return None
             candidate_deltas = snapshot_deltas
         else:
-            structural_deltas = _structural_record_deltas(spec, message)
+            structural_deltas = _structural_record_deltas(
+                spec,
+                message,
+                declared_storage_deltas,
+            )
             if structural_deltas is not None:
                 candidate_deltas = structural_deltas
             else:
@@ -722,11 +816,17 @@ class TargetMessageScanner:
             quantity_offset = spec.quantity_offset + offset_delta
             required_end = max(item_offset + 4, quantity_offset + 4)
             if spec.inventory_slot_offset is not None:
-                required_end = max(required_end, spec.inventory_slot_offset + offset_delta + 1)
+                required_end = max(
+                    required_end, spec.inventory_slot_offset + offset_delta + 1
+                )
             if spec.item_instance_offset is not None:
-                required_end = max(required_end, spec.item_instance_offset + offset_delta + 8)
+                required_end = max(
+                    required_end, spec.item_instance_offset + offset_delta + 8
+                )
             if spec.storage_instance_offset is not None:
-                required_end = max(required_end, spec.storage_instance_offset + offset_delta + 8)
+                required_end = max(
+                    required_end, spec.storage_instance_offset + offset_delta + 8
+                )
             if required_end > len(message):
                 continue
             records.append((offset_delta, item_offset))
@@ -735,6 +835,7 @@ class TargetMessageScanner:
             spec,
             message,
             source_context_candidate,
+            declared_storage_deltas,
         )
         if source_context_candidate is None and inferred_context is not None:
             source_context_candidate = inferred_context
@@ -748,11 +849,7 @@ class TargetMessageScanner:
                 "little",
             )
 
-            if (
-                item_id <= 0
-                or item_id > MAX_PLAUSIBLE_ITEM_ID
-                or quantity <= 0
-            ):
+            if item_id <= 0 or item_id > MAX_PLAUSIBLE_ITEM_ID or quantity <= 0:
                 continue
 
             inventory_slot = (

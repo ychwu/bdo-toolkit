@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Optional
 
 from ._protocol import EventSpec
-from .profiles import OpcodeProfile, ProfileError, load_opcode_profile
+from .profiles import OpcodeProfile, ProfileError
 
 
 @dataclass(frozen=True)
@@ -15,15 +15,6 @@ class LoadedSpecProfile:
     active: bool
     specs: tuple[EventSpec, ...]
     source: str
-
-
-def load_spec_profile(path: Path, *, missing_ok: bool = True) -> LoadedSpecProfile:
-    if not path.exists():
-        if missing_ok:
-            return LoadedSpecProfile(active=False, specs=(), source=str(path))
-        raise FileNotFoundError(f"Opcode profile does not exist: {path}")
-
-    return event_specs_from_profile(load_opcode_profile(path))
 
 
 def event_specs_from_profile(profile: OpcodeProfile) -> LoadedSpecProfile:
@@ -58,7 +49,7 @@ def event_specs_from_profile(profile: OpcodeProfile) -> LoadedSpecProfile:
 
 def _event_spec_from_entry(
     event: str,
-    entry: dict[str, object],
+    entry: Mapping[str, object],
 ) -> Optional[EventSpec]:
     opcode = _parse_opcode(entry.get("opcode"))
     if opcode is None:
@@ -185,19 +176,14 @@ def _minimum_event_length(length: Optional[int], *ends: Optional[int]) -> int:
 
 def _dedupe_event_specs(specs: Iterable[EventSpec]) -> list[EventSpec]:
     output: list[EventSpec] = []
-    seen: set[tuple[object, ...]] = set()
+    # EventSpec is a frozen value object whose fields are all decode-affecting.
+    # Using the complete value as identity preserves same-opcode layouts that
+    # differ in base length, instance offsets, repeat geometry, context width,
+    # or fallback context while still removing literal duplicates.
+    seen: set[EventSpec] = set()
     for spec in specs:
-        key = (
-            spec.label,
-            spec.opcode,
-            spec.item_offset,
-            spec.quantity_offset,
-            spec.inventory_slot_offset,
-            spec.source_context_offset,
-            spec.storage_instance_offset,
-        )
-        if key in seen:
+        if spec in seen:
             continue
-        seen.add(key)
+        seen.add(spec)
         output.append(spec)
     return output

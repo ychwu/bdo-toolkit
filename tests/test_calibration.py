@@ -5,15 +5,18 @@ import json
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
-from bdo_toolkit import PacketCaptureOptions
+from bdo_toolkit import PacketCaptureOptions, load_opcode_profile
 from bdo_toolkit import _capture_backend as capture_backend
+from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit.calibration import (
+    CalibrationResult,
     CalibrationSession,
+    MessageSpec,
     calibrate_pcap,
     reset_profile,
     update_profile,
 )
-from bdo_toolkit._specs import load_spec_profile
+from bdo_toolkit._specs import event_specs_from_profile
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -355,6 +358,110 @@ def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
     assert spec.source_instance_offset == 35
 
 
+def test_multi_stack_decrement_calibration_normalizes_base_and_stride():
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import (
+        _CalibratedItemRecord,
+        _Options,
+        _discover_source_stack_decrement,
+    )
+
+    flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
+
+    def frame(index, opcode, message):
+        message[0:2] = len(message).to_bytes(2, "little")
+        message[3:5] = opcode.to_bytes(2, "little")
+        return BDOFrame(
+            index=index,
+            message=bytes(message),
+            context=PacketContext(1000.0 + index, flow),
+            stream_sequence=index,
+        )
+
+    quantity = 1
+    item_id = 1000306
+    instances = tuple(
+        value.to_bytes(8, "little")
+        for value in (
+            0x008E1BCCCF2C6186,
+            0x008E1BCCCF2C6199,
+            0x008E1BCCCF2C61AE,
+            0x008E1BCCCF2C61CC,
+            0x008E1BCCCF2C61E6,
+        )
+    )
+    decrement_message = bytearray(144)
+    for index, instance in enumerate(instances):
+        delta = index * 23
+        decrement_message[34 + delta : 42 + delta] = instance
+        decrement_message[42 + delta : 46 + delta] = quantity.to_bytes(
+            4, "little"
+        )
+    decrement = frame(0, 0x1A32, decrement_message)
+
+    delta_message = bytearray(1165)
+    delta_message[37:41] = item_id.to_bytes(4, "little")
+    delta_message[41:45] = quantity.to_bytes(4, "little")
+    delta_message[72:80] = instances[0]
+    delta = frame(1, 0x0E6A, delta_message)
+    record = _CalibratedItemRecord(
+        frame=delta,
+        item_offset=37,
+        item_id=item_id,
+        quantity=quantity,
+        instance_offset=72,
+        instance=instances[0],
+        confidence=0.95,
+        reasons=(),
+    )
+
+    spec = _discover_source_stack_decrement(
+        [decrement, delta],
+        record,
+        _Options(item_id, quantity, "auto", 5, 0.80),
+    )
+
+    assert spec is not None
+    assert (spec.opcode, spec.length, spec.repeat_stride) == (0x1A32, 52, 23)
+    assert spec.source_instance_offset == 34
+    assert spec.quantity_removed_offset == 42
+
+
+@requires_fixtures
+def test_multi_only_unstackable_calibration_discovers_decrement_geometry(tmp_path):
+    from bdo_toolkit import replay_pcap
+
+    capture = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    result = calibrate_pcap(
+        capture,
+        item_id=1000306,
+        quantity=1,
+        action="inventory-to-storage",
+    )
+
+    stack = _specs_by_event(result)["SOURCE_STACK_DECREMENT"][0]
+    assert (stack.opcode, stack.length, stack.repeat_stride) == (0x1A32, 52, 23)
+    assert stack.source_instance_offset == 34
+    assert stack.quantity_removed_offset == 42
+
+    profile_path = tmp_path / "opcodes.json"
+    update_profile(
+        result,
+        profile_path,
+        action="inventory-to-storage",
+        backup=False,
+    )
+    events = list(replay_pcap(capture, opcode_profile=profile_path))
+    assert len(events) == 5
+    assert all(event.deposit_origin == "manual" for event in events)
+    assert [
+        event.extra["deposit_origin_evidence"]["manual_decrement"][
+            "record_index"
+        ]
+        for event in events
+    ] == [1, 2, 3, 4, 5]
+
+
 @pytest.mark.parametrize(
     ("layout", "expected_context", "expected_instance", "expected_quantity"),
     [
@@ -514,10 +621,9 @@ def test_update_profile_default_replaces_stale_action_specs(tmp_path):
     )
     update = update_profile(result, profile_path, action="storage-to-inventory")
 
-    assert set(update.replaced_events) == {
-        "INVENTORY_TRANSFER",
-        "SOURCE_CONTAINER_DECREMENT",
-    }
+    # Reporting names only families that actually contained entries. The
+    # newly created container-decrement family was not replaced.
+    assert update.replaced_events == ("INVENTORY_TRANSFER",)
     data = json.loads(profile_path.read_text(encoding="utf-8"))
     assert [entry["opcode"] for entry in data["specs"]["INVENTORY_TRANSFER"]] == [
         "0x0F16"
@@ -527,6 +633,135 @@ def test_update_profile_default_replaces_stale_action_specs(tmp_path):
     ] == ["0x13A5"]
     # Untouched action keeps its entries.
     assert [entry["opcode"] for entry in data["specs"]["LOOT_PREVIEW"]] == ["0x1643"]
+
+
+def _write_inventory_to_storage_profile(path):
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profile_active": True,
+                "specs": {
+                    "LOOT_PREVIEW": [
+                        {
+                            "event": "LOOT_PREVIEW",
+                            "opcode": "0x1643",
+                            "length": 244,
+                            "item_id_offset": 23,
+                            "quantity_offset": 27,
+                        }
+                    ],
+                    "SOURCE_STACK_DECREMENT": [
+                        {
+                            "event": "SOURCE_STACK_DECREMENT",
+                            "opcode": "0x11AD",
+                            "length": 47,
+                            "quantity_removed_offset": 27,
+                        }
+                    ],
+                    "SOURCE_ITEM_REFERENCE": [
+                        {
+                            "event": "SOURCE_ITEM_REFERENCE",
+                            "opcode": "0x0F63",
+                            "length": 23,
+                            "item_id_offset": 9,
+                        }
+                    ],
+                    "STORAGE_ITEM_DELTA": [
+                        {
+                            "event": "STORAGE_ITEM_DELTA",
+                            "opcode": "0x126D",
+                            "length": 257,
+                            "item_id_offset": 36,
+                            "quantity_added_offset": 40,
+                            "destination_instance_offset": 71,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _partial_storage_delta_result():
+    return CalibrationResult(
+        (
+            MessageSpec(
+                "STORAGE_ITEM_DELTA",
+                0x2222,
+                258,
+                item_id_offset=37,
+                quantity_added_offset=41,
+                destination_instance_offset=72,
+            ),
+        ),
+        (),
+        1,
+    )
+
+
+def test_partial_explicit_action_replaces_only_observed_event_family(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    _write_inventory_to_storage_profile(profile_path)
+
+    update = update_profile(
+        _partial_storage_delta_result(),
+        profile_path,
+        action="inventory-to-storage",
+        backup=False,
+    )
+
+    assert update.replaced_events == ("STORAGE_ITEM_DELTA",)
+    data = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert [
+        entry["opcode"] for entry in data["specs"]["SOURCE_STACK_DECREMENT"]
+    ] == ["0x11AD"]
+    assert [
+        entry["opcode"] for entry in data["specs"]["SOURCE_ITEM_REFERENCE"]
+    ] == ["0x0F63"]
+    assert [
+        entry["opcode"] for entry in data["specs"]["STORAGE_ITEM_DELTA"]
+    ] == ["0x2222"]
+
+
+def test_explicit_entire_action_replacement_clears_missing_families(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    _write_inventory_to_storage_profile(profile_path)
+
+    update = update_profile(
+        _partial_storage_delta_result(),
+        profile_path,
+        action="inventory-to-storage",
+        replace_entire_action=True,
+        backup=False,
+    )
+
+    assert update.replaced_events == (
+        "SOURCE_STACK_DECREMENT",
+        "SOURCE_ITEM_REFERENCE",
+        "STORAGE_ITEM_DELTA",
+    )
+    data = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert data["specs"]["SOURCE_STACK_DECREMENT"] == []
+    assert data["specs"]["SOURCE_ITEM_REFERENCE"] == []
+    assert [
+        entry["opcode"] for entry in data["specs"]["STORAGE_ITEM_DELTA"]
+    ] == ["0x2222"]
+    assert [entry["opcode"] for entry in data["specs"]["LOOT_PREVIEW"]] == [
+        "0x1643"
+    ]
+
+
+def test_entire_action_replacement_cannot_be_combined_with_merge(tmp_path):
+    with pytest.raises(ValueError, match="replace_entire_action"):
+        update_profile(
+            _partial_storage_delta_result(),
+            tmp_path / "opcodes.json",
+            action="inventory-to-storage",
+            replace=False,
+            replace_entire_action=True,
+        )
 
 
 @requires_fixtures
@@ -565,7 +800,7 @@ def test_reset_profile_writes_empty_active_profile(tmp_path):
     assert data["profile_active"] is True
     assert all(not entries for entries in data["specs"].values())
 
-    profile = load_spec_profile(profile_path)
+    profile = event_specs_from_profile(load_opcode_profile(profile_path))
     assert profile.active
     assert profile.specs == ()
 
@@ -593,16 +828,18 @@ def test_calibration_session_uses_shared_packet_capture_options(monkeypatch):
 
         def start(self):
             self.running = True
+            self.kwargs["started_callback"]()
 
         def stop(self):
             self.running = False
 
     monkeypatch.setattr(
-        capture_backend,
+        capture_runtime,
         "import_scapy",
         lambda: (object(), object(), None, None, None),
     )
-    monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
+    monkeypatch.setattr(capture_runtime, "_is_windows", lambda: False)
+    monkeypatch.setattr(capture_runtime, "_new_async_sniffer", FakeSniffer)
 
     session = CalibrationSession(
         item_id=7003,
@@ -638,17 +875,18 @@ def test_calibration_session_can_disable_automatic_local_ip(monkeypatch):
 
         def start(self):
             self.running = True
+            self.kwargs["started_callback"]()
 
         def stop(self):
             self.running = False
 
     monkeypatch.setattr(
-        capture_backend,
+        capture_runtime,
         "import_scapy",
         lambda: (object(), object(), None, None, None),
     )
     monkeypatch.setattr(
-        capture_backend,
+        capture_runtime,
         "detect_default_capture_target",
         lambda: capture_backend.CaptureTarget(
             interface="default-interface",
@@ -656,7 +894,8 @@ def test_calibration_session_can_disable_automatic_local_ip(monkeypatch):
             gateway="192.0.2.1",
         ),
     )
-    monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
+    monkeypatch.setattr(capture_runtime, "_is_windows", lambda: False)
+    monkeypatch.setattr(capture_runtime, "_new_async_sniffer", FakeSniffer)
 
     session = CalibrationSession(
         item_id=7003,

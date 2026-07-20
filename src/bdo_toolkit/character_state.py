@@ -14,17 +14,15 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Event, RLock
+from threading import RLock
 from typing import Any, Iterable, Optional
 
 from ._capture_backend import (
-    build_bpf_filter,
-    detect_default_capture_target,
-    import_scapy,
     iter_pcap_file,
     make_packet_handler,
 )
 from ._capture_options import PacketCaptureOptions
+from ._capture_runtime import DEFAULT_STARTUP_TIMEOUT_SECONDS, LivePacketCapture
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
     BDOFrame,
@@ -40,7 +38,9 @@ from .profiles import ProfileError, default_profile_path, load_opcode_profile
 
 _INVENTORY_GENERATION_GAP_SECONDS = 1.0
 _INVENTORY_TRAILING_DISCOVERY_BYTES = 12
-_ITEM_STATE_SCHEMA_VERSION = 1
+_STORAGE_DESTINATION_CHUNK_GAP_SECONDS = 1.0
+_ITEM_STATE_SCHEMA_VERSION = 3
+_CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
 
 # These interpretations agree across the July 17 initial-load and character-
 # switch captures, and the 0x00/0x10/0x0B families agree with legacy research.
@@ -61,6 +61,44 @@ _CURRENCY_NAMES: dict[tuple[int, int], str] = {
 
 
 @dataclass(frozen=True)
+class ItemStateCaptureLimits:
+    """Hard fail-closed bounds for retained item-state observations."""
+
+    max_relevant_frames: int = 10_000
+    max_snapshot_records: int = 50_000
+    max_relevant_bytes: int = 64 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("max_relevant_frames", self.max_relevant_frames),
+            ("max_snapshot_records", self.max_snapshot_records),
+            ("max_relevant_bytes", self.max_relevant_bytes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "max_relevant_frames": self.max_relevant_frames,
+            "max_snapshot_records": self.max_snapshot_records,
+            "max_relevant_bytes": self.max_relevant_bytes,
+        }
+
+
+class ItemStateCaptureLimitError(RuntimeError):
+    """Raised before an item-state accumulator would exceed a hard bound."""
+
+    def __init__(self, *, limit_name: str, limit: int, attempted: int) -> None:
+        self.limit_name = limit_name
+        self.limit = limit
+        self.attempted = attempted
+        super().__init__(
+            f"item-state accumulation limit exceeded: {limit_name} "
+            f"attempted={attempted} limit={limit}; no partial snapshot was returned"
+        )
+
+
+@dataclass(frozen=True)
 class SnapshotItem:
     """One occupied item-stack record observed during state hydration."""
 
@@ -78,6 +116,7 @@ class SnapshotItem:
     container_name: Optional[str] = None
     container_confidence: Optional[str] = None
     currency_name: Optional[str] = None
+    instance_confidence: str = "observed"
 
     @property
     def is_currency_balance(self) -> bool:
@@ -89,6 +128,7 @@ class SnapshotItem:
             "item_id": self.item_id,
             "quantity": self.quantity,
             "instance": self.instance,
+            "instance_confidence": self.instance_confidence,
             "timestamp": self.timestamp,
         }
         optional = {
@@ -194,6 +234,7 @@ class InventorySnapshotSummary(_ItemQueries):
     currency_balances: tuple[SnapshotItem, ...]
     containers: tuple[InventoryContainerSummary, ...]
     unclassified_records: int
+    missing_instance_records: int = 0
 
     @property
     def groups(self) -> int:
@@ -215,6 +256,10 @@ class InventorySnapshotSummary(_ItemQueries):
     @property
     def currency_balance_records(self) -> int:
         return len(self.currency_balances)
+
+    @property
+    def identity_complete(self) -> bool:
+        return self.missing_instance_records == 0
 
     def container(self, raw_code: int) -> Optional[InventoryContainerSummary]:
         """Look up a provisionally classified container by its raw byte."""
@@ -274,6 +319,8 @@ class InventorySnapshotSummary(_ItemQueries):
             "inferred_strides": list(self.inferred_strides),
             "currency_balance_records": self.currency_balance_records,
             "unclassified_records": self.unclassified_records,
+            "missing_instance_records": self.missing_instance_records,
+            "identity_complete": self.identity_complete,
             "containers": [container.to_dict() for container in self.containers],
             "currency_balances": [
                 balance.to_dict() for balance in self.currency_balances
@@ -285,7 +332,7 @@ class InventorySnapshotSummary(_ItemQueries):
 
 @dataclass(frozen=True)
 class StorageSnapshotSummary(_ItemQueries):
-    """Latest observed occupied records for one numeric storage destination."""
+    """Current selected state plus all-observation diagnostics for one storage."""
 
     storage_id: int
     name: Optional[str]
@@ -296,6 +343,40 @@ class StorageSnapshotSummary(_ItemQueries):
     groups: int
     empty_envelope_seen: bool
     capacity: Optional[int] = None
+    selected_records: Optional[int] = None
+    superseded_records: int = 0
+    selected_groups: Optional[int] = None
+    superseded_groups: int = 0
+    sweeps_observed: int = 1
+    selected_sweep: Optional[int] = 1
+    current_state_observed: bool = True
+    current_empty: Optional[bool] = None
+    missing_instance_records: int = 0
+    selected_missing_instance_records: int = 0
+    current_identity_complete: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        # Preserve source and behavioral compatibility for callers constructing
+        # the original summary shape. The accumulator always supplies these
+        # fields explicitly; legacy callers receive the natural one-sweep view.
+        if self.selected_records is None:
+            object.__setattr__(self, "selected_records", self.raw_records)
+        if self.selected_groups is None:
+            object.__setattr__(self, "selected_groups", self.groups)
+        if self.current_empty is None:
+            object.__setattr__(
+                self,
+                "current_empty",
+                self.current_state_observed
+                and self.empty_envelope_seen
+                and not self.items,
+            )
+        if self.current_identity_complete is None:
+            object.__setattr__(
+                self,
+                "current_identity_complete",
+                self.selected_missing_instance_records == 0,
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -308,6 +389,19 @@ class StorageSnapshotSummary(_ItemQueries):
             "duplicate_records": self.duplicate_records,
             "groups": self.groups,
             "empty_envelope_seen": self.empty_envelope_seen,
+            "selected_records": self.selected_records,
+            "superseded_records": self.superseded_records,
+            "selected_groups": self.selected_groups,
+            "superseded_groups": self.superseded_groups,
+            "sweeps_observed": self.sweeps_observed,
+            "selected_sweep": self.selected_sweep,
+            "current_state_observed": self.current_state_observed,
+            "current_empty": self.current_empty,
+            "missing_instance_records": self.missing_instance_records,
+            "selected_missing_instance_records": (
+                self.selected_missing_instance_records
+            ),
+            "current_identity_complete": self.current_identity_complete,
             "capacity": self.capacity,
             "items": [item.to_dict() for item in self.items],
         }
@@ -382,6 +476,24 @@ class ItemStateCoverage:
     registered_storage_ids_not_observed: tuple[int, ...]
     unregistered_storage_ids_observed: tuple[int, ...]
     explicitly_empty_storage_locations_observed: int
+    storage_locations_selected: int = 0
+    registered_storage_locations_selected: int = 0
+    storage_locations_not_selected_from_latest_sweep: int = 0
+    storage_sweeps_observed: int = 0
+    selected_storage_sweep: Optional[int] = None
+    identity_complete: bool = True
+    identity_status: str = "complete"
+    inventory_records_missing_instance: int = 0
+    storage_records_missing_instance: int = 0
+    selected_storage_records_missing_instance: int = 0
+    storage_locations_with_incomplete_current_identity: int = 0
+    accumulation_status: str = "not_reported"
+    relevant_frames_retained: Optional[int] = None
+    relevant_bytes_retained: Optional[int] = None
+    snapshot_records_retained: Optional[int] = None
+    max_relevant_frames: Optional[int] = None
+    max_snapshot_records: Optional[int] = None
+    max_relevant_bytes: Optional[int] = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -411,6 +523,36 @@ class ItemStateCoverage:
             "explicitly_empty_storage_locations_observed": (
                 self.explicitly_empty_storage_locations_observed
             ),
+            "storage_locations_selected": self.storage_locations_selected,
+            "registered_storage_locations_selected": (
+                self.registered_storage_locations_selected
+            ),
+            "storage_locations_not_selected_from_latest_sweep": (
+                self.storage_locations_not_selected_from_latest_sweep
+            ),
+            "storage_sweeps_observed": self.storage_sweeps_observed,
+            "selected_storage_sweep": self.selected_storage_sweep,
+            "identity_complete": self.identity_complete,
+            "identity_status": self.identity_status,
+            "inventory_records_missing_instance": (
+                self.inventory_records_missing_instance
+            ),
+            "storage_records_missing_instance": (self.storage_records_missing_instance),
+            "selected_storage_records_missing_instance": (
+                self.selected_storage_records_missing_instance
+            ),
+            "storage_locations_with_incomplete_current_identity": (
+                self.storage_locations_with_incomplete_current_identity
+            ),
+            "accumulation_status": self.accumulation_status,
+            "relevant_frames_retained": self.relevant_frames_retained,
+            "relevant_bytes_retained": self.relevant_bytes_retained,
+            "snapshot_records_retained": self.snapshot_records_retained,
+            "accumulation_limits": {
+                "max_relevant_frames": self.max_relevant_frames,
+                "max_snapshot_records": self.max_snapshot_records,
+                "max_relevant_bytes": self.max_relevant_bytes,
+            },
         }
 
 
@@ -425,6 +567,9 @@ class ItemStateProvenance:
     generation_selection: str = "unknown"
     load_reason: Optional[str] = None
     load_reason_basis: str = "not_decoded_from_protocol"
+    instance_identity_policy: str = "observed_instance_only"
+    identity_status: str = "complete"
+    accumulation_policy: str = "not_reported"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -435,6 +580,9 @@ class ItemStateProvenance:
             "generation_selection": self.generation_selection,
             "load_reason": self.load_reason,
             "load_reason_basis": self.load_reason_basis,
+            "instance_identity_policy": self.instance_identity_policy,
+            "identity_status": self.identity_status,
+            "accumulation_policy": self.accumulation_policy,
         }
 
 
@@ -452,6 +600,13 @@ class CharacterStateSnapshot:
     capture_mode: str = "unknown"
     input_path: Optional[str] = None
     saved_capture_path: Optional[str] = None
+    storage_sweeps_observed: int = 0
+    selected_storage_sweep: Optional[int] = None
+    storage_records_missing_instance: int = 0
+    capture_limits: ItemStateCaptureLimits = ItemStateCaptureLimits()
+    relevant_frames_retained: Optional[int] = None
+    relevant_bytes_retained: Optional[int] = None
+    snapshot_records_retained: Optional[int] = None
 
     def __init__(
         self,
@@ -465,13 +620,25 @@ class CharacterStateSnapshot:
         capture_mode: str = "unknown",
         input_path: Optional[str] = None,
         saved_capture_path: Optional[str] = None,
+        storage_sweeps_observed: int = 0,
+        selected_storage_sweep: Optional[int] = None,
+        storage_records_missing_instance: int = 0,
+        capture_limits: Optional[ItemStateCaptureLimits] = None,
+        relevant_frames_retained: Optional[int] = None,
+        relevant_bytes_retained: Optional[int] = None,
+        snapshot_records_retained: Optional[int] = None,
     ) -> None:
         # ``storages`` was originally a tuple. Accept every historical tuple
         # call site while exposing a tuple subclass with additive query methods.
+        if capture_limits is not None and not isinstance(
+            capture_limits, ItemStateCaptureLimits
+        ):
+            raise TypeError("capture_limits must be an ItemStateCaptureLimits or None")
         object.__setattr__(self, "profile_source", profile_source)
         object.__setattr__(self, "frames_seen", frames_seen)
         object.__setattr__(self, "inventory", inventory)
-        object.__setattr__(self, "storages", StorageContents(storages))
+        normalized_storages = StorageContents(storages)
+        object.__setattr__(self, "storages", normalized_storages)
         object.__setattr__(self, "storage_snapshot_records", storage_snapshot_records)
         object.__setattr__(
             self, "hydration_generations_seen", hydration_generations_seen
@@ -480,6 +647,23 @@ class CharacterStateSnapshot:
         object.__setattr__(self, "capture_mode", capture_mode)
         object.__setattr__(self, "input_path", input_path)
         object.__setattr__(self, "saved_capture_path", saved_capture_path)
+        if normalized_storages and storage_sweeps_observed == 0:
+            storage_sweeps_observed = 1
+        if normalized_storages and selected_storage_sweep is None:
+            selected_storage_sweep = 1
+        object.__setattr__(self, "storage_sweeps_observed", storage_sweeps_observed)
+        object.__setattr__(self, "selected_storage_sweep", selected_storage_sweep)
+        object.__setattr__(
+            self, "storage_records_missing_instance", storage_records_missing_instance
+        )
+        object.__setattr__(
+            self,
+            "capture_limits",
+            capture_limits or ItemStateCaptureLimits(),
+        )
+        object.__setattr__(self, "relevant_frames_retained", relevant_frames_retained)
+        object.__setattr__(self, "relevant_bytes_retained", relevant_bytes_retained)
+        object.__setattr__(self, "snapshot_records_retained", snapshot_records_retained)
 
     @property
     def schema_version(self) -> int:
@@ -500,6 +684,14 @@ class CharacterStateSnapshot:
             saved_capture_path=self.saved_capture_path,
             generation_selection=generation_selection,
             load_reason=self.load_reason,
+            identity_status=(
+                "complete" if self.identity_complete else "incomplete_records_excluded"
+            ),
+            accumulation_policy=(
+                "bounded_fail_closed"
+                if self.snapshot_records_retained is not None
+                else "not_reported"
+            ),
         )
 
     @property
@@ -521,9 +713,22 @@ class CharacterStateSnapshot:
                 if storage.storage_id not in STORAGE_LOCATIONS
             )
         )
+        selected_storages = tuple(
+            storage for storage in self.storages if storage.current_state_observed
+        )
+        selected_registered = {
+            storage.storage_id
+            for storage in selected_storages
+            if storage.storage_id in STORAGE_LOCATIONS
+        }
+        identity_complete = self.identity_complete
         return ItemStateCoverage(
             completion_status="unknown",
-            completion_basis="no_proven_protocol_end_marker",
+            completion_basis=(
+                "no_proven_protocol_end_marker"
+                if identity_complete
+                else "no_proven_protocol_end_marker_and_missing_instance_identity"
+            ),
             capture_may_be_partial=True,
             hydration_detected=self.hydration_detected,
             inventory_records_decoded=self.inventory.raw_records,
@@ -538,9 +743,49 @@ class CharacterStateSnapshot:
             registered_storage_ids_not_observed=missing_registered,
             unregistered_storage_ids_observed=unregistered,
             explicitly_empty_storage_locations_observed=sum(
-                storage.empty_envelope_seen and storage.occupied_stacks == 0
+                storage.current_empty is True for storage in self.storages
+            ),
+            storage_locations_selected=len(selected_storages),
+            registered_storage_locations_selected=len(selected_registered),
+            storage_locations_not_selected_from_latest_sweep=sum(
+                not storage.current_state_observed for storage in self.storages
+            ),
+            storage_sweeps_observed=self.storage_sweeps_observed,
+            selected_storage_sweep=self.selected_storage_sweep,
+            identity_complete=identity_complete,
+            identity_status=(
+                "complete" if identity_complete else "incomplete_records_excluded"
+            ),
+            inventory_records_missing_instance=(
+                self.inventory.missing_instance_records
+            ),
+            storage_records_missing_instance=self.storage_records_missing_instance,
+            selected_storage_records_missing_instance=sum(
+                storage.selected_missing_instance_records for storage in self.storages
+            ),
+            storage_locations_with_incomplete_current_identity=sum(
+                storage.current_state_observed
+                and storage.current_identity_complete is False
                 for storage in self.storages
             ),
+            accumulation_status=(
+                "within_limits"
+                if self.snapshot_records_retained is not None
+                else "not_reported"
+            ),
+            relevant_frames_retained=self.relevant_frames_retained,
+            relevant_bytes_retained=self.relevant_bytes_retained,
+            snapshot_records_retained=self.snapshot_records_retained,
+            max_relevant_frames=self.capture_limits.max_relevant_frames,
+            max_snapshot_records=self.capture_limits.max_snapshot_records,
+            max_relevant_bytes=self.capture_limits.max_relevant_bytes,
+        )
+
+    @property
+    def identity_complete(self) -> bool:
+        return (
+            self.inventory.identity_complete
+            and self.storage_records_missing_instance == 0
         )
 
     @property
@@ -564,11 +809,22 @@ class CharacterStateSnapshot:
 
     @property
     def nonempty_storage_destinations(self) -> int:
-        return sum(summary.occupied_stacks > 0 for summary in self.storages)
+        return sum(
+            summary.current_state_observed and summary.occupied_stacks > 0
+            for summary in self.storages
+        )
 
     @property
     def empty_storage_destinations(self) -> int:
-        return sum(summary.occupied_stacks == 0 for summary in self.storages)
+        return sum(summary.current_empty is True for summary in self.storages)
+
+    @property
+    def selected_storage_destinations(self) -> int:
+        return sum(summary.current_state_observed for summary in self.storages)
+
+    @property
+    def storage_destinations_not_selected(self) -> int:
+        return len(self.storages) - self.selected_storage_destinations
 
     @property
     def storage_occupied_stacks(self) -> int:
@@ -588,10 +844,19 @@ class CharacterStateSnapshot:
             "profile_source": self.profile_source,
             "frames_seen": self.frames_seen,
             "hydration_detected": self.hydration_detected,
+            "identity_complete": self.identity_complete,
             "load_reason": self.load_reason,
             "hydration_generations_seen": self.hydration_generations_seen,
             "provenance": self.provenance.to_dict(),
             "coverage": self.coverage.to_dict(),
+            "accumulation": {
+                "policy": self.provenance.accumulation_policy,
+                "status": self.coverage.accumulation_status,
+                "relevant_frames_retained": self.relevant_frames_retained,
+                "relevant_bytes_retained": self.relevant_bytes_retained,
+                "snapshot_records_retained": self.snapshot_records_retained,
+                "limits": self.capture_limits.to_dict(),
+            },
             "inventory": self.inventory.to_dict(),
             "storage": {
                 "known_destinations_detected": self.known_storage_destinations_detected,
@@ -600,6 +865,11 @@ class CharacterStateSnapshot:
                 "empty_destinations": self.empty_storage_destinations,
                 "occupied_stacks": self.storage_occupied_stacks,
                 "raw_records": self.storage_snapshot_records,
+                "missing_instance_records": self.storage_records_missing_instance,
+                "sweeps_observed": self.storage_sweeps_observed,
+                "selected_sweep": self.selected_storage_sweep,
+                "selected_destinations": self.selected_storage_destinations,
+                "destinations_not_selected": (self.storage_destinations_not_selected),
                 "destinations": [summary.to_dict() for summary in self.storages],
             },
             "warnings": list(self.warnings),
@@ -613,6 +883,31 @@ class _FrameKey:
     destination_ip: str
     destination_port: int
     stream_sequence: Optional[int]
+
+
+@dataclass(frozen=True)
+class _StorageGroupObservation:
+    """One decoded nonempty frame or validated count-zero storage wrapper."""
+
+    storage_id: int
+    frame_key: _FrameKey
+    timestamp: float
+    items: tuple[SnapshotItem, ...]
+    raw_records: int
+    missing_instance_records: int
+    empty: bool
+
+
+@dataclass(frozen=True)
+class _StorageDestinationBlock:
+    """Consecutive chunks belonging to one destination within one sweep."""
+
+    storage_id: int
+    groups: tuple[_StorageGroupObservation, ...]
+
+    @property
+    def empty(self) -> bool:
+        return all(group.empty for group in self.groups)
 
 
 def _event_frame_key(event: BDOEvent) -> _FrameKey:
@@ -704,6 +999,55 @@ def _inventory_frame_stride(
     if not _inventory_event_geometry_valid(spec, group, stride):
         return None
     return stride
+
+
+def _spec_candidates_by_opcode(
+    specs: Iterable[EventSpec],
+) -> dict[int, tuple[EventSpec, ...]]:
+    """Retain every distinct same-opcode layout in deterministic profile order."""
+    grouped: dict[int, list[EventSpec]] = {}
+    for spec in specs:
+        candidates = grouped.setdefault(spec.opcode, [])
+        if spec not in candidates:
+            candidates.append(spec)
+    return {opcode: tuple(candidates) for opcode, candidates in grouped.items()}
+
+
+def _unique_inventory_multi_layout(
+    frame: BDOFrame,
+    group: list[BDOEvent],
+    candidates: Iterable[EventSpec],
+) -> Optional[tuple[EventSpec, int]]:
+    matches: list[tuple[EventSpec, int]] = []
+    for spec in candidates:
+        if not _frame_has_zero_context(frame, spec):
+            continue
+        stride = _inventory_frame_stride(frame, spec, group)
+        if stride is not None:
+            matches.append((spec, stride))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _unique_inventory_single_layout(
+    frame: BDOFrame,
+    group: list[BDOEvent],
+    candidates: Iterable[EventSpec],
+    sibling_strides: dict[EventSpec, set[int]],
+) -> Optional[tuple[EventSpec, int]]:
+    matches: list[tuple[EventSpec, int]] = []
+    for spec in candidates:
+        proven = sibling_strides.get(spec, set())
+        if len(proven) != 1:
+            continue
+        stride = next(iter(proven))
+        if (
+            not _frame_has_zero_context(frame, spec)
+            or spec.single_record_message_length != frame.length
+            or not _inventory_event_geometry_valid(spec, group, stride)
+        ):
+            continue
+        matches.append((spec, stride))
+    return matches[0] if len(matches) == 1 else None
 
 
 def _inventory_event_geometry_valid(
@@ -860,13 +1204,19 @@ class _CharacterStateAccumulator:
         capture_mode: str = "unknown",
         input_path: str | Path | None = None,
         saved_capture_path: str | Path | None = None,
+        capture_limits: Optional[ItemStateCaptureLimits] = None,
     ) -> None:
+        if capture_limits is not None and not isinstance(
+            capture_limits, ItemStateCaptureLimits
+        ):
+            raise TypeError("capture_limits must be an ItemStateCaptureLimits or None")
         self.profile_source = profile_source
         self.capture_mode = capture_mode
         self.input_path = str(input_path) if input_path is not None else None
         self.saved_capture_path = (
             str(saved_capture_path) if saved_capture_path is not None else None
         )
+        self.capture_limits = capture_limits or ItemStateCaptureLimits()
         self.specs = tuple(specs)
         self.inventory_specs = tuple(
             spec for spec in self.specs if spec.label == "INVENTORY_TRANSFER"
@@ -879,6 +1229,10 @@ class _CharacterStateAccumulator:
         }
         self._lock = RLock()
         self._frames_seen = 0
+        self._relevant_frames_retained = 0
+        self._relevant_bytes_retained = 0
+        self._snapshot_records_retained = 0
+        self._limit_error: Optional[ItemStateCaptureLimitError] = None
         self._frames: list[BDOFrame] = []
         self._seen_frames: set[tuple[_FrameKey, bytes]] = set()
         self._inventory_events: list[BDOEvent] = []
@@ -892,27 +1246,71 @@ class _CharacterStateAccumulator:
     def observe_frame(self, frame: BDOFrame) -> None:
         with self._lock:
             self._frames_seen += 1
+            if self._limit_error is not None:
+                raise self._limit_error
             if frame.opcode not in self.relevant_opcodes:
                 return
             digest = hashlib.blake2b(frame.message, digest_size=16).digest()
             dedupe_key = (_frame_key(frame), digest)
             if dedupe_key in self._seen_frames:
                 return
+            attempted_frames = self._relevant_frames_retained + 1
+            if attempted_frames > self.capture_limits.max_relevant_frames:
+                self._raise_limit(
+                    "max_relevant_frames",
+                    self.capture_limits.max_relevant_frames,
+                    attempted_frames,
+                )
+            attempted_bytes = self._relevant_bytes_retained + len(frame.message)
+            if attempted_bytes > self.capture_limits.max_relevant_bytes:
+                self._raise_limit(
+                    "max_relevant_bytes",
+                    self.capture_limits.max_relevant_bytes,
+                    attempted_bytes,
+                )
             self._seen_frames.add(dedupe_key)
             self._frames.append(frame)
+            self._relevant_frames_retained = attempted_frames
+            self._relevant_bytes_retained = attempted_bytes
 
     def observe_record(self, record: Any, raw_message: bytes) -> None:
         del raw_message
         event = toolkit_event_from_record(record)
         with self._lock:
+            if self._limit_error is not None:
+                raise self._limit_error
+            if event.event_type not in {"inventory_snapshot", "storage_snapshot"}:
+                return
+            attempted_records = self._snapshot_records_retained + 1
+            if attempted_records > self.capture_limits.max_snapshot_records:
+                self._raise_limit(
+                    "max_snapshot_records",
+                    self.capture_limits.max_snapshot_records,
+                    attempted_records,
+                )
             if event.event_type == "inventory_snapshot":
                 self._inventory_events.append(event)
-            elif event.event_type == "storage_snapshot":
+            else:
                 self._storage_events.append(event)
+            self._snapshot_records_retained = attempted_records
+
+    def _raise_limit(self, limit_name: str, limit: int, attempted: int) -> None:
+        error = ItemStateCaptureLimitError(
+            limit_name=limit_name,
+            limit=limit,
+            attempted=attempted,
+        )
+        self._limit_error = error
+        raise error
 
     def snapshot(self) -> CharacterStateSnapshot:
         with self._lock:
+            if self._limit_error is not None:
+                raise self._limit_error
             frames_seen = self._frames_seen
+            relevant_frames_retained = self._relevant_frames_retained
+            relevant_bytes_retained = self._relevant_bytes_retained
+            snapshot_records_retained = self._snapshot_records_retained
             frames = tuple(self._frames)
             inventory_events = tuple(self._inventory_events)
             storage_events = tuple(self._storage_events)
@@ -935,7 +1333,15 @@ class _CharacterStateAccumulator:
             )
 
         inventory = self._inventory_summary(frames, inventory_events)
-        storages, unresolved_storage = self._storage_summaries(frames, storage_events)
+        storage_records_missing_instance = sum(
+            event.storage_instance is None for event in storage_events
+        )
+        (
+            storages,
+            unresolved_storage,
+            storage_sweeps_observed,
+            selected_storage_sweep,
+        ) = self._storage_summaries(frames, storage_events)
         warnings = [
             "Initial login and character switch use the same observed hydration "
             "shape; the packet-level trigger is not decoded.",
@@ -962,7 +1368,8 @@ class _CharacterStateAccumulator:
             if storage_events or storages:
                 warnings.append(
                     "No inventory hydration boundary was decoded; storage state "
-                    "contains all observed snapshot records and may span multiple loads."
+                    "diagnostics contain all observed records, while current contents "
+                    "use the latest inferred sweep and may span multiple loads."
                 )
         if not storage_events:
             warnings.append(
@@ -973,6 +1380,32 @@ class _CharacterStateAccumulator:
             warnings.append(
                 f"{unresolved_storage} storage snapshot records lacked a numeric "
                 "destination and were excluded from per-storage state."
+            )
+        if inventory.missing_instance_records:
+            warnings.append(
+                f"{inventory.missing_instance_records} inventory snapshot records "
+                "lacked observed instance identity and were excluded from "
+                "distinct-stack state."
+            )
+        if storage_records_missing_instance:
+            warnings.append(
+                f"{storage_records_missing_instance} storage snapshot records "
+                "lacked observed instance identity and were excluded from "
+                "distinct-stack state."
+            )
+        not_selected = sum(not storage.current_state_observed for storage in storages)
+        if storage_sweeps_observed > 1:
+            warnings.append(
+                f"{storage_sweeps_observed} storage sweeps were conservatively "
+                f"inferred; current contents use sweep {selected_storage_sweep}, "
+                "while raw record and group counts cover every observed sweep."
+            )
+        if not_selected:
+            warnings.append(
+                f"The latest inferred storage sweep did not revisit {not_selected} "
+                "earlier-observed destinations. Their older items were excluded "
+                "instead of being reported as current; the selected sweep may be "
+                "partial."
             )
         return CharacterStateSnapshot(
             profile_source=self.profile_source,
@@ -985,6 +1418,13 @@ class _CharacterStateAccumulator:
             capture_mode=self.capture_mode,
             input_path=self.input_path,
             saved_capture_path=self.saved_capture_path,
+            storage_sweeps_observed=storage_sweeps_observed,
+            selected_storage_sweep=selected_storage_sweep,
+            storage_records_missing_instance=storage_records_missing_instance,
+            capture_limits=self.capture_limits,
+            relevant_frames_retained=relevant_frames_retained,
+            relevant_bytes_retained=relevant_bytes_retained,
+            snapshot_records_retained=snapshot_records_retained,
         )
 
     def _inventory_summary(
@@ -997,13 +1437,14 @@ class _CharacterStateAccumulator:
             groups.setdefault(_event_frame_key(event), []).append(event)
 
         frames_by_key = {_frame_key(frame): frame for frame in frames}
-        specs_by_opcode = {spec.opcode: spec for spec in self.inventory_specs}
-        multi_groups_by_opcode: dict[
-            int, list[tuple[BDOFrame, list[BDOEvent], EventSpec, int]]
+        specs_by_opcode = _spec_candidates_by_opcode(self.inventory_specs)
+        multi_groups_by_spec: dict[
+            EventSpec, list[tuple[BDOFrame, list[BDOEvent], EventSpec, int]]
         ] = {}
         strides_by_key: dict[_FrameKey, int] = {}
-        sibling_strides: dict[int, set[int]] = {}
-        prefix_candidates: dict[int, set[int]] = {}
+        selected_specs_by_key: dict[_FrameKey, EventSpec] = {}
+        sibling_strides: dict[EventSpec, set[int]] = {}
+        prefix_candidates: dict[EventSpec, set[int]] = {}
 
         # A multi-record frame proves its own stride from L, B, and N. Layout
         # discovery is intentionally separate: stride alone does not prove
@@ -1012,46 +1453,56 @@ class _CharacterStateAccumulator:
             frame = frames_by_key.get(key)
             if frame is None:
                 continue
-            spec = specs_by_opcode.get(frame.opcode)
-            if spec is None or not _frame_has_zero_context(frame, spec):
+            selected = _unique_inventory_multi_layout(
+                frame,
+                group,
+                specs_by_opcode.get(frame.opcode, ()),
+            )
+            if selected is None:
                 continue
-            stride = _inventory_frame_stride(frame, spec, group)
-            if stride is None:
-                continue
+            spec, stride = selected
             strides_by_key[key] = stride
-            sibling_strides.setdefault(frame.opcode, set()).add(stride)
-            prefix_candidates.setdefault(frame.opcode, set()).add(
+            selected_specs_by_key[key] = spec
+            sibling_strides.setdefault(spec, set()).add(stride)
+            prefix_candidates.setdefault(spec, set()).add(
                 frame.length - len(group) * stride
             )
-            multi_groups_by_opcode.setdefault(frame.opcode, []).append(
+            multi_groups_by_spec.setdefault(spec, []).append(
                 (frame, group, spec, stride)
             )
 
         layouts = {
-            opcode: _discover_inventory_tail_layout(frame_groups)
-            for opcode, frame_groups in multi_groups_by_opcode.items()
+            spec: _discover_inventory_tail_layout(frame_groups)
+            for spec, frame_groups in multi_groups_by_spec.items()
         }
         metadata_by_record: dict[tuple[_FrameKey, int], _InventoryRecordMetadata] = {}
         for key, group in groups.items():
             frame = frames_by_key.get(key)
             if frame is None:
                 continue
-            spec = specs_by_opcode.get(frame.opcode)
-            layout = layouts.get(frame.opcode)
-            if spec is None or layout is None:
+            spec_for_group = selected_specs_by_key.get(key)
+            stride_for_group = strides_by_key.get(key)
+            if stride_for_group is None and len(group) == 1:
+                selected = _unique_inventory_single_layout(
+                    frame,
+                    group,
+                    specs_by_opcode.get(frame.opcode, ()),
+                    sibling_strides,
+                )
+                if selected is not None:
+                    spec_for_group, stride_for_group = selected
+                    selected_specs_by_key[key] = spec_for_group
+                    strides_by_key[key] = stride_for_group
+            if spec_for_group is None or stride_for_group is None:
                 continue
-            stride = strides_by_key.get(key)
-            if stride is None and len(group) == 1:
-                proven = sibling_strides.get(frame.opcode, set())
-                if len(proven) == 1:
-                    stride = next(iter(proven))
-            if stride is None:
+            layout = layouts.get(spec_for_group)
+            if layout is None:
                 continue
             extracted = _inventory_record_metadata(
                 frame,
                 group,
-                spec,
-                stride,
+                spec_for_group,
+                stride_for_group,
                 layout,
             )
             if extracted is None:
@@ -1068,12 +1519,8 @@ class _CharacterStateAccumulator:
         for event in events:
             if event.item_instance is None:
                 missing_instance += 1
-                instance = (
-                    f"unavailable:{event.item_id}:{event.record_offset}:"
-                    f"{_event_frame_key(event).stream_sequence}"
-                )
-            else:
-                instance = event.item_instance
+                continue
+            instance = event.item_instance
             metadata = (
                 metadata_by_record.get((_event_frame_key(event), event.record_offset))
                 if event.record_offset is not None
@@ -1082,32 +1529,27 @@ class _CharacterStateAccumulator:
             latest[instance] = _snapshot_item(event, instance, metadata)
 
         prefixes = {
-            opcode: next(iter(candidates))
-            for opcode, candidates in prefix_candidates.items()
+            spec: next(iter(candidates))
+            for spec, candidates in prefix_candidates.items()
             if len(candidates) == 1
         }
 
         frame_counts: list[int] = []
         counted_keys: set[_FrameKey] = set()
         for frame in frames:
-            spec = next(
-                (
-                    candidate
-                    for candidate in self.inventory_specs
-                    if candidate.opcode == frame.opcode
-                ),
-                None,
-            )
-            if spec is None or not _frame_has_zero_context(frame, spec):
-                continue
             key = _frame_key(frame)
             frame_group = groups.get(key)
-            if frame_group is not None:
+            if frame_group is not None and key in selected_specs_by_key:
                 frame_counts.append(len(frame_group))
                 counted_keys.add(key)
                 continue
-            prefix = prefixes.get(frame.opcode)
-            if prefix is not None and frame.length == prefix:
+            empty_matches = [
+                candidate
+                for candidate in specs_by_opcode.get(frame.opcode, ())
+                if _frame_has_zero_context(frame, candidate)
+                and prefixes.get(candidate) == frame.length
+            ]
+            if frame_group is None and len(empty_matches) == 1:
                 frame_counts.append(0)
                 counted_keys.add(key)
 
@@ -1117,11 +1559,8 @@ class _CharacterStateAccumulator:
             if key not in counted_keys:
                 frame_counts.append(len(group))
 
-        duplicate_records = len(events) - len(latest)
-        if missing_instance:
-            # Synthetic fallback identities are unique, so they must never be
-            # described as confidently deduplicated instances.
-            duplicate_records = max(0, duplicate_records)
+        identified_records = len(events) - missing_instance
+        duplicate_records = identified_records - len(latest)
 
         latest_records = tuple(sorted(latest.values(), key=lambda item: item.instance))
         items = tuple(item for item in latest_records if not item.is_currency_balance)
@@ -1169,42 +1608,83 @@ class _CharacterStateAccumulator:
             unclassified_records=sum(
                 item.container_code is None for item in latest_records
             ),
+            missing_instance_records=missing_instance,
         )
 
     def _storage_summaries(
         self,
         frames: tuple[BDOFrame, ...],
         events: tuple[BDOEvent, ...],
-    ) -> tuple[tuple[StorageSnapshotSummary, ...], int]:
-        records: dict[int, dict[str, SnapshotItem]] = {}
-        raw_counts: dict[int, int] = {}
-        group_keys: dict[int, set[_FrameKey]] = {}
-        unresolved = 0
-        for event in events:
-            if event.storage_id is None:
-                unresolved += 1
-                continue
-            storage_id = event.storage_id
-            raw_counts[storage_id] = raw_counts.get(storage_id, 0) + 1
-            group_keys.setdefault(storage_id, set()).add(_event_frame_key(event))
-            if event.storage_instance is None:
-                instance = (
-                    f"unavailable:{event.item_id}:{event.record_offset}:"
-                    f"{_event_frame_key(event).stream_sequence}"
-                )
-            else:
-                instance = event.storage_instance
-            records.setdefault(storage_id, {})[instance] = _snapshot_item(
-                event, instance
-            )
+    ) -> tuple[tuple[StorageSnapshotSummary, ...], int, int, Optional[int]]:
+        unresolved = sum(event.storage_id is None for event in events)
+        resolved_events = tuple(
+            event for event in events if event.storage_id is not None
+        )
+        observations = _storage_group_observations(
+            frames,
+            resolved_events,
+            self.storage_specs,
+        )
+        sweeps = _infer_storage_sweeps(observations)
+        selected_sweep = len(sweeps) if sweeps else None
+        selected_blocks = (
+            {block.storage_id: block for block in sweeps[-1]} if sweeps else {}
+        )
 
-        empty_ids, empty_groups = _empty_storage_envelopes(frames, self.storage_specs)
-        all_ids = set(records) | empty_ids
+        raw_counts: dict[int, int] = {}
+        missing_instance_counts: dict[int, int] = {}
+        all_records: dict[int, dict[str, SnapshotItem]] = {}
+        group_counts: dict[int, int] = {}
+        empty_ids: set[int] = set()
+        for observation in observations:
+            storage_id = observation.storage_id
+            raw_counts[storage_id] = (
+                raw_counts.get(storage_id, 0) + observation.raw_records
+            )
+            missing_instance_counts[storage_id] = (
+                missing_instance_counts.get(storage_id, 0)
+                + observation.missing_instance_records
+            )
+            group_counts[storage_id] = group_counts.get(storage_id, 0) + 1
+            if observation.empty:
+                empty_ids.add(storage_id)
+            for item in observation.items:
+                all_records.setdefault(storage_id, {})[item.instance] = item
+
+        sweeps_by_storage: dict[int, int] = {}
+        for sweep in sweeps:
+            for block in sweep:
+                sweeps_by_storage[block.storage_id] = (
+                    sweeps_by_storage.get(block.storage_id, 0) + 1
+                )
+
+        all_ids = set(group_counts)
         summaries: list[StorageSnapshotSummary] = []
         for storage_id in all_ids:
             location = storage_location(storage_id)
-            items_by_instance = records.get(storage_id, {})
+            selected_block = selected_blocks.get(storage_id)
+            current_state_observed = selected_block is not None
+            items_by_instance: dict[str, SnapshotItem] = {}
+            selected_records = 0
+            selected_groups = 0
+            selected_missing_instance_records = 0
+            current_empty = False
+            if selected_block is not None:
+                selected_records = sum(
+                    group.raw_records for group in selected_block.groups
+                )
+                selected_groups = len(selected_block.groups)
+                selected_missing_instance_records = sum(
+                    group.missing_instance_records for group in selected_block.groups
+                )
+                current_empty = selected_block.empty
+                if not current_empty:
+                    for group in selected_block.groups:
+                        for item in group.items:
+                            items_by_instance[item.instance] = item
             raw_count = raw_counts.get(storage_id, 0)
+            missing_instance_records = missing_instance_counts.get(storage_id, 0)
+            groups = group_counts.get(storage_id, 0)
             summaries.append(
                 StorageSnapshotSummary(
                     storage_id=storage_id,
@@ -1218,10 +1698,27 @@ class _CharacterStateAccumulator:
                         )
                     ),
                     raw_records=raw_count,
-                    duplicate_records=max(0, raw_count - len(items_by_instance)),
-                    groups=len(group_keys.get(storage_id, set()))
-                    + empty_groups.get(storage_id, 0),
+                    duplicate_records=max(
+                        0,
+                        raw_count
+                        - missing_instance_records
+                        - len(all_records.get(storage_id, {})),
+                    ),
+                    groups=groups,
                     empty_envelope_seen=storage_id in empty_ids,
+                    selected_records=selected_records,
+                    superseded_records=max(0, raw_count - selected_records),
+                    selected_groups=selected_groups,
+                    superseded_groups=max(0, groups - selected_groups),
+                    sweeps_observed=sweeps_by_storage.get(storage_id, 0),
+                    selected_sweep=(selected_sweep if current_state_observed else None),
+                    current_state_observed=current_state_observed,
+                    current_empty=current_empty,
+                    missing_instance_records=missing_instance_records,
+                    selected_missing_instance_records=(
+                        selected_missing_instance_records
+                    ),
+                    current_identity_complete=(selected_missing_instance_records == 0),
                 )
             )
 
@@ -1232,7 +1729,7 @@ class _CharacterStateAccumulator:
                 summary.storage_id,
             )
         )
-        return tuple(summaries), unresolved
+        return tuple(summaries), unresolved, len(sweeps), selected_sweep
 
 
 def _frame_has_zero_context(frame: BDOFrame, spec: EventSpec) -> bool:
@@ -1271,52 +1768,227 @@ def _latest_inventory_generation(
     )
 
 
+def _storage_group_observations(
+    frames: Iterable[BDOFrame],
+    events: Iterable[BDOEvent],
+    specs: Iterable[EventSpec],
+) -> tuple[_StorageGroupObservation, ...]:
+    """Merge record-bearing frames and empty wrappers into capture order."""
+    event_groups: dict[tuple[_FrameKey, float, int], list[BDOEvent]] = {}
+    for event in events:
+        if event.storage_id is None:
+            continue
+        event_groups.setdefault(
+            (_event_frame_key(event), event.timestamp, event.storage_id),
+            [],
+        ).append(event)
+
+    observations: list[_StorageGroupObservation] = []
+    for (frame_key, timestamp, storage_id), group in event_groups.items():
+        items_by_instance: dict[str, SnapshotItem] = {}
+        missing_instance_records = 0
+        for event in group:
+            instance = event.storage_instance
+            if instance is None:
+                missing_instance_records += 1
+                continue
+            items_by_instance[instance] = _snapshot_item(event, instance)
+        observations.append(
+            _StorageGroupObservation(
+                storage_id=storage_id,
+                frame_key=frame_key,
+                timestamp=timestamp,
+                items=tuple(
+                    sorted(
+                        items_by_instance.values(),
+                        key=lambda item: item.instance,
+                    )
+                ),
+                raw_records=len(group),
+                missing_instance_records=missing_instance_records,
+                empty=False,
+            )
+        )
+
+    specs_by_opcode = _spec_candidates_by_opcode(specs)
+    for frame in frames:
+        matches: list[int] = []
+        for spec in specs_by_opcode.get(frame.opcode, ()):
+            candidate_storage_id = _empty_storage_envelope_id(frame, spec)
+            if candidate_storage_id is not None:
+                matches.append(candidate_storage_id)
+        if len(matches) != 1:
+            continue
+        storage_id = matches[0]
+        observations.append(
+            _StorageGroupObservation(
+                storage_id=storage_id,
+                frame_key=_frame_key(frame),
+                timestamp=frame.context.timestamp,
+                items=(),
+                raw_records=0,
+                missing_instance_records=0,
+                empty=True,
+            )
+        )
+
+    observations.sort(
+        key=lambda observation: (
+            observation.timestamp,
+            observation.frame_key.source_ip,
+            observation.frame_key.source_port,
+            observation.frame_key.destination_ip,
+            observation.frame_key.destination_port,
+            observation.frame_key.stream_sequence is None,
+            observation.frame_key.stream_sequence or 0,
+            observation.storage_id,
+            observation.empty,
+        )
+    )
+    return tuple(observations)
+
+
+def _infer_storage_sweeps(
+    observations: Iterable[_StorageGroupObservation],
+) -> tuple[tuple[_StorageDestinationBlock, ...], ...]:
+    """Conservatively split ordered destination blocks into repeated sweeps.
+
+    Tightly timed consecutive nonempty groups for one destination are record
+    chunks and stay together. A state change or a gap beyond the observed
+    chunk window closes the block even when the destination is unchanged.
+    Once a closed destination appears again, that repeat begins a new sweep.
+    """
+    blocks: list[_StorageDestinationBlock] = []
+    current_storage_id: Optional[int] = None
+    current_groups: list[_StorageGroupObservation] = []
+    current_empty: Optional[bool] = None
+
+    def close_current() -> None:
+        nonlocal current_storage_id, current_groups, current_empty
+        if current_storage_id is not None and current_groups:
+            blocks.append(
+                _StorageDestinationBlock(
+                    storage_id=current_storage_id,
+                    groups=tuple(current_groups),
+                )
+            )
+        current_storage_id = None
+        current_groups = []
+        current_empty = None
+
+    for observation in observations:
+        previous_timestamp = current_groups[-1].timestamp if current_groups else None
+        if current_storage_id is not None and (
+            observation.storage_id != current_storage_id
+            or observation.empty != current_empty
+            or (
+                previous_timestamp is not None
+                and observation.timestamp - previous_timestamp
+                > _STORAGE_DESTINATION_CHUNK_GAP_SECONDS
+            )
+        ):
+            close_current()
+        if current_storage_id is None:
+            current_storage_id = observation.storage_id
+            current_empty = observation.empty
+        current_groups.append(observation)
+    close_current()
+
+    sweeps: list[tuple[_StorageDestinationBlock, ...]] = []
+    current_sweep: list[_StorageDestinationBlock] = []
+    destinations_seen: set[int] = set()
+    for block in blocks:
+        if block.storage_id in destinations_seen:
+            sweeps.append(tuple(current_sweep))
+            current_sweep = []
+            destinations_seen = set()
+        current_sweep.append(block)
+        destinations_seen.add(block.storage_id)
+    if current_sweep:
+        sweeps.append(tuple(current_sweep))
+    return tuple(sweeps)
+
+
+def _empty_storage_envelope_id(
+    frame: BDOFrame,
+    spec: EventSpec,
+) -> Optional[int]:
+    """Return the registered destination in a validated count-zero wrapper."""
+    item_offset = spec.item_offset
+    mode_offset = item_offset - 30
+    token_start = item_offset - 29
+    token_end = item_offset - 21
+    count_offset = item_offset - 20
+    storage_offset = item_offset - 9
+    if min(mode_offset, token_start, count_offset, storage_offset) < 5:
+        return None
+    if max(token_end, count_offset + 2, storage_offset + 4) > len(frame.message):
+        return None
+    if frame.message[mode_offset] != 2:
+        return None
+    if frame.message[token_start:token_end] != b"\x00" * 8:
+        return None
+    if (
+        int.from_bytes(
+            frame.message[count_offset : count_offset + 2],
+            "little",
+        )
+        != 0
+    ):
+        return None
+    # A declared-empty envelope ends before the first calibrated item. This
+    # rejects malformed nonempty frames whose count happens to be zero.
+    if frame.length > item_offset:
+        return None
+    storage_id = int.from_bytes(
+        frame.message[storage_offset : storage_offset + 4],
+        "little",
+    )
+    # Empty wrappers have no item records to validate. Restrict this path to a
+    # registered numeric destination.
+    return storage_id if storage_id in STORAGE_LOCATIONS else None
+
+
 def _empty_storage_envelopes(
     frames: Iterable[BDOFrame],
     specs: Iterable[EventSpec],
 ) -> tuple[set[int], dict[int, int]]:
     """Recognize empty current-wrapper envelopes without creating fake items."""
-    by_opcode = {spec.opcode: spec for spec in specs}
+    by_opcode = _spec_candidates_by_opcode(specs)
     empty_ids: set[int] = set()
     group_counts: dict[int, int] = {}
     for frame in frames:
-        spec = by_opcode.get(frame.opcode)
-        if spec is None:
+        matches: list[int] = []
+        for spec in by_opcode.get(frame.opcode, ()):
+            candidate_storage_id = _empty_storage_envelope_id(frame, spec)
+            if candidate_storage_id is not None:
+                matches.append(candidate_storage_id)
+        if len(matches) != 1:
             continue
-        item_offset = spec.item_offset
-        mode_offset = item_offset - 30
-        token_start = item_offset - 29
-        token_end = item_offset - 21
-        count_offset = item_offset - 20
-        storage_offset = item_offset - 9
-        if min(mode_offset, token_start, count_offset, storage_offset) < 5:
-            continue
-        if max(token_end, count_offset + 2, storage_offset + 4) > len(frame.message):
-            continue
-        if frame.message[mode_offset] != 2:
-            continue
-        if frame.message[token_start:token_end] != b"\x00" * 8:
-            continue
-        if (
-            int.from_bytes(frame.message[count_offset : count_offset + 2], "little")
-            != 0
-        ):
-            continue
-        # A declared-empty envelope ends before the first calibrated item.
-        # This rejects malformed nonempty frames whose count field happens to
-        # be zero while retaining the observed 35-byte current wrapper.
-        if frame.length > item_offset:
-            continue
-        storage_id = int.from_bytes(
-            frame.message[storage_offset : storage_offset + 4], "little"
-        )
-        # For an empty wrapper there are no item records to validate. Restrict
-        # this provisional envelope path to a registered numeric destination.
-        if storage_id not in STORAGE_LOCATIONS:
-            continue
+        storage_id = matches[0]
         empty_ids.add(storage_id)
         group_counts[storage_id] = group_counts.get(storage_id, 0) + 1
     return empty_ids, group_counts
+
+
+def _validate_item_state_identity_specs(specs: Iterable[EventSpec]) -> None:
+    """Reject snapshot layouts that cannot produce authoritative stack identity."""
+    invalid = [
+        spec
+        for spec in specs
+        if (spec.label == "INVENTORY_TRANSFER" and spec.item_instance_offset is None)
+        or (
+            spec.label == "INVENTORY_TO_STORAGE"
+            and spec.storage_instance_offset is None
+        )
+    ]
+    if not invalid:
+        return
+    descriptions = ", ".join(f"{spec.label}(0x{spec.opcode:04X})" for spec in invalid)
+    raise ProfileError(
+        "item-state snapshots require observed instance offsets for every "
+        f"snapshot layout; missing identity geometry: {descriptions}"
+    )
 
 
 def _active_specs(
@@ -1331,6 +2003,7 @@ def _active_specs(
             f"Opcode profile is inactive: {profile_path}. Activate or recalibrate it."
         )
     loaded = event_specs_from_profile(profile)
+    _validate_item_state_identity_specs(loaded.specs)
     return str(profile_path), loaded.specs
 
 
@@ -1339,6 +2012,7 @@ def analyze_character_load_pcap(
     *,
     opcode_profile: str | Path | None = None,
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
+    capture_limits: Optional[ItemStateCaptureLimits] = None,
 ) -> CharacterStateSnapshot:
     """Replay a capture and summarize framed inventory/storage hydration."""
     options = PacketCaptureOptions(ports=ports)
@@ -1348,6 +2022,7 @@ def analyze_character_load_pcap(
         specs=specs,
         capture_mode="pcap_replay",
         input_path=path,
+        capture_limits=capture_limits,
     )
     engine = PacketEngine(
         server_ports=options.ports,
@@ -1396,26 +2071,34 @@ class CharacterLoadSession:
         opcode_profile: str | Path | None = None,
         capture_options: Optional[PacketCaptureOptions] = None,
         save_pcap: str | Path | None = None,
+        capture_limits: Optional[ItemStateCaptureLimits] = None,
     ) -> None:
         if capture_options is not None and not isinstance(
             capture_options, PacketCaptureOptions
         ):
             raise TypeError("capture_options must be a PacketCaptureOptions or None")
+        if capture_limits is not None and not isinstance(
+            capture_limits, ItemStateCaptureLimits
+        ):
+            raise TypeError("capture_limits must be an ItemStateCaptureLimits or None")
         self._capture_options = capture_options or PacketCaptureOptions()
+        self._capture_limits = capture_limits or ItemStateCaptureLimits()
         self._save_pcap_path = (
             _validate_save_pcap_path(save_pcap) if save_pcap is not None else None
         )
         self._profile_source, self._specs = _active_specs(opcode_profile)
+        self._start_attempted = False
         self._accumulator: Optional[_CharacterStateAccumulator] = None
         self._engine: Optional[PacketEngine] = None
-        self._capture: Any = None
+        self._capture: Optional[LivePacketCapture] = None
         self._capture_writer: Any = None
         self._result: Optional[CharacterStateSnapshot] = None
         self._error: Optional[BaseException] = None
 
     @property
     def running(self) -> bool:
-        return self._capture is not None and bool(self._capture.running)
+        capture = self._capture
+        return capture is not None and capture.running
 
     @property
     def frames_seen(self) -> int:
@@ -1424,7 +2107,10 @@ class CharacterLoadSession:
     @property
     def error(self) -> Optional[BaseException]:
         """First background capture or decoder failure, if any."""
-        return self._error
+        if self._error is not None:
+            return self._error
+        capture = self._capture
+        return capture.error if capture is not None else None
 
     @property
     def save_pcap_path(self) -> Optional[Path]:
@@ -1432,21 +2118,24 @@ class CharacterLoadSession:
         return self._save_pcap_path
 
     def start(self) -> None:
-        """Begin passive background capture."""
-        if self._capture is not None or self._result is not None:
+        """Begin passive capture and return once the adapter is ready.
+
+        A session is single-use, including after a failed startup. Construct a
+        new session to retry with a fresh writer, decoder, and capture handle.
+        """
+        if self._start_attempted:
             raise RuntimeError(
                 "character-load session is single-use and already started"
             )
+        self._start_attempted = True
         self._error = None
-
-        IP, TCP, _, _, _ = import_scapy()
-        from scapy.sendrecv import AsyncSniffer  # type: ignore
 
         accumulator = _CharacterStateAccumulator(
             profile_source=self._profile_source,
             specs=self._specs,
             capture_mode="live_capture",
             saved_capture_path=self._save_pcap_path,
+            capture_limits=self._capture_limits,
         )
         engine = PacketEngine(
             server_ports=self._capture_options.ports,
@@ -1454,106 +2143,50 @@ class CharacterLoadSession:
             on_event=accumulator.observe_record,
             frame_observer=accumulator.observe_frame,
         )
-
-        detected_target = None
-        if self._capture_options.interface is None:
-            detected_target = detect_default_capture_target()
-            capture_interface = detected_target.interface
-        else:
-            capture_interface = self._capture_options.interface
-        capture_local_ip = self._capture_options.local_ip
-        if (
-            capture_local_ip is None
-            and self._capture_options.interface is None
-            and self._capture_options.auto_local_ip
-        ):
-            assert detected_target is not None
-            capture_local_ip = detected_target.local_ip
-
-        bpf_filter = (
-            None
-            if not self._capture_options.use_bpf
-            else build_bpf_filter(self._capture_options.ports, capture_local_ip)
-        )
-        lfilter = None
-        if not self._capture_options.use_bpf:
-            lfilter = lambda packet: (  # noqa: E731
-                IP in packet
-                and TCP in packet
-                and int(packet[TCP].sport) in engine.server_ports
-                and (
-                    capture_local_ip is None or str(packet[IP].dst) == capture_local_ip
-                )
-            )
-
         packet_handler = make_packet_handler(engine)
-        capture_writer = (
-            _open_packet_writer(self._save_pcap_path)
-            if self._save_pcap_path is not None
-            else None
-        )
-
-        def handle_packet(packet: object) -> None:
-            try:
-                # Persist the untouched Scapy packet before decoding it. This
-                # retains the packet that exposed a parser error and keeps the
-                # diagnostic writer independent from reassembly semantics.
-                if capture_writer is not None:
-                    capture_writer.write(packet)
-                packet_handler(packet)
-            except BaseException as exc:
-                if self._error is None:
-                    self._error = exc
-                raise
-
-        capture_ready = Event()
-        capture = None
-        self._accumulator = accumulator
-        self._engine = engine
-        self._capture_writer = capture_writer
+        capture_writer = None
+        capture: Optional[LivePacketCapture] = None
         try:
-            capture = AsyncSniffer(
-                iface=capture_interface,
-                filter=bpf_filter,
-                lfilter=lfilter,
-                prn=handle_packet,
-                store=False,
-                started_callback=capture_ready.set,
+            capture_writer = (
+                _open_packet_writer(self._save_pcap_path)
+                if self._save_pcap_path is not None
+                else None
             )
-            capture.start()
-            # AsyncSniffer.start() returns before its capture thread opens the
-            # adapter. Do not invite the user to switch until traffic can
-            # actually be observed.
-            while not capture_ready.wait(timeout=0.05):
-                capture_error = getattr(capture, "exception", None)
-                if isinstance(capture_error, BaseException):
-                    raise capture_error
-                capture_thread = getattr(capture, "thread", None)
-                if (
-                    capture_thread is not None
-                    and capture_thread.ident is not None
-                    and not capture_thread.is_alive()
-                ):
-                    raise RuntimeError("live capture thread ended during startup")
-        except BaseException:
-            if capture is not None and capture.running:
+
+            def handle_packet(packet: object) -> None:
                 try:
-                    capture.stop()
-                except BaseException:
-                    # Preserve the original startup failure.
-                    pass
+                    # Persist the untouched packet before decoding so parser
+                    # failures still retain the packet that exposed them.
+                    if capture_writer is not None:
+                        capture_writer.write(packet)
+                    packet_handler(packet)
+                except BaseException as exc:
+                    self._record_error(exc)
+                    raise
+
+            capture = LivePacketCapture(
+                capture_options=self._capture_options,
+                on_packet=handle_packet,
+                startup_timeout=_CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS,
+            )
+            self._accumulator = accumulator
+            self._engine = engine
+            self._capture_writer = capture_writer
+            self._capture = capture
+            capture.start()
+        except BaseException as exc:
+            self._record_error(exc)
             if capture_writer is not None:
                 try:
                     capture_writer.close()
                 except BaseException:
                     # Preserve the original startup failure.
                     pass
+            self._capture = None
             self._capture_writer = None
             self._accumulator = None
             self._engine = None
             raise
-        assert capture is not None
-        self._capture = capture
 
     def stop(self) -> CharacterStateSnapshot:
         """Stop capture, finish reassembly, and return the queryable summary."""
@@ -1561,37 +2194,52 @@ class CharacterLoadSession:
             return self._result
         if self._capture is None or self._engine is None or self._accumulator is None:
             raise RuntimeError("character-load session was not started")
-        capture, self._capture = self._capture, None
-        capture_writer, self._capture_writer = self._capture_writer, None
+        capture = self._capture
+        engine = self._engine
+        accumulator = self._accumulator
+        capture_writer = self._capture_writer
         try:
-            if capture.running:
-                capture.stop()
+            capture.stop()
         except BaseException as exc:
-            if self._error is None:
-                self._error = exc
+            self._record_error(exc)
+        capture_error = capture.error
+        if capture_error is not None:
+            self._record_error(capture_error)
         try:
-            self._engine.finish()
+            engine.finish()
         except BaseException as exc:
-            if self._error is None:
-                self._error = exc
+            self._record_error(exc)
         if capture_writer is not None:
             try:
                 capture_writer.close()
             except BaseException as exc:
-                if self._error is None:
-                    self._error = exc
+                self._record_error(exc)
+        result: Optional[CharacterStateSnapshot] = None
+        try:
+            result = accumulator.snapshot()
+        except BaseException as exc:
+            self._record_error(exc)
+        self._capture = None
+        self._capture_writer = None
         self._engine = None
-        self._result = self._accumulator.snapshot()
-        capture_error = getattr(capture, "exception", None)
-        if self._error is None and isinstance(capture_error, BaseException):
-            self._error = capture_error
+        if result is not None:
+            self._result = result
         if self._error is not None:
             raise self._error
-        return self._result
+        assert result is not None
+        return result
+
+    def _record_error(self, error: BaseException) -> None:
+        if self._error is None:
+            self._error = error
 
     def __enter__(self) -> "CharacterLoadSession":
-        if self._capture is None and self._result is None:
+        if not self._start_attempted:
             self.start()
+        elif self._capture is None and self._result is None:
+            raise RuntimeError(
+                "character-load session is single-use and cannot be restarted"
+            )
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -1677,6 +2325,11 @@ def format_character_state(
             lines.append(
                 f"  repeated records merged by item instance: {inventory.duplicate_records}"
             )
+        if inventory.missing_instance_records:
+            lines.append(
+                f"  identity-unresolved records excluded: "
+                f"{inventory.missing_instance_records}"
+            )
         if show_items:
             for item in inventory.items:
                 lines.append(
@@ -1701,17 +2354,45 @@ def format_character_state(
             for storage_id in STORAGE_LOCATIONS
             if storage_id not in observed_known_ids
         )
+        earlier_only = tuple(
+            storage
+            for storage in snapshot.storages
+            if not storage.current_state_observed
+        )
+        identity_incomplete = tuple(
+            storage
+            for storage in snapshot.storages
+            if storage.current_state_observed
+            and storage.current_identity_complete is False
+        )
+        if earlier_only or identity_incomplete:
+            current_state_parts = [
+                f"  {snapshot.nonempty_storage_destinations} non-empty",
+                f"{snapshot.empty_storage_destinations} explicitly empty",
+            ]
+            if identity_incomplete:
+                current_state_parts.append(
+                    f"{len(identity_incomplete)} identity-incomplete"
+                )
+            if earlier_only:
+                current_state_parts.append(
+                    f"{len(earlier_only)} earlier-only (current state unavailable)"
+                )
+            current_state_parts.append(f"{len(missing_known_ids)} not observed")
+            current_state_line = ", ".join(current_state_parts)
+        else:
+            current_state_line = (
+                f"  {snapshot.nonempty_storage_destinations} non-empty, "
+                f"{snapshot.empty_storage_destinations} explicitly empty, "
+                f"{len(missing_known_ids)} not observed"
+            )
         lines.extend(
             [
                 (
                     f"  {snapshot.known_storage_destinations_detected}/"
                     f"{snapshot.known_storage_destinations_total} known destinations observed"
                 ),
-                (
-                    f"  {snapshot.nonempty_storage_destinations} non-empty, "
-                    f"{snapshot.empty_storage_destinations} explicitly empty, "
-                    f"{len(missing_known_ids)} not observed"
-                ),
+                current_state_line,
                 (
                     f"  {snapshot.storage_occupied_stacks} unique occupied item stacks "
                     f"from {snapshot.storage_snapshot_records} decoded snapshot records"
@@ -1720,6 +2401,19 @@ def format_character_state(
                 "",
             ]
         )
+        if snapshot.storage_sweeps_observed:
+            lines.insert(
+                len(lines) - 1,
+                f"  selected inferred storage sweep "
+                f"{snapshot.selected_storage_sweep}/"
+                f"{snapshot.storage_sweeps_observed}",
+            )
+        if snapshot.storage_records_missing_instance:
+            lines.insert(
+                len(lines) - 1,
+                f"  identity-unresolved records excluded: "
+                f"{snapshot.storage_records_missing_instance}",
+            )
         if missing_known_ids:
             missing_names = sorted(
                 STORAGE_LOCATIONS[storage_id].name for storage_id in missing_known_ids
@@ -1730,9 +2424,20 @@ def format_character_state(
             lines.append("")
         for storage in snapshot.storages:
             label = storage.name or f"UNKNOWN_STORAGE(0x{storage.storage_id:08x})"
+            if not storage.current_state_observed:
+                lines.append(
+                    f"  {label}: current state unavailable "
+                    f"(observed only in an earlier inferred sweep)"
+                )
+                continue
             lines.append(
                 f"  {label}: {storage.occupied_stacks} occupied item stacks detected"
             )
+            if storage.selected_missing_instance_records:
+                lines.append(
+                    f"    identity-unresolved current records excluded: "
+                    f"{storage.selected_missing_instance_records}"
+                )
             if show_items:
                 for item in storage.items:
                     lines.append(
@@ -1752,6 +2457,8 @@ __all__ = [
     "CharacterStateSnapshot",
     "InventoryContainerSummary",
     "InventorySnapshotSummary",
+    "ItemStateCaptureLimitError",
+    "ItemStateCaptureLimits",
     "ItemStateCoverage",
     "ItemStateProvenance",
     "SnapshotItem",

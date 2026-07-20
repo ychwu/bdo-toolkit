@@ -4,6 +4,8 @@ from pathlib import Path
 TEST_DIR = Path(__file__).resolve().parent
 FIXTURE_DIR = TEST_DIR / "fixtures"
 BASELINE_DIR = TEST_DIR / "baselines"
+HISTORICAL_PROFILE_DIR = TEST_DIR / "profiles"
+JULY6_OPCODE_PROFILE = HISTORICAL_PROFILE_DIR / "opcodes-2026-07-06.json"
 
 
 def all_fixture_pcaps() -> list[Path]:

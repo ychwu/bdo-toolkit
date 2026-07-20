@@ -38,9 +38,17 @@ class PacketCaptureOptions:
 
 @dataclass(frozen=True)
 class LiveCaptureOptions(PacketCaptureOptions):
-    """Packet capture plus decoded-event buffering for live event APIs."""
+    """Packet capture plus bounded packet/event buffering for live APIs.
+
+    Packets are handed off from the native capture callback to a decoder
+    worker through ``packet_queue_size``.  Decoded events are then buffered
+    for the application through ``event_queue_size``.  Keeping those two
+    bounds separate prevents a slow application callback from blocking the
+    native capture thread without making memory use unbounded.
+    """
 
     event_queue_size: int = 1024
+    packet_queue_size: int = 4096
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -51,3 +59,10 @@ class LiveCaptureOptions(PacketCaptureOptions):
             raise ValueError("event_queue_size must be an integer")
         if self.event_queue_size <= 0:
             raise ValueError("event_queue_size must be greater than zero")
+        if (
+            isinstance(self.packet_queue_size, bool)
+            or not isinstance(self.packet_queue_size, int)
+        ):
+            raise ValueError("packet_queue_size must be an integer")
+        if self.packet_queue_size <= 0:
+            raise ValueError("packet_queue_size must be greater than zero")

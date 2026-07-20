@@ -2,7 +2,7 @@
 
 import pytest
 
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import JULY6_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
 from bdo_toolkit import EventFilter, load_opcode_profile, replay_pcap
 
 requires_fixtures = pytest.mark.skipif(
@@ -19,10 +19,32 @@ def test_default_profile_loads_from_package_data():
     assert "STORAGE_ITEM_DELTA" in profile.specs
 
 
+def test_loaded_profile_is_deeply_immutable_and_serializes_owned_copies():
+    profile = load_opcode_profile()
+    entry = profile.specs["INVENTORY_TRANSFER"][0]
+
+    with pytest.raises(TypeError):
+        profile.specs["NEW_EVENT"] = ()
+    with pytest.raises(TypeError):
+        entry["opcode"] = "0xFFFF"
+
+    payload = profile.to_dict()
+    payload["specs"]["INVENTORY_TRANSFER"][0]["opcode"] = "0xFFFF"
+    payload["origin_companion_families"][0]["companion_opcodes"][0] = (
+        "0xFFFF"
+    )
+
+    assert profile.specs["INVENTORY_TRANSFER"][0]["opcode"] == "0x194A"
+    assert profile.origin_companion_families[0].companion_opcodes[0] == 0x1A59
+
+
 @requires_fixtures
 def test_replay_batch_storage_deposit_as_structured_events():
     events = list(
-        replay_pcap(fixture_path("5960_qty1_and_4015_qty1_multi.pcapng"))
+        replay_pcap(
+            fixture_path("5960_qty1_and_4015_qty1_multi.pcapng"),
+            opcode_profile=JULY6_OPCODE_PROFILE,
+        )
     )
 
     assert len(events) == 2
@@ -46,24 +68,36 @@ def test_replay_filters_by_event_type_and_source():
     fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
 
     assert list(
-        replay_pcap(fixture, event_filter=EventFilter(event_types={"item_received"}))
+        replay_pcap(
+            fixture,
+            opcode_profile=JULY6_OPCODE_PROFILE,
+            event_filter=EventFilter(event_types={"item_received"}),
+        )
     ) == []
     worker_events = list(
         replay_pcap(
             fixture,
+            opcode_profile=JULY6_OPCODE_PROFILE,
             event_filter=EventFilter(sources={"Heidel"}),
         )
     )
     assert len(worker_events) == 2
-    assert list(replay_pcap(fixture, event_filter=EventFilter(item_ids={5960})))[
-        0
-    ].item_id == 5960
+    assert list(
+        replay_pcap(
+            fixture,
+            opcode_profile=JULY6_OPCODE_PROFILE,
+            event_filter=EventFilter(item_ids={5960}),
+        )
+    )[0].item_id == 5960
 
 
 @requires_fixtures
 def test_manual_bulk_deposit_uses_destination_storage_label():
     events = list(
-        replay_pcap(fixture_path("1000306_qty5_unstackable_i2s.pcapng"))
+        replay_pcap(
+            fixture_path("1000306_qty5_unstackable_i2s.pcapng"),
+            opcode_profile=JULY6_OPCODE_PROFILE,
+        )
     )
 
     assert len(events) == 5
@@ -74,7 +108,9 @@ def test_manual_bulk_deposit_uses_destination_storage_label():
 @requires_fixtures
 def test_event_to_dict_round_trips_extra_fields():
     fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
-    event = next(iter(replay_pcap(fixture)))
+    event = next(
+        iter(replay_pcap(fixture, opcode_profile=JULY6_OPCODE_PROFILE))
+    )
     data = event.to_dict()
 
     assert data["event_type"] == "storage_delta"

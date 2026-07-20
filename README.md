@@ -97,9 +97,16 @@ options = LiveCaptureOptions(
     use_bpf=True,
     auto_local_ip=True,
     event_queue_size=2048,
+    packet_queue_size=4096,
 )
 session = LiveCaptureSession(live_options=options)
 ```
+
+The native capture callback only performs a bounded packet handoff; decoding
+runs on a worker thread. Packet-queue overflow fails the session with
+`CaptureIntegrityError` instead of silently continuing. Inspect
+`session.health.capture_is_clean` and its packet, native-drop, TCP-gap, and
+flow-eviction counters before treating a live stream as complete telemetry.
 
 ## Arena of Solare snapshots
 
@@ -289,12 +296,14 @@ The canonical experimental import surface is `bdo_toolkit.item_state`:
 ```python
 from bdo_toolkit.item_state import (
     CharacterLoadSession,
+    ItemStateCaptureLimits,
     analyze_item_state_pcap,
 )
 
 state = analyze_item_state_pcap(
     "character-load.pcapng",
     opcode_profile="opcodes.local",
+    capture_limits=ItemStateCaptureLimits(),
 )
 
 heidel = state.storages.named("Heidel")
@@ -307,7 +316,8 @@ print(len(state.storages), heidel.occupied_stacks if heidel else None)
 print(total_quantity, [storage.name for storage in locations])
 
 payload = state.to_dict()
-print(payload["schema_version"])       # 1
+print(payload["schema_version"])       # 3
+print(state.identity_complete)          # instance-backed aggregation authority
 print(state.coverage.completion_status)  # "unknown"
 print(state.provenance.capture_mode)     # "pcap_replay"
 ```
@@ -324,14 +334,25 @@ from the package root.
 Coverage is observation metadata, not a completeness promise. There is no
 proven protocol end marker, so `state.coverage.completion_status` remains
 `"unknown"` and `capture_may_be_partial` remains true even when every registered
-storage ID was observed. `state.provenance` records the capture mode, selected
+storage ID was observed. Records without an observed stack-instance identity
+remain visible in diagnostics but are excluded from item queries, quantities,
+occupied-stack totals, currencies, and duplicate inference; inspect
+`state.identity_complete` and the inventory/storage missing-instance counters.
+`state.provenance` records the capture mode, selected
 profile, input or saved-capture path, generation-selection rule, and the fact
 that login versus character-switch reason is not decoded. With an inventory
 boundary it selects the latest observed hydration; storage-only evidence is
 explicitly marked as retaining all observed storage and may span multiple loads.
 Structured
-`to_dict()` output carries `schema_version == 1` plus both objects so consumers
+`to_dict()` output carries `schema_version == 3` plus both objects so consumers
 can audit what was observed and evolve parsers deliberately.
+
+Item-state accumulation fails closed before exceeding 10,000 relevant frames,
+50,000 snapshot records, or 64 MiB of retained relevant frame bytes. Customize
+those bounds with `ItemStateCaptureLimits`; an exceeded bound raises
+`ItemStateCaptureLimitError` and no partial snapshot is returned. Repeated
+storage sweeps are selected chronologically, so a later proven empty state
+clears an earlier occupied state for that destination.
 
 After an opcode patch, the ordinary guided transfer calibration is still the
 first recovery step: it genuinely relearns the receipt/storage opcodes,
@@ -441,14 +462,21 @@ if "STORAGE_ITEM_DELTA" in result.events_found:
     update_profile(result, "opcodes.json")
 ```
 
-Profile writes replace the applicable event-family scope by default so stale
-opcodes do not accumulate under one event type. Advanced maintenance tools can
-request an intentional merge with `update_profile(..., replace=False)` or the
-CLI's `--merge` flag.
+Profile writes replace only the event families actually proven by the result,
+so a partial calibration cannot erase valid companion specs that it did not
+rediscover. Advanced maintenance tools can request an intentional full action
+reset with `replace_entire_action=True`, or an intentional merge with
+`update_profile(..., replace=False)` / the CLI's `--merge` flag.
 
 When the network defaults are not suitable, pass
 `capture_options=PacketCaptureOptions(...)` to `CalibrationSession`,
 `AsyncCalibrationSession`, or `calibrate_live()`.
+
+Live calibration retains the newest contiguous evidence tail, bounded by
+50,000 frames and 64 MiB by default. `CalibrationResult.retention_status` and
+the session's observed/retained/discarded counters disclose whether older
+evidence was evicted; configure `max_retained_frames` and
+`max_retained_bytes` when a longer workflow genuinely needs more history.
 
 Then point the API at it: `replay_pcap("session.pcapng", opcode_profile="opcodes.json")`.
 
@@ -461,6 +489,14 @@ Direction is classified from structure, not taken on faith: an explicit
 structure contradicts the declared action. See the
 [calibration docs](https://ychwu.github.io/bdo-toolkit/#calibration) for the
 full workflow and how direction detection works.
+
+A controlled multi/unstackable inventory-to-storage move can now normalize both
+the storage wrapper and an instance-anchored repeated source decrement back to
+their single-record base lengths and save the observed strides. That recovery
+fails closed unless one exact cross-frame instance anchor and one coherent
+repeat geometry are unique. A single-record move remains the most portable
+fallback across an unfamiliar patch; capturing both shapes provides the
+strongest calibration evidence.
 
 ## Worker origin: classification vs. learning
 
@@ -506,6 +542,12 @@ as `manual`; incomplete or absent evidence on an already-live delta stays
 `storage_record`, while missing evidence leaves that record neutral. Companion
 opcode numbers are not hard-coded as the primary signal, but a structurally
 discovered family must be unambiguous/confirmed or already promoted.
+
+When available, manual matching uses the calibrated source-stack instance and
+anchored repeat geometry as well as quantity. The audit trail under
+`extra["deposit_origin_evidence"]["manual_decrement"]` reports the opcode,
+record offsets/index, match kind, whether source and destination instances
+matched, and `observed`, `structural`, or legacy `heuristic` confidence.
 
 The evidence reports both whether a family was explicitly promoted
 (`known_family`) and whether the current tracker trusted it
@@ -566,7 +608,10 @@ learner.save("opcodes.origin-candidates.json")
 The learner stores hashes of shared tokens, never the raw token. Replaying the
 same capture again does not inflate its observation count. Saving candidates
 does not affect `known_family`; only explicit promotion into the normal opcode
-profile does.
+profile does. Retention is bounded by default to 256 candidate families and
+10,000 unique observations. `OriginLearningLimitError` is raised before either
+limit would be exceeded; use explicit `max_candidates` / `max_observations`
+only for a deliberately larger audit.
 
 ## Design Principles
 

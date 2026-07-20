@@ -23,6 +23,10 @@ from ._reassembly import FlowManager
 from .events import BDOEvent, Flow
 
 
+_ITEM_MAX_ACTIVE_FLOWS = 64
+_ITEM_FLOW_IDLE_SECONDS = 300.0
+
+
 class _TeeScanner:
     """Feed one reassembled stream to the target scanner and observers.
 
@@ -172,17 +176,22 @@ class PacketEngine:
         on_event: Callable[[LootEvent, bytes], None],
         frame_observer: Optional[Callable[[BDOFrame], None]] = None,
         stream_observer: Optional[Callable[[bytes, PacketContext], None]] = None,
+        flow_close_observer: Optional[Callable[[FlowKey], None]] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
         self._on_event = on_event
+        self._flow_state_evictions = 0
 
         def build_scanner():
             primary = TargetMessageScanner(self._handle_record, self.event_specs)
             if frame_observer is None and stream_observer is None:
                 return primary
             tap = (
-                FrameCollectorScanner(frame_observer)
+                FrameCollectorScanner(
+                    frame_observer,
+                    known_opcodes=(spec.opcode for spec in self.event_specs),
+                )
                 if frame_observer is not None
                 else None
             )
@@ -191,6 +200,10 @@ class PacketEngine:
         self._flow_manager = FlowManager(
             server_ports=server_ports,
             scanner_factory=build_scanner,
+            max_flows=_ITEM_MAX_ACTIVE_FLOWS,
+            on_flow_eviction=self._count_flow_state_eviction,
+            on_flow_close=flow_close_observer,
+            idle_timeout=_ITEM_FLOW_IDLE_SECONDS,
         )
         self._seen_event_keys: set[
             tuple[FlowKey, int, int, Optional[int], bytes]
@@ -198,10 +211,32 @@ class PacketEngine:
         self._seen_event_order: deque[
             tuple[FlowKey, int, int, Optional[int], bytes]
         ] = deque()
+        self._last_raw_message: Optional[bytes] = None
+        self._last_raw_message_digest: Optional[bytes] = None
 
     @property
     def server_ports(self) -> frozenset[int]:
         return self._flow_manager.server_ports
+
+    @property
+    def tcp_gap_resets(self) -> int:
+        """Cumulative reassembly resets caused by missing TCP segments."""
+
+        return self._flow_manager.tcp_gap_resets
+
+    @property
+    def flow_state_evictions(self) -> int:
+        """Number of active flow states lost to the defensive resource cap."""
+
+        return self._flow_state_evictions
+
+    def service_gaps(self, now: float) -> int:
+        """Advance TCP gap deadlines even when no new packet arrives."""
+
+        return self._flow_manager.service_gaps(now)
+
+    def _count_flow_state_eviction(self) -> None:
+        self._flow_state_evictions += 1
 
     def process_tcp_segment(
         self,
@@ -249,7 +284,7 @@ class PacketEngine:
             event.stream_sequence,
             event.opcode,
             event.record_offset,
-            hashlib.blake2b(raw_message, digest_size=16).digest(),
+            self._raw_message_digest(raw_message),
         )
         if key in self._seen_event_keys:
             return True
@@ -260,3 +295,17 @@ class PacketEngine:
             expired_key = self._seen_event_order.popleft()
             self._seen_event_keys.discard(expired_key)
         return False
+
+    def _raw_message_digest(self, raw_message: bytes) -> bytes:
+        # TargetMessageScanner delivers every record from one batch with the
+        # same immutable bytes object. Cache by identity so a 72-record load
+        # hashes its message once rather than 72 times.
+        if (
+            raw_message is self._last_raw_message
+            and self._last_raw_message_digest is not None
+        ):
+            return self._last_raw_message_digest
+        digest = hashlib.blake2b(raw_message, digest_size=16).digest()
+        self._last_raw_message = raw_message
+        self._last_raw_message_digest = digest
+        return digest

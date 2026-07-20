@@ -17,6 +17,7 @@ import pytest
 from fixture_paths import (
     BASELINE_DIR,
     FIXTURE_DIR,
+    JULY6_OPCODE_PROFILE,
     all_baseline_jsonl,
     all_fixture_pcaps,
     baseline_path_for_fixture,
@@ -41,7 +42,13 @@ def test_fixture_matches_baseline(pcap: Path):
         for line in baseline_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    actual = [event.to_dict() for event in replay_pcap(pcap)]
+    # These baselines were recorded against the July 6 decoder generation.
+    # Keep that historical authority explicit now that the bundled default
+    # advances with reviewed live patches.
+    actual = [
+        event.to_dict()
+        for event in replay_pcap(pcap, opcode_profile=JULY6_OPCODE_PROFILE)
+    ]
 
     assert actual == expected
 

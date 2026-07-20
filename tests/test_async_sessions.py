@@ -123,6 +123,14 @@ class FakeCalibrationSession:
         self.kwargs = kwargs
         self._running = False
         self.frames_collected = 0
+        self.frames_observed = 0
+        self.frames_retained = 0
+        self.frames_discarded = 0
+        self.bytes_observed = 0
+        self.bytes_retained = 0
+        self.bytes_discarded = 0
+        self.retention_truncated = False
+        self.retention = object()
         self.start_calls = 0
         self.stop_calls = 0
         self.abort_calls = 0
@@ -243,6 +251,35 @@ def test_async_live_iterator_drains_finalized_tail_after_external_stop(
     asyncio.run(scenario())
 
 
+def test_async_live_batch_uses_one_executor_submission_for_ready_events(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(10)]
+        for event in expected:
+            fake.emit(event)
+
+        submissions = 0
+        original_submit = session._submit
+
+        def counted_submit(function):
+            nonlocal submissions
+            submissions += 1
+            return original_submit(function)
+
+        session._submit = counted_submit
+        received = await session._poll_batch()
+
+        assert list(received) == expected
+        assert submissions == 1
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
 def test_async_live_background_error_surfaces_after_queued_event(
     fake_async_sessions,
 ):
@@ -326,6 +363,26 @@ def test_async_live_concurrent_stop_calls_share_one_shutdown(
             await first
         await second
         assert fake.stop_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_async_live_second_start_preserves_cleanup_executor(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+
+        with pytest.raises(RuntimeError, match="already started"):
+            await session.start()
+
+        assert not session._executor_closed
+        assert fake.start_calls == 1
+        await session.stop()
+        assert fake.stop_calls == 1
+        assert session._executor_closed
 
     asyncio.run(scenario())
 
@@ -435,6 +492,35 @@ def test_async_calibration_returns_result_without_context_abort(
         assert fake.abort_calls == 0
 
     asyncio.run(scenario())
+
+
+def test_async_calibration_forwards_and_exposes_retention(fake_async_sessions):
+    session = AsyncCalibrationSession(
+        item_id=7003,
+        max_retained_frames=321,
+        max_retained_bytes=65_432,
+    )
+    fake = FakeCalibrationSession.instances[-1]
+
+    assert fake.kwargs["max_retained_frames"] == 321
+    assert fake.kwargs["max_retained_bytes"] == 65_432
+
+    fake.frames_observed = 7
+    fake.frames_retained = 5
+    fake.frames_discarded = 2
+    fake.bytes_observed = 700
+    fake.bytes_retained = 500
+    fake.bytes_discarded = 200
+    fake.retention_truncated = True
+
+    assert session.frames_observed == 7
+    assert session.frames_retained == 5
+    assert session.frames_discarded == 2
+    assert session.bytes_observed == 700
+    assert session.bytes_retained == 500
+    assert session.bytes_discarded == 200
+    assert session.retention_truncated
+    assert session.retention is fake.retention
 
 
 def test_async_calibration_context_aborts_when_no_result_requested(

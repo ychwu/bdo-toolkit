@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from threading import Thread
+import time
+from threading import Event, Thread
 
 import pytest
 
 from bdo_toolkit import (
     BDOEvent,
+    CaptureIntegrityError,
     EventFilter,
     Flow,
     LiveCaptureOptions,
@@ -34,9 +36,16 @@ def live_fakes(monkeypatch):
         def __init__(self, server_ports):
             self.server_ports = frozenset(server_ports)
             self.finish_calls = 0
+            self.service_gap_calls = []
+            self.tcp_gap_resets = 0
+            self.flow_state_evictions = 0
 
         def finish(self):
             self.finish_calls += 1
+
+        def service_gaps(self, now):
+            self.service_gap_calls.append(now)
+            return 0
 
     class FakeCollector:
         instances = []
@@ -238,6 +247,97 @@ def test_session_propagates_capture_thread_errors(live_fakes, monkeypatch):
     assert isinstance(session.error, RuntimeError)
 
 
+def test_native_callback_hands_slow_decode_to_worker(live_fakes, monkeypatch):
+    _, FakeSniffer = live_fakes
+    decoder_entered = Event()
+    decoder_release = Event()
+
+    def make_slow_handler(engine):
+        del engine
+
+        def handle(packet):
+            del packet
+            decoder_entered.set()
+            decoder_release.wait(timeout=1.0)
+
+        return handle
+
+    monkeypatch.setattr(capture_module, "make_packet_handler", make_slow_handler)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    session.start()
+
+    started = time.monotonic()
+    FakeSniffer.instances[-1].emit_packet(object())
+    callback_elapsed = time.monotonic() - started
+
+    assert decoder_entered.wait(timeout=1.0)
+    assert callback_elapsed < 0.1
+    decoder_release.set()
+    session.stop()
+    assert session.health.packets_accepted == 1
+
+
+def test_session_services_tcp_gap_clock_while_idle(live_fakes):
+    FakeCollector, _ = live_fakes
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    session.start()
+    engine = FakeCollector.instances[-1].engine
+
+    deadline = time.monotonic() + 1.0
+    while not engine.service_gap_calls and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    session.stop()
+    assert engine.service_gap_calls
+
+
+def test_packet_queue_overflow_fails_closed_and_reports_health(
+    live_fakes,
+    monkeypatch,
+):
+    _, FakeSniffer = live_fakes
+    decoder_entered = Event()
+    decoder_release = Event()
+
+    def make_blocking_handler(engine):
+        del engine
+
+        def handle(packet):
+            del packet
+            decoder_entered.set()
+            decoder_release.wait(timeout=2.0)
+
+        return handle
+
+    monkeypatch.setattr(capture_module, "make_packet_handler", make_blocking_handler)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(
+            interface="test-interface",
+            packet_queue_size=1,
+        )
+    )
+    session.start()
+    sniffer = FakeSniffer.instances[-1]
+    sniffer.emit_packet(object())
+    assert decoder_entered.wait(timeout=1.0)
+    sniffer.emit_packet(object())
+    sniffer.emit_packet(object())
+
+    health = session.health
+    assert health.packet_queue_overflows == 1
+    assert not health.capture_is_clean
+    assert isinstance(session.error, CaptureIntegrityError)
+
+    decoder_release.set()
+    with pytest.raises(CaptureIntegrityError, match="packet queue overflowed"):
+        list(session.events())
+    assert session.stopped
+
+
 def test_session_propagates_sniffer_thread_startup_errors(live_fakes):
     _, FakeSniffer = live_fakes
     session = LiveCaptureSession(
@@ -315,6 +415,53 @@ def test_capture_live_remains_a_timed_blocking_wrapper(live_fakes):
     assert FakeCollector.instances[-1].finalize_calls == 1
 
 
+def test_capture_live_deadline_stops_while_consumer_is_suspended(monkeypatch):
+    emitted = _event(99)
+
+    class DeadlineSession:
+        _POLL_INTERVAL_SECONDS = 0.2
+        instances = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.stopped = False
+            self.delivered = False
+            self.stop_at = None
+            self.stopped_event = Event()
+            self.__class__.instances.append(self)
+
+        def start(self):
+            pass
+
+        def poll(self, timeout=None):
+            del timeout
+            if not self.delivered:
+                self.delivered = True
+                return emitted
+            return None
+
+        def _finish_stop(self, reason):
+            assert reason == "timeout"
+            self.stop_at = time.monotonic()
+            self.stopped = True
+            self.stopped_event.set()
+
+        def stop(self):
+            self.stopped = True
+            self.stopped_event.set()
+
+    monkeypatch.setattr(capture_module, "LiveCaptureSession", DeadlineSession)
+    started = time.monotonic()
+    events = capture_module.capture_live(capture_seconds=0.05)
+
+    assert next(events) is emitted
+    session = DeadlineSession.instances[-1]
+    assert session.stopped_event.wait(timeout=0.5)
+    assert session.stop_at is not None
+    assert session.stop_at - started < 0.3
+    events.close()
+
+
 def test_closing_capture_live_stops_its_delegated_session(monkeypatch):
     emitted = _event(42)
 
@@ -353,6 +500,8 @@ def test_session_validates_configuration_before_capture_starts():
         LiveCaptureOptions(event_queue_size=0)
     with pytest.raises(ValueError, match="IPv4"):
         LiveCaptureOptions(local_ip="not-an-ip")
+    with pytest.raises(ValueError, match="packet_queue_size"):
+        LiveCaptureOptions(packet_queue_size=0)
     with pytest.raises(ValueError, match="use_bpf"):
         PacketCaptureOptions(use_bpf="yes")
 

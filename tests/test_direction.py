@@ -9,6 +9,7 @@ calibration never silently mislabels a wrong-direction capture.
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
+from bdo_toolkit import load_opcode_profile
 from bdo_toolkit.calibration import (
     DirectionMismatchError,
     calibrate_pcap,
@@ -353,9 +354,9 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
 
     profile_path = tmp_path / "opcodes.json"
     update_profile(result, profile_path)  # auto replaces each discovered family
-    from bdo_toolkit._specs import load_spec_profile
+    from bdo_toolkit._specs import event_specs_from_profile
 
-    profile = load_spec_profile(profile_path)
+    profile = event_specs_from_profile(load_opcode_profile(profile_path))
     assert profile.active
     labels = {spec.label for spec in profile.specs}
     # STORAGE_ITEM_DELTA is emitted as an INVENTORY_TO_STORAGE decode spec.

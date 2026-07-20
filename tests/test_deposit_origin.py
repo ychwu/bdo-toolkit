@@ -7,22 +7,54 @@ exercises.
 """
 
 import json
+from pathlib import Path
+from threading import Event as ThreadEvent, Thread
 
 import pytest
 
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import JULY6_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
 from bdo_toolkit import EventFilter, replay_pcap
-from bdo_toolkit.capture import _EventCollector
+from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
-from bdo_toolkit.profiles import OriginCompanionFamily
+from bdo_toolkit.profiles import OpcodeProfile, OriginCompanionFamily
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
+
+
+def test_closed_flow_histories_are_released_across_long_sessions():
+    tracker = DepositOriginTracker(decrement_specs=(), emit=lambda event: None)
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(),
+        on_event=lambda event, raw: None,
+        frame_observer=tracker.observe_frame,
+        stream_observer=tracker.observe_stream,
+        flow_close_observer=tracker.close_flow,
+    )
+    generic_frame = b"\x05\x00\x00\x34\x12"
+
+    for index in range(1000):
+        engine.process_tcp_segment(
+            source_ip="10.0.0.1",
+            source_port=8889,
+            destination_ip="10.0.0.2",
+            destination_port=40000 + index,
+            sequence=1000,
+            payload=generic_frame,
+            timestamp=float(index),
+            fin=True,
+        )
+
+    assert tracker._recent == {}
+    assert tracker._stream_spans == {}
+    assert tracker._first_record_boundaries == {}
+    assert tracker._observed_chains == set()
 
 # Worker deposits span BOTH storage-delta context modes (05 and 20).
 WORKER_FIXTURES = [
@@ -41,7 +73,10 @@ MANUAL_FIXTURES = [
 def _origins(fixture):
     return [
         (event.deposit_origin, event.extra.get("deposit_origin_evidence"))
-        for event in replay_pcap(fixture_path(fixture))
+        for event in replay_pcap(
+            fixture_path(fixture),
+            opcode_profile=JULY6_OPCODE_PROFILE,
+        )
         if event.event_type == "storage_delta"
     ]
 
@@ -67,7 +102,13 @@ def test_manual_deposits_classify_as_manual(fixture):
     assert results, f"no storage_delta events decoded from {fixture}"
     for origin, evidence in results:
         assert origin == "manual"
-        assert evidence == {"worker_companions": False, "matching_decrement": True}
+        assert evidence["worker_companions"] is False
+        assert evidence["matching_decrement"] is True
+        assert evidence["manual_decrement"]["confidence"] in {
+            "observed",
+            "structural",
+        }
+        assert evidence["manual_decrement"]["source_instance_offset"] >= 0
 
 
 @requires_fixtures
@@ -77,6 +118,53 @@ def test_ambient_nonmatching_decrement_does_not_flip_worker_verdict():
     (origin, evidence), = _origins("7002_qty25.pcapng")
     assert origin == "worker"
     assert evidence["matching_decrement"] is False
+
+
+@requires_fixtures
+def test_legacy_manual_fixtures_distinguish_identity_confidence_and_stride():
+    full_stack = _origins("new_potato_3_tostorage.pcapng")
+    partial_stack = _origins("new_potato_1_1_1.pcapng")
+    unstackable_batch = _origins("1000306_qty5_unstackable_i2s.pcapng")
+
+    assert len(full_stack) == 1
+    full_evidence = full_stack[0][1]["manual_decrement"]
+    assert full_evidence["confidence"] == "observed"
+    assert full_evidence["instance_matches_destination"] is True
+
+    # A genuine partial-stack manual move receives a new destination
+    # identity. Its calibrated source field is still anchored evidence, but
+    # it must not claim the exact-match confidence used above.
+    assert len(partial_stack) == 1
+    partial_evidence = partial_stack[0][1]["manual_decrement"]
+    assert partial_evidence["confidence"] == "structural"
+    assert partial_evidence["instance_matches_destination"] is False
+
+    # The historical profile predates repeat_stride. The matching code safely
+    # infers its capture-proven 23-byte geometry from the five-record storage
+    # batch, then requires exact identity for each inferred nonzero offset.
+    assert len(unstackable_batch) == 5
+    batch_evidence = [
+        evidence["manual_decrement"] for _, evidence in unstackable_batch
+    ]
+    assert [entry["quantity_offset"] for entry in batch_evidence] == [
+        42,
+        65,
+        88,
+        111,
+        134,
+    ]
+    assert [entry["source_instance_offset"] for entry in batch_evidence] == [
+        34,
+        57,
+        80,
+        103,
+        126,
+    ]
+    assert all(entry["confidence"] == "observed" for entry in batch_evidence)
+    assert all(
+        entry["instance_matches_destination"] is True
+        for entry in batch_evidence
+    )
 
 
 # --- synthetic fail-closed behavior ---
@@ -104,6 +192,7 @@ def _storage_event(
     timestamp=1000.0,
     message_length=5,
     record_offset=37,
+    storage_instance=None,
 ):
     return BDOEvent(
         event_type="storage_delta",
@@ -114,6 +203,7 @@ def _storage_event(
         opcode=0x0E6A,
         message_length=message_length,
         record_offset=record_offset,
+        storage_instance=storage_instance,
         extra={"stream_sequence": seq},
     )
 
@@ -162,6 +252,242 @@ def test_manual_decrement_requires_calibrated_length_and_offset():
 
     assert emitted[0].deposit_origin == "unknown"
     assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
+
+
+def test_common_quantity_does_not_match_an_empty_declared_instance_field():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x11AD,
+                47,
+                27,
+                source_instance_offset=35,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    decrement = bytearray(47)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x11AD).to_bytes(2, "little")
+    decrement[27:31] = (1).to_bytes(4, "little")
+    # source_instance@35 remains zero: this is a coincidental quantity, not
+    # a structurally valid calibrated decrement record.
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(
+        _storage_event(
+            quantity=1,
+            seq=1000,
+            storage_instance="0x1122334455667788",
+        )
+    )
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
+
+
+def test_exact_instance_match_accepts_low_entropy_identity():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x11AD,
+                47,
+                27,
+                source_instance_offset=35,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    instance = bytes.fromhex("0102030400000000")
+    decrement = bytearray(47)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x11AD).to_bytes(2, "little")
+    decrement[27:31] = (1).to_bytes(4, "little")
+    decrement[35:43] = instance
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(
+        _storage_event(
+            quantity=1,
+            seq=1000,
+            storage_instance=f"0x{instance.hex()}",
+        )
+    )
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "manual"
+    manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
+    assert manual["confidence"] == "observed"
+    assert manual["instance_matches_destination"] is True
+
+
+def test_nonexact_structural_instance_requires_entropy_in_both_halves():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x11AD,
+                47,
+                27,
+                source_instance_offset=35,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    decrement = bytearray(47)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x11AD).to_bytes(2, "little")
+    decrement[27:31] = (1).to_bytes(4, "little")
+    decrement[35:43] = bytes.fromhex("0102030400000000")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(
+        _storage_event(
+            quantity=1,
+            seq=1000,
+            storage_instance="0x1122334455667788",
+        )
+    )
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
+
+
+def test_valid_nonexact_instance_is_explicit_structural_evidence():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x11AD,
+                47,
+                27,
+                source_instance_offset=35,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    decrement = bytearray(47)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x11AD).to_bytes(2, "little")
+    decrement[27:31] = (1).to_bytes(4, "little")
+    decrement[35:43] = bytes.fromhex("1020304050607080")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(
+        _storage_event(
+            quantity=1,
+            seq=1000,
+            storage_instance="0x1122334455667788",
+        )
+    )
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "manual"
+    manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
+    assert manual["match_kind"] == "anchored-instance-and-quantity"
+    assert manual["confidence"] == "structural"
+    assert manual["instance_matches_destination"] is False
+
+
+def test_configured_decrement_stride_matches_the_corresponding_record():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x1A32,
+                52,
+                42,
+                source_instance_offset=34,
+                repeat_stride=23,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    first_instance = bytes.fromhex("1020304050607080")
+    second_instance = bytes.fromhex("1122334455667788")
+    decrement = bytearray(75)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x1A32).to_bytes(2, "little")
+    decrement[34:42] = first_instance
+    decrement[42:46] = (2).to_bytes(4, "little")
+    decrement[57:65] = second_instance
+    decrement[65:69] = (8).to_bytes(4, "little")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=1000))
+    tracker.register(
+        _storage_event(
+            quantity=8,
+            seq=1000,
+            storage_instance=f"0x{second_instance.hex()}",
+        )
+    )
+    tracker.finalize_all()
+
+    assert emitted[0].deposit_origin == "manual"
+    manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
+    assert manual["quantity_offset"] == 65
+    assert manual["source_instance_offset"] == 57
+    assert manual["confidence"] == "observed"
+
+
+def test_malformed_declared_decrement_geometry_is_not_downgraded():
+    profile = OpcodeProfile(
+        path=Path("synthetic-opcodes.json"),
+        active=True,
+        version=1,
+        updated_at=None,
+        calibration_item_id=None,
+        specs={
+            "SOURCE_STACK_DECREMENT": (
+                {
+                    "opcode": "0x1000",
+                    "length": 47,
+                    "quantity_removed_offset": 27,
+                },
+                {
+                    "opcode": "0x1001",
+                    "length": 47,
+                    "quantity_removed_offset": 27,
+                    "source_instance_offset": 45,
+                },
+                {
+                    "opcode": "0x1002",
+                    "length": 47,
+                    "quantity_removed_offset": 27,
+                    "source_instance_offset": 35,
+                    "repeat_stride": 60,
+                },
+                {
+                    "opcode": "0x1003",
+                    "length": 52,
+                    "quantity_removed_offset": 42,
+                    "source_instance_offset": 34,
+                    "repeat_stride": 23,
+                },
+            )
+        },
+    )
+
+    specs = _decrement_specs(profile)
+
+    assert [
+        (spec.opcode, spec.source_instance_offset, spec.repeat_stride)
+        for spec in specs
+    ] == [(0x1000, None, None), (0x1003, 34, 23)]
 
 
 def test_no_evidence_yields_unknown():
@@ -251,8 +577,8 @@ def test_companions_already_in_segment_finalize_immediately():
     assert emitted and emitted[0].deposit_origin == "worker"
 
 
-def test_worker_chain_survives_a_desynchronized_generic_frame_tap():
-    """Raw stream correlation must work even when capture starts mid-frame."""
+def test_worker_chain_resynchronizes_generic_tap_after_midframe_start():
+    """A known delta boundary restores the generic tap after attachment."""
     emitted = []
     tracker = _tracker(emitted)
     tapped_frames = []
@@ -287,8 +613,8 @@ def test_worker_chain_survives_a_desynchronized_generic_frame_tap():
     delta_message[37:41] = (7002).to_bytes(4, "little")
     delta_message[41:45] = (25).to_bytes(4, "little")
 
-    # 0x1000 is a plausible but incomplete leading length, deliberately
-    # stalling the generic collector. The opcode scanner can still resync.
+    # 0x1000 is a plausible but incomplete leading length.  The generic tap
+    # must now skip it and use the known delta opcode as a frame boundary.
     payload = b"\x00\x10" + bytes(delta_message) + first.message + second.message
     engine.process_tcp_segment(
         source_ip=FLOW.source_ip,
@@ -300,7 +626,11 @@ def test_worker_chain_survives_a_desynchronized_generic_frame_tap():
         timestamp=1000.0,
     )
 
-    assert tapped_frames == []
+    assert [frame.opcode for frame in tapped_frames] == [
+        0x0E6A,
+        first.opcode,
+        second.opcode,
+    ]
     assert emitted and emitted[0].deposit_origin == "worker"
 
 
@@ -413,9 +743,16 @@ def test_unknown_operation_manual_is_promoted_before_filtering(tmp_path):
     assert event.storage_operation == "live"
     assert event.deposit_origin == "manual"
     assert event.extra["storage_delta"] == 8
-    assert event.extra["deposit_origin_evidence"] == {
-        "worker_companions": False,
-        "matching_decrement": True,
+    manual_evidence = event.extra["deposit_origin_evidence"]
+    assert manual_evidence["worker_companions"] is False
+    assert manual_evidence["matching_decrement"] is True
+    assert manual_evidence["manual_decrement"] == {
+        "opcode": "0x11AD",
+        "message_length": 47,
+        "quantity_offset": 27,
+        "match_kind": "quantity-only",
+        "confidence": "heuristic",
+        "record_index": 1,
     }
     assert event.extra["storage_operation_evidence"] == {
         "wire_operation": "unknown",
@@ -688,6 +1025,124 @@ def test_stale_pending_deposit_flushes_as_unknown():
     assert emitted[0].deposit_origin == "unknown"
 
 
+def test_stale_flush_serializes_a_concurrent_pending_registration():
+    emitted = []
+    tracker = _tracker(emitted)
+    tracker.observe_frame(_frame(0x0E6A, seq=1000, timestamp=1000.0))
+    tracker.register(_storage_event(item_id=7002, seq=1000, timestamp=1000.0))
+
+    entered = ThreadEvent()
+    release = ThreadEvent()
+    registration_finished = ThreadEvent()
+    thread_errors = []
+    original_close = tracker._close_pending
+
+    def paused_close(pending):
+        entered.set()
+        assert release.wait(timeout=2)
+        original_close(pending)
+
+    tracker._close_pending = paused_close
+
+    def flush():
+        try:
+            tracker.flush_stale(now=1005.0)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    def register_second():
+        try:
+            tracker.register(
+                _storage_event(item_id=7003, seq=2000, timestamp=1001.0)
+            )
+            registration_finished.set()
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    flush_thread = Thread(target=flush)
+    register_thread = Thread(target=register_second)
+    flush_thread.start()
+    assert entered.wait(timeout=2)
+    register_thread.start()
+
+    # Registration must wait for the stale-list replacement, otherwise the
+    # older implementation overwrites the concurrent append with ``still``.
+    assert not registration_finished.wait(timeout=0.05)
+    release.set()
+    flush_thread.join(timeout=2)
+    register_thread.join(timeout=2)
+    assert not flush_thread.is_alive()
+    assert not register_thread.is_alive()
+    assert thread_errors == []
+
+    tracker._close_pending = original_close
+    tracker.finalize_all()
+    assert [event.item_id for event in emitted] == [7002, 7003]
+
+
+def test_stale_flush_serializes_concurrent_neutral_batch_creation():
+    emitted = []
+    tracker = _tracker(emitted)
+
+    def neutral(item_id, sequence, timestamp):
+        return BDOEvent(
+            event_type="storage_record",
+            timestamp=timestamp,
+            flow=Flow("10.0.0.1", 8889, "10.0.0.2", 50000),
+            item_id=item_id,
+            quantity=1,
+            opcode=0x126D,
+            message_length=479,
+            record_offset=36,
+            record_index=1,
+            record_count=2,
+            storage_operation="unknown",
+            extra={"stream_sequence": sequence},
+        )
+
+    tracker.register(neutral(4802, 1000, 1000.0))
+    entered = ThreadEvent()
+    release = ThreadEvent()
+    registration_finished = ThreadEvent()
+    thread_errors = []
+    original_emit_batch = tracker._emit_neutral_entries
+
+    def paused_emit_batch(batch):
+        entered.set()
+        assert release.wait(timeout=2)
+        original_emit_batch(batch)
+
+    tracker._emit_neutral_entries = paused_emit_batch
+
+    def flush():
+        try:
+            tracker.flush_stale(now=1005.0)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    def register_second():
+        try:
+            tracker.register(neutral(4003, 2000, 1001.0))
+            registration_finished.set()
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    flush_thread = Thread(target=flush)
+    register_thread = Thread(target=register_second)
+    flush_thread.start()
+    assert entered.wait(timeout=2)
+    register_thread.start()
+    assert not registration_finished.wait(timeout=0.05)
+    release.set()
+    flush_thread.join(timeout=2)
+    register_thread.join(timeout=2)
+    assert thread_errors == []
+
+    tracker._emit_neutral_entries = original_emit_batch
+    tracker.finalize_all()
+    assert [event.item_id for event in emitted] == [4802, 4003]
+
+
 def test_lookahead_window_expires_after_unrelated_frames():
     emitted = []
     tracker = _tracker(emitted)
@@ -700,7 +1155,12 @@ def test_lookahead_window_expires_after_unrelated_frames():
 
 @requires_fixtures
 def test_format_human_shows_deposit_origin():
-    events = list(replay_pcap(fixture_path("worker_4607.pcapng")))
+    events = list(
+        replay_pcap(
+            fixture_path("worker_4607.pcapng"),
+            opcode_profile=JULY6_OPCODE_PROFILE,
+        )
+    )
     line = events[0].format_human()
     assert "deposit_origin=worker" in line
 
@@ -713,14 +1173,28 @@ def test_deposit_origins_filter_is_first_class():
     worker = fixture_path("worker_4607.pcapng")
 
     assert list(
-        replay_pcap(manual, event_filter=EventFilter(deposit_origins={"worker"}))
+        replay_pcap(
+            manual,
+            opcode_profile=JULY6_OPCODE_PROFILE,
+            event_filter=EventFilter(deposit_origins={"worker"}),
+        )
     ) == []
     assert len(
-        list(replay_pcap(manual, event_filter=EventFilter(deposit_origins={"manual"})))
+        list(
+            replay_pcap(
+                manual,
+                opcode_profile=JULY6_OPCODE_PROFILE,
+                event_filter=EventFilter(deposit_origins={"manual"}),
+            )
+        )
     ) == 5
 
     events = list(
-        replay_pcap(worker, event_filter=EventFilter(deposit_origins={"worker"}))
+        replay_pcap(
+            worker,
+            opcode_profile=JULY6_OPCODE_PROFILE,
+            event_filter=EventFilter(deposit_origins={"worker"}),
+        )
     )
     assert [(e.item_id, e.deposit_origin) for e in events] == [(4607, "worker")]
 
