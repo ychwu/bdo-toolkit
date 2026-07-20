@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import TracebackType
 from typing import AsyncIterator, Callable, Optional, TypeVar
 
 from bdo_toolkit._capture_options import PacketCaptureOptions
+from bdo_toolkit._capture_runtime import _attach_cleanup_owner
 from ._constants import LIVE_CAPTURE_BUFFER_BYTES
 from .models import (
     SolareCaptureEndpoint,
@@ -17,7 +19,7 @@ from .models import (
     SolareUpdate,
     SolareUpdateKind,
 )
-from .session import LiveSolareSession
+from .session import LiveSolareSession, _validate_timeout
 
 
 T = TypeVar("T")
@@ -26,9 +28,16 @@ T = TypeVar("T")
 async def _settle(future: asyncio.Future[T]) -> T:
     while not future.done():
         try:
-            await asyncio.shield(future)
+            await asyncio.wait((future,))
         except asyncio.CancelledError:
             continue
+    return future.result()
+
+
+async def _await_preserving_future(future: asyncio.Future[T]) -> T:
+    """Await a worker future without cancelling it or creating a shield."""
+
+    await asyncio.wait((future,))
     return future.result()
 
 
@@ -64,6 +73,7 @@ class AsyncLiveSolareSession:
         self._start_active = False
         self._poll_active = False
         self._wait_active = False
+        self._pending_updates: deque[SolareUpdate] = deque()
         self._stop_future: Optional[asyncio.Future[SolareCaptureResult]] = None
         self._terminal_shutdown_task: Optional[asyncio.Task[None]] = None
 
@@ -74,6 +84,12 @@ class AsyncLiveSolareSession:
     @property
     def stopped(self) -> bool:
         return self._session.stopped
+
+    @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether native capture cleanup remains owned for another attempt."""
+
+        return self._session.cleanup_incomplete
 
     @property
     def result(self) -> Optional[SolareCaptureResult]:
@@ -128,6 +144,16 @@ class AsyncLiveSolareSession:
             close_after_worker_and_calls_settle()
         )
 
+    def _observe_polled_update(
+        self,
+        update: Optional[SolareUpdate],
+    ) -> Optional[SolareUpdate]:
+        if update is not None and update.kind is SolareUpdateKind.FINISHED:
+            self._schedule_terminal_shutdown()
+        elif self._session.stopped:
+            self._shutdown()
+        return update
+
     async def start(self) -> None:
         """Start capture without blocking the event-loop thread."""
 
@@ -137,23 +163,48 @@ class AsyncLiveSolareSession:
         try:
             try:
                 future = self._submit(self._session.start)
-                await asyncio.shield(future)
-            except asyncio.CancelledError:
+                await _await_preserving_future(future)
+            except asyncio.CancelledError as exc:
                 started = False
+                stop_future: asyncio.Future[SolareCaptureResult] | None = None
                 try:
                     await _settle(future)
                     started = True
                 except BaseException:
                     pass
-                if started:
+                if started or self._session.cleanup_incomplete:
+                    self._started = True
                     try:
-                        await _settle(self._submit(self._session.stop))
+                        stop_future = self._ensure_stop_future()
+                        await _settle(stop_future)
                     except BaseException:
                         pass
-                self._shutdown()
+                if self._session.cleanup_incomplete:
+                    if (
+                        stop_future is not None
+                        and self._stop_future is stop_future
+                    ):
+                        self._stop_future = None
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="async live Solare startup",
+                    )
+                else:
+                    self._shutdown()
                 raise
-            except BaseException:
-                self._shutdown()
+            except BaseException as exc:
+                if self._session.cleanup_incomplete:
+                    # The synchronous session deliberately retains the native
+                    # callback owners so a later stop() can finish cleanup.
+                    self._started = True
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="async live Solare startup",
+                    )
+                else:
+                    self._shutdown()
                 raise
             self._started = True
         finally:
@@ -164,9 +215,18 @@ class AsyncLiveSolareSession:
             self._stop_future = self._submit(self._session.stop)
         return self._stop_future
 
+    def _inside_update_callback(self) -> bool:
+        predicate = getattr(self._session, "_inside_update_callback", None)
+        return bool(predicate is not None and predicate())
+
     async def stop(self) -> SolareCaptureResult:
         """Stop capture and return the structurally classified result."""
 
+        if self._inside_update_callback():
+            raise RuntimeError(
+                "stop() cannot block inside on_update; use "
+                "request_stop() instead"
+            )
         if not self._started:
             raise RuntimeError("live Solare session was not started")
         if self._session.stopped:
@@ -183,16 +243,24 @@ class AsyncLiveSolareSession:
 
         future = self._ensure_stop_future()
         try:
-            result = await asyncio.shield(future)
+            result = await _await_preserving_future(future)
         except asyncio.CancelledError:
             try:
                 await _settle(future)
             except BaseException:
                 pass
-            self._shutdown()
+            if self._session.cleanup_incomplete:
+                if self._stop_future is future:
+                    self._stop_future = None
+            else:
+                self._shutdown()
             raise
         except BaseException:
-            self._shutdown()
+            if self._session.cleanup_incomplete:
+                if self._stop_future is future:
+                    self._stop_future = None
+            else:
+                self._shutdown()
             raise
         self._shutdown()
         return result
@@ -210,6 +278,11 @@ class AsyncLiveSolareSession:
     ) -> Optional[SolareCaptureResult]:
         """Await automatic completion or a timeout."""
 
+        if self._inside_update_callback():
+            raise RuntimeError(
+                "wait() cannot block inside on_update; use request_stop() "
+                "and wait after the callback returns"
+            )
         if not self._started:
             raise RuntimeError("live Solare session was not started")
         if self._wait_active:
@@ -218,11 +291,12 @@ class AsyncLiveSolareSession:
         try:
             if self._session.stopped:
                 self._shutdown()
-                return self._session.wait(timeout=0)
+                return self._session.wait(timeout=timeout)
             future = self._submit(partial(self._session.wait, timeout))
             try:
-                result = await asyncio.shield(future)
+                result = await _await_preserving_future(future)
             except asyncio.CancelledError:
+                stop_future: asyncio.Future[SolareCaptureResult] | None = None
                 try:
                     stop_future = self._ensure_stop_future()
                     await _settle(stop_future)
@@ -232,10 +306,20 @@ class AsyncLiveSolareSession:
                     await _settle(future)
                 except BaseException:
                     pass
-                self._shutdown()
+                if self._session.cleanup_incomplete:
+                    if (
+                        stop_future is not None
+                        and self._stop_future is stop_future
+                    ):
+                        self._stop_future = None
+                else:
+                    self._shutdown()
                 raise
             except BaseException:
-                if self._session.stopped or self._session.error is not None:
+                if (
+                    not self._session.cleanup_incomplete
+                    and (self._session.stopped or self._session.error is not None)
+                ):
                     self._shutdown()
                 raise
             if result is not None or self._session.stopped:
@@ -247,38 +331,59 @@ class AsyncLiveSolareSession:
     async def poll(self, timeout: Optional[float] = None) -> Optional[SolareUpdate]:
         """Await one structured progress update."""
 
+        if self._inside_update_callback():
+            raise RuntimeError(
+                "poll() cannot consume updates inside on_update; consume "
+                "them outside the callback"
+            )
         if not self._started:
             raise RuntimeError("live Solare session was not started")
         if self._poll_active:
             raise RuntimeError("async live Solare session supports one consumer")
+        _validate_timeout(timeout, name="timeout")
         self._poll_active = True
         try:
+            if self._pending_updates:
+                return self._observe_polled_update(
+                    self._pending_updates.popleft()
+                )
             if self._session.stopped:
                 self._shutdown()
-                return self._session.poll(timeout=0)
+                return self._session.poll(timeout=timeout)
             future = self._submit(partial(self._session.poll, timeout))
             try:
-                update = await asyncio.shield(future)
+                update = await _await_preserving_future(future)
             except asyncio.CancelledError:
+                stop_future: asyncio.Future[SolareCaptureResult] | None = None
                 try:
-                    await _settle(self._ensure_stop_future())
+                    stop_future = self._ensure_stop_future()
+                    await _settle(stop_future)
                 except BaseException:
                     pass
                 try:
-                    await _settle(future)
+                    settled_update = await _settle(future)
                 except BaseException:
                     pass
-                self._shutdown()
-                raise
-            except BaseException:
-                if self._session.stopped or self._session.error is not None:
+                else:
+                    if settled_update is not None:
+                        self._pending_updates.append(settled_update)
+                if self._session.cleanup_incomplete:
+                    if (
+                        stop_future is not None
+                        and self._stop_future is stop_future
+                    ):
+                        self._stop_future = None
+                else:
                     self._shutdown()
                 raise
-            if update is not None and update.kind is SolareUpdateKind.FINISHED:
-                self._schedule_terminal_shutdown()
-            elif self._session.stopped:
-                self._shutdown()
-            return update
+            except BaseException:
+                if (
+                    not self._session.cleanup_incomplete
+                    and (self._session.stopped or self._session.error is not None)
+                ):
+                    self._shutdown()
+                raise
+            return self._observe_polled_update(update)
         finally:
             self._poll_active = False
 
@@ -308,8 +413,19 @@ class AsyncLiveSolareSession:
             else:
                 try:
                     await self.stop()
-                except BaseException:
+                except BaseException as cleanup_error:
                     # Preserve the exception already escaping the async block.
-                    pass
+                    if self.cleanup_incomplete:
+                        _attach_cleanup_owner(
+                            exc_value,
+                            self,
+                            context="async live Solare context",
+                        )
+                    if hasattr(exc_value, "add_note"):
+                        exc_value.add_note(
+                            "async live Solare context cleanup also failed: "
+                            f"{cleanup_error!r}"
+                        )
         finally:
-            self._shutdown()
+            if not self._session.cleanup_incomplete:
+                self._shutdown()

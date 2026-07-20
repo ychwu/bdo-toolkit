@@ -92,6 +92,35 @@ class _RaisingStopSniffer(_ReadySniffer):
         raise self.failure
 
 
+class _ControlledThread:
+    def __init__(self) -> None:
+        self.ident = 1234
+        self.alive = True
+        self.join_calls: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout)
+
+
+class _UncooperativeStopSniffer(_ReadySniffer):
+    failure = OSError("capture stop request failed")
+
+    def start(self) -> None:
+        self.running = True
+        self.thread = _ControlledThread()
+        callback = self.kwargs["started_callback"]
+        assert callable(callback)
+        callback()
+
+    def stop(self, join: bool = True) -> None:
+        self.stop_calls += 1
+        assert join is False
+        raise self.failure
+
+
 @pytest.fixture(autouse=True)
 def live_runtime_fakes(monkeypatch):
     _ReadySniffer.instances.clear()
@@ -344,6 +373,113 @@ def test_raising_stop_is_observable_after_flow_cleanup(monkeypatch) -> None:
     assert not session.running
     with pytest.raises(RuntimeError, match="not started"):
         session.stop()
+
+
+def test_incomplete_capture_stop_keeps_calibration_flow_owner_for_retry(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        capture_runtime,
+        "_new_async_sniffer",
+        _UncooperativeStopSniffer,
+    )
+    session = _session()
+    session.start()
+    capture = session._capture
+    manager = session._manager
+    assert capture is not None
+    assert manager is not None
+    finish_calls = 0
+    original_finish = manager.finish
+
+    def finish() -> None:
+        nonlocal finish_calls
+        finish_calls += 1
+        original_finish()
+
+    monkeypatch.setattr(manager, "finish", finish)
+
+    with pytest.raises(RuntimeError, match="cleanup is incomplete") as first:
+        session.stop()
+
+    sniffer = _ReadySniffer.instances[-1]
+    thread = sniffer.thread
+    assert isinstance(thread, _ControlledThread)
+    assert first.value.__cause__ is _UncooperativeStopSniffer.failure
+    assert thread.join_calls == [capture_runtime._CAPTURE_JOIN_TIMEOUT_SECONDS]
+    assert finish_calls == 0
+    assert session._capture is capture
+    assert session._manager is manager
+    assert session.cleanup_incomplete
+    assert capture.cleanup_incomplete
+
+    thread.alive = False
+    sniffer.running = False
+    with pytest.raises(RuntimeError) as retried:
+        session.stop()
+
+    assert retried.value is first.value
+    assert finish_calls == 1
+    assert session._capture is None
+    assert session._manager is None
+    assert not session.cleanup_incomplete
+    assert capture.stopped
+
+
+def test_incomplete_startup_cleanup_keeps_calibration_owner_until_stop_retry(
+    monkeypatch,
+) -> None:
+    startup_failure = RuntimeError("capture startup timed out")
+
+    class IncompleteStartupCapture:
+        instances = []
+
+        def __init__(self, **kwargs: object) -> None:
+            self.running = True
+            self.stopped = False
+            self.cleanup_incomplete = True
+            self.cleanup_error = RuntimeError("capture cleanup is incomplete")
+            self.error = startup_failure
+            self.__class__.instances.append(self)
+
+        def start(self) -> None:
+            raise startup_failure
+
+        def stop(self) -> None:
+            self.running = False
+            self.stopped = True
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+
+        def raise_if_failed(self) -> None:
+            raise startup_failure
+
+    monkeypatch.setattr(
+        calibration_module,
+        "LivePacketCapture",
+        IncompleteStartupCapture,
+    )
+    session = _session()
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    capture = IncompleteStartupCapture.instances[-1]
+    manager = session._manager
+    assert started.value is startup_failure
+    assert started.value.cleanup_owner is session
+    assert session._capture is capture
+    assert manager is not None
+    assert session.cleanup_incomplete
+
+    with pytest.raises(RuntimeError) as stopped:
+        session.stop()
+
+    assert stopped.value is startup_failure
+    assert session._capture is None
+    assert session._manager is None
+    assert not session.cleanup_incomplete
+    assert capture.stopped
 
 
 def test_context_exit_stops_capture_and_preserves_block_exception(

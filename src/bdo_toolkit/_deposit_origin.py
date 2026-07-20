@@ -205,15 +205,15 @@ class DepositOriginTracker:
                 matches.append(spec)
         self._emit_callback = emit
         self._origin_observer = origin_observer
-        # Live capture previously mutated correlation state from Scapy's
-        # producer thread while the application consumer called
-        # ``flush_stale``.  Keep every state transition under one lock and
-        # dispatch application callbacks only after releasing it.  A separate
-        # re-entrant dispatch lock preserves outbox order while allowing a
-        # callback to re-enter the tracker without deadlocking.
+        # Live capture mutates correlation state from its decoder worker while
+        # the application consumer can call ``flush_stale``.  Keep every state
+        # transition under one lock and queue callbacks in that same order.
+        # Exactly one caller owns outbox dispatch at a time, but callbacks run
+        # without *any* tracker lock held: a callback may need a session lock
+        # while another thread holding that session lock enters the tracker.
         self._state_lock = RLock()
-        self._dispatch_lock = RLock()
         self._outbox: deque[tuple[str, object]] = deque()
+        self._dispatching = False
         self._known_companion_families = {
             family.family_key for family in known_families
         }
@@ -1191,13 +1191,30 @@ class DepositOriginTracker:
         self._outbox.append(("emit", event))
 
     def _drain_outbox(self) -> None:
-        """Dispatch callbacks outside the state lock in mutation order."""
-        with self._dispatch_lock:
+        """Dispatch callbacks in mutation order without holding tracker locks.
+
+        A concurrent or re-entrant caller only appends to the protected outbox;
+        the active dispatcher observes that append before relinquishing
+        ownership.  Claiming and relinquishing ownership while ``_state_lock``
+        is held avoids the empty-outbox handoff race.
+        """
+
+        with self._state_lock:
+            if self._dispatching:
+                return
+            self._dispatching = True
+
+        try:
             while True:
                 with self._state_lock:
                     if not self._outbox:
+                        self._dispatching = False
                         return
                     kind, payload = self._outbox.popleft()
+
+                # Do not move either callback under ``_state_lock`` or add a
+                # dispatch lock around it.  Live delivery takes a session lock
+                # that can be held by a concurrent ``flush_stale`` caller.
                 if kind == "emit":
                     assert isinstance(payload, BDOEvent)
                     self._emit_callback(payload)
@@ -1207,3 +1224,9 @@ class DepositOriginTracker:
                     observer = self._origin_observer
                     if observer is not None:
                         observer(payload)
+        except BaseException:
+            # Preserve callback exception propagation while allowing cleanup
+            # or a later tracker operation to resume any queued deliveries.
+            with self._state_lock:
+                self._dispatching = False
+            raise

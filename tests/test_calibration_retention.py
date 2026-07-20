@@ -242,6 +242,43 @@ def test_live_retention_keeps_newest_tail_and_reports_truncation(
     assert "live retention truncated" in result.summary()
 
 
+def test_live_calibration_bounds_and_expires_reassembly_flows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        calibration_module,
+        "LivePacketCapture",
+        _FakeLivePacketCapture,
+    )
+    session = CalibrationSession(item_id=7003)
+    session.start()
+    manager = session._manager
+    assert manager is not None
+    assert manager._max_flows == 64
+    assert manager._idle_timeout == 300.0
+
+    for index in range(65):
+        manager.process_tcp_segment(
+            source_ip="203.0.113.10",
+            source_port=8889,
+            destination_ip="198.51.100.20",
+            destination_port=40_000 + index,
+            sequence=1_000,
+            payload=b"\x01",
+            timestamp=float(index),
+        )
+
+    assert len(manager._flows) == 64
+    assert FlowKey(
+        "203.0.113.10", 8889, "198.51.100.20", 40_000
+    ) not in manager._flows
+    assert manager._next_flow_generation == 65
+
+    manager.service_gaps(now=365.0)
+    assert not manager._flows
+    session.stop()
+
+
 def test_live_retention_enforces_payload_byte_limit() -> None:
     session = CalibrationSession(
         item_id=7003,

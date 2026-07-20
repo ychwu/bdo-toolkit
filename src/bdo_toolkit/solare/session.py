@@ -5,16 +5,21 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread, current_thread, local
+from threading import Event, Lock, Thread, current_thread
 from types import TracebackType
 from typing import Any, Optional
 
 from bdo_toolkit._capture_backend import make_packet_handler
 from bdo_toolkit._capture_options import PacketCaptureOptions
-from bdo_toolkit._capture_runtime import CaptureStats, LivePacketCapture
+from bdo_toolkit._capture_runtime import (
+    CaptureStats,
+    LivePacketCapture,
+    _attach_cleanup_owner,
+)
 
 from ._constants import (
     LIVE_CAPTURE_BUFFER_BYTES,
@@ -36,6 +41,10 @@ from .models import (
 
 
 _POLL_INTERVAL_SECONDS = 0.2
+_ACTIVE_UPDATE_SESSIONS: ContextVar[tuple[object, ...]] = ContextVar(
+    "bdo_toolkit_active_solare_update_sessions",
+    default=(),
+)
 
 
 def _validate_timeout(value: Optional[float], *, name: str) -> None:
@@ -60,6 +69,8 @@ class LiveSolareSession:
     saved layout; validated detail fingerprints are considered only after the
     ranking tables independently confirm.
     """
+
+    _WORKER_STOP_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -99,7 +110,6 @@ class LiveSolareSession:
         self._worker_ready = Event()
         self._state_lock = Lock()
         self._finish_lock = Lock()
-        self._callback_state = local()
 
         self._start_attempted = False
         self._started = False
@@ -119,6 +129,7 @@ class LiveSolareSession:
         self._packet_queue_peak = 0
         self._packet_queue_overflows = 0
         self._decoder_failed = False
+        self._cleanup_incomplete = False
 
     @property
     def running(self) -> bool:
@@ -127,6 +138,12 @@ class LiveSolareSession:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether capture cleanup remains owned and retryable."""
+
+        return self._cleanup_incomplete
 
     @property
     def result(self) -> Optional[SolareCaptureResult]:
@@ -243,6 +260,21 @@ class LiveSolareSession:
                         capture.stop()
                     except BaseException as cleanup_error:
                         self._record_error(cleanup_error)
+                if capture is not None and not capture.stopped:
+                    # The native callback still owns this session through
+                    # _enqueue_packet(). Reject new packets, but retain every
+                    # capture/decoder owner so stop() can retry cleanup.
+                    self._cleanup_incomplete = True
+                    self._started = True
+                    self._stop_requested.set()
+                    with self._state_lock:
+                        self._stop_reason = "error"
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="live Solare startup",
+                    )
+                    raise
                 while True:
                     try:
                         self._packet_queue.get_nowait()
@@ -273,7 +305,7 @@ class LiveSolareSession:
 
         self._require_started()
         if not self._stopped.is_set():
-            if self._inside_update_callback() and self.result is None:
+            if self._inside_update_callback():
                 raise RuntimeError(
                     "stop() cannot block inside on_update; use "
                     "request_stop() instead"
@@ -281,8 +313,30 @@ class LiveSolareSession:
             self.request_stop()
             self._worker_ready.set()
             worker = self._worker
-            if worker is not None and worker is not current_thread():
-                worker.join()
+            if (
+                worker is not None
+                and worker is not current_thread()
+                and worker.is_alive()
+            ):
+                worker.join(timeout=self._WORKER_STOP_TIMEOUT_SECONDS)
+                if worker.is_alive():
+                    cleanup_error = RuntimeError(
+                        "live Solare worker cleanup is incomplete after the "
+                        f"{self._WORKER_STOP_TIMEOUT_SECONDS:g}-second deadline"
+                    )
+                    self._record_error(cleanup_error)
+                    self._cleanup_incomplete = True
+                    capture = self._capture
+                    if capture is not None and not capture.stopped:
+                        try:
+                            capture.stop()
+                        except BaseException as exc:
+                            self._record_error(exc)
+                    # The worker may still own tracker/collector callbacks.
+                    # Never finalize or release those dependencies in parallel.
+                    raise cleanup_error
+            if not self._stopped.is_set():
+                self._finish_worker(self.stop_reason or "requested")
         self.raise_if_failed()
         result = self.result
         if result is None:
@@ -317,8 +371,19 @@ class LiveSolareSession:
                 "wait() cannot block inside on_update; use request_stop() "
                 "and wait after the callback returns"
             )
-        if not self._stopped.wait(timeout=timeout):
-            return None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not self._stopped.is_set():
+            if self._cleanup_incomplete:
+                self.raise_if_failed()
+            if deadline is None:
+                wait_seconds = _POLL_INTERVAL_SECONDS
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                wait_seconds = min(_POLL_INTERVAL_SECONDS, remaining)
+            if self._stopped.wait(timeout=wait_seconds):
+                break
         self.raise_if_failed()
         return self.result
 
@@ -341,6 +406,8 @@ class LiveSolareSession:
             if self._stopped.is_set():
                 self.raise_if_failed()
                 return None
+            if self._cleanup_incomplete:
+                self.raise_if_failed()
             if deadline is None:
                 wait_seconds = _POLL_INTERVAL_SECONDS
             else:
@@ -420,23 +487,36 @@ class LiveSolareSession:
         with self._finish_lock:
             if self._stopped.is_set():
                 return
+            self._stop_requested.set()
             capture = self._capture
             collector = self._collector
             tracker = self._tracker
             stats = None
             result: Optional[SolareCaptureResult] = None
+            stop_failure: Optional[BaseException] = None
+            if capture is not None:
+                try:
+                    stats = capture.stop()
+                except BaseException as exc:
+                    stop_failure = exc
+                    self._record_error(exc)
+                try:
+                    if capture.error is not None:
+                        self._record_error(capture.error)
+                except BaseException as exc:
+                    self._record_error(exc)
+                if not capture.stopped:
+                    cleanup_error = (
+                        getattr(capture, "cleanup_error", None)
+                        or stop_failure
+                        or RuntimeError(
+                            "live Solare capture cleanup is incomplete"
+                        )
+                    )
+                    self._record_error(cleanup_error)
+                    self._cleanup_incomplete = True
+                    return
             try:
-                if capture is not None:
-                    try:
-                        stats = capture.stop()
-                    except BaseException as exc:
-                        self._record_error(exc)
-                    try:
-                        if capture.error is not None:
-                            self._record_error(capture.error)
-                    except BaseException as exc:
-                        self._record_error(exc)
-
                 while True:
                     try:
                         packet = self._packet_queue.get_nowait()
@@ -599,6 +679,7 @@ class LiveSolareSession:
                 self._capture = None
                 self._confirmed_health = None
                 self._worker = None
+                self._cleanup_incomplete = False
                 self._stopped.set()
 
     def _process_packet(self, packet: object) -> None:
@@ -721,6 +802,8 @@ class LiveSolareSession:
         )
 
     def _enqueue_packet(self, packet: object) -> None:
+        if self._stop_requested.is_set():
+            return
         try:
             self._packet_queue.put_nowait(packet)
         except Full:
@@ -756,8 +839,8 @@ class LiveSolareSession:
 
     def _notify_update(self, update: SolareUpdate) -> None:
         if self._on_update is not None:
-            depth = getattr(self._callback_state, "depth", 0)
-            self._callback_state.depth = depth + 1
+            active_sessions = _ACTIVE_UPDATE_SESSIONS.get()
+            token = _ACTIVE_UPDATE_SESSIONS.set(active_sessions + (self,))
             try:
                 self._on_update(update)
             except BaseException as exc:
@@ -765,10 +848,10 @@ class LiveSolareSession:
                 self._set_requested_reason("error")
                 self._stop_requested.set()
             finally:
-                self._callback_state.depth = depth
+                _ACTIVE_UPDATE_SESSIONS.reset(token)
 
     def _inside_update_callback(self) -> bool:
-        return bool(getattr(self._callback_state, "depth", 0))
+        return self in _ACTIVE_UPDATE_SESSIONS.get()
 
     def _close_writer(self) -> None:
         writer = self._writer
@@ -830,10 +913,20 @@ class LiveSolareSession:
             return
         try:
             self.stop()
-        except BaseException:
+        except BaseException as cleanup_error:
             # The exception already leaving the user's block remains primary;
             # the first session failure is still available through ``error``.
-            pass
+            if self.cleanup_incomplete:
+                _attach_cleanup_owner(
+                    exc_value,
+                    self,
+                    context="live Solare context",
+                )
+            if hasattr(exc_value, "add_note"):
+                exc_value.add_note(
+                    "live Solare context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
 
 
 def capture_solare_snapshot(
@@ -871,7 +964,30 @@ def capture_solare_snapshot(
             if result is not None:
                 return result
     except KeyboardInterrupt:
-        return session.stop()
-    finally:
+        try:
+            return session.stop()
+        except BaseException as exc:
+            if session.cleanup_incomplete:
+                _attach_cleanup_owner(
+                    exc,
+                    session,
+                    context="live Solare convenience wrapper",
+                )
+            raise
+    except BaseException as exc:
         if session.running:
-            session.stop()
+            try:
+                session.stop()
+            except BaseException as cleanup_error:
+                if session.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc,
+                        session,
+                        context="live Solare convenience wrapper",
+                    )
+                if cleanup_error is not exc and hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "live Solare convenience cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
+        raise

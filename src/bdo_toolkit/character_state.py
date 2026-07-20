@@ -22,7 +22,11 @@ from ._capture_backend import (
     make_packet_handler,
 )
 from ._capture_options import PacketCaptureOptions
-from ._capture_runtime import DEFAULT_STARTUP_TIMEOUT_SECONDS, LivePacketCapture
+from ._capture_runtime import (
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    LivePacketCapture,
+    _attach_cleanup_owner,
+)
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
     BDOFrame,
@@ -2101,6 +2105,13 @@ class CharacterLoadSession:
         return capture is not None and capture.running
 
     @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether capture shutdown retained resources for a stop retry."""
+
+        capture = self._capture
+        return capture is not None and capture.cleanup_incomplete
+
+    @property
     def frames_seen(self) -> int:
         return self._accumulator.frames_seen if self._accumulator is not None else 0
 
@@ -2122,6 +2133,8 @@ class CharacterLoadSession:
 
         A session is single-use, including after a failed startup. Construct a
         new session to retry with a fresh writer, decoder, and capture handle.
+        If startup reports incomplete cleanup, first call ``stop()`` on this
+        session until the retained capture backend is verified stopped.
         """
         if self._start_attempted:
             raise RuntimeError(
@@ -2176,6 +2189,16 @@ class CharacterLoadSession:
             capture.start()
         except BaseException as exc:
             self._record_error(exc)
+            if capture is not None and capture.cleanup_incomplete:
+                # The backend may still invoke handle_packet(). Keep its
+                # writer, engine, accumulator, and capture owner reachable so
+                # stop() can safely retry before any dependent resource closes.
+                _attach_cleanup_owner(
+                    exc,
+                    self,
+                    context="character-load capture startup",
+                )
+                raise
             if capture_writer is not None:
                 try:
                     capture_writer.close()
@@ -2191,6 +2214,10 @@ class CharacterLoadSession:
     def stop(self) -> CharacterStateSnapshot:
         """Stop capture, finish reassembly, and return the queryable summary."""
         if self._result is not None:
+            if self._error is not None:
+                # A cached diagnostic snapshot must never turn a previously
+                # failed run into an apparent success on a repeated stop().
+                raise self._error
             return self._result
         if self._capture is None or self._engine is None or self._accumulator is None:
             raise RuntimeError("character-load session was not started")
@@ -2198,10 +2225,21 @@ class CharacterLoadSession:
         engine = self._engine
         accumulator = self._accumulator
         capture_writer = self._capture_writer
+        stop_failure: Optional[BaseException] = None
         try:
             capture.stop()
         except BaseException as exc:
+            stop_failure = exc
             self._record_error(exc)
+        if not capture.stopped:
+            if stop_failure is None:
+                stop_failure = capture.cleanup_error or RuntimeError(
+                    "character-load capture cleanup is incomplete"
+                )
+                self._record_error(stop_failure)
+            # The capture callback still owns the writer and decoder. Leave
+            # every dependency intact for a later, verified stop attempt.
+            raise stop_failure
         capture_error = capture.error
         if capture_error is not None:
             self._record_error(capture_error)
@@ -2244,7 +2282,22 @@ class CharacterLoadSession:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         if self._capture is not None:
-            self.stop()
+            try:
+                self.stop()
+            except BaseException as cleanup_error:
+                if exc_value is None:
+                    raise
+                if self.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc_value,
+                        self,
+                        context="character-load capture context",
+                    )
+                if hasattr(exc_value, "add_note"):
+                    exc_value.add_note(
+                        "character-load context cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
 
 
 def format_character_state(

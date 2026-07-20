@@ -1363,6 +1363,184 @@ def test_live_character_load_times_out_and_cleans_every_startup_resource(
         session.start()
 
 
+def test_live_character_load_retains_dependencies_until_capture_thread_stops(
+    monkeypatch,
+    character_load_live_fakes,
+):
+    class ControlledThread:
+        ident = 1234
+
+        def __init__(self):
+            self.alive = True
+            self.join_calls = []
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+
+    failure = OSError("capture stop request failed")
+
+    class UncooperativeSniffer:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.running = False
+            self.exception = None
+            self.thread = ControlledThread()
+            self.stop_calls = 0
+            self.__class__.instances.append(self)
+
+        def start(self):
+            self.running = True
+            self.kwargs["started_callback"]()
+
+        def stop(self, join=True):
+            self.stop_calls += 1
+            assert join is False
+            raise failure
+
+    class FakeWriter:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    writer = FakeWriter()
+    monkeypatch.setattr(
+        capture_runtime,
+        "_new_async_sniffer",
+        UncooperativeSniffer,
+    )
+    monkeypatch.setattr(
+        character_state_module,
+        "_open_packet_writer",
+        lambda path: writer,
+    )
+    session = CharacterLoadSession(
+        capture_options=PacketCaptureOptions(interface="test-interface"),
+        save_pcap="retained-cleanup.pcapng",
+    )
+    session.start()
+    capture = session._capture
+    engine = session._engine
+    accumulator = session._accumulator
+    assert capture is not None
+    assert engine is not None
+    assert accumulator is not None
+
+    with pytest.raises(RuntimeError, match="cleanup is incomplete") as first:
+        session.stop()
+
+    sniffer = UncooperativeSniffer.instances[-1]
+    assert sniffer.thread.join_calls == [
+        capture_runtime._CAPTURE_JOIN_TIMEOUT_SECONDS
+    ]
+    assert first.value.__cause__ is failure
+    assert session._capture is capture
+    assert session._engine is engine
+    assert session._accumulator is accumulator
+    assert session._capture_writer is writer
+    assert not writer.closed
+    assert session.cleanup_incomplete
+
+    sniffer.thread.alive = False
+    sniffer.running = False
+    with pytest.raises(RuntimeError) as retried:
+        session.stop()
+
+    assert retried.value is first.value
+    assert capture.stopped
+    assert writer.closed
+    assert session._capture is None
+    assert session._engine is None
+    assert session._capture_writer is None
+    assert not session.cleanup_incomplete
+    with pytest.raises(RuntimeError) as repeated:
+        session.stop()
+    assert repeated.value is first.value
+
+
+def test_character_load_retains_startup_dependencies_when_cleanup_is_incomplete(
+    monkeypatch,
+    character_load_live_fakes,
+):
+    startup_failure = RuntimeError("capture startup timed out")
+
+    class IncompleteStartupCapture:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.running = True
+            self.stopped = False
+            self.cleanup_incomplete = True
+            self.cleanup_error = RuntimeError("capture cleanup is incomplete")
+            self.error = startup_failure
+            self.__class__.instances.append(self)
+
+        def start(self):
+            raise startup_failure
+
+        def stop(self):
+            self.running = False
+            self.stopped = True
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+
+    class FakeWriter:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    writer = FakeWriter()
+    monkeypatch.setattr(
+        character_state_module,
+        "LivePacketCapture",
+        IncompleteStartupCapture,
+    )
+    monkeypatch.setattr(
+        character_state_module,
+        "_open_packet_writer",
+        lambda path: writer,
+    )
+    session = CharacterLoadSession(
+        capture_options=PacketCaptureOptions(interface="test-interface"),
+        save_pcap="retained-startup.pcapng",
+    )
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    capture = IncompleteStartupCapture.instances[-1]
+    assert started.value is startup_failure
+    assert started.value.cleanup_owner is session
+    assert session._capture is capture
+    assert session._engine is not None
+    assert session._accumulator is not None
+    assert session._capture_writer is writer
+    assert not writer.closed
+    assert session.cleanup_incomplete
+
+    with pytest.raises(RuntimeError) as stopped:
+        session.stop()
+
+    assert stopped.value is startup_failure
+    assert capture.stopped
+    assert writer.closed
+    assert session._capture is None
+    assert session._engine is None
+    assert session._capture_writer is None
+    assert not session.cleanup_incomplete
+    with pytest.raises(RuntimeError) as repeated:
+        session.stop()
+    assert repeated.value is startup_failure
+
+
 def test_live_character_load_successful_session_is_single_use_and_stop_is_cached(
     character_load_live_fakes,
 ):

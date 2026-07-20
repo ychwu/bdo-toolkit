@@ -8,7 +8,7 @@ exercises.
 
 import json
 from pathlib import Path
-from threading import Event as ThreadEvent, Thread
+from threading import Event as ThreadEvent, RLock, Thread
 
 import pytest
 
@@ -1023,6 +1023,71 @@ def test_stale_pending_deposit_flushes_as_unknown():
     assert not emitted
     tracker.flush_stale(now=1005.0)
     assert emitted[0].deposit_origin == "unknown"
+
+
+def test_stale_flush_delivery_does_not_invert_tracker_and_session_locks():
+    """A delivery callback must not retain a tracker dispatch lock.
+
+    This recreates the former live-session AB-BA cycle deterministically:
+    producer dispatch -> session delivery lock, while consumer delivery lock
+    -> tracker stale flush.  Both pending events must still arrive in tracker
+    order after the consumer releases its simulated session lock.
+    """
+
+    delivery_lock = RLock()
+    callback_entered = ThreadEvent()
+    consumer_holds_delivery = ThreadEvent()
+    emitted = []
+    thread_errors = []
+
+    def deliver(event):
+        try:
+            callback_entered.set()
+            assert consumer_holds_delivery.wait(timeout=2)
+            with delivery_lock:
+                emitted.append(event)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    tracker = DepositOriginTracker(
+        decrement_specs=(DecrementSpec(0x1A32, 52, 42),),
+        emit=deliver,
+    )
+    tracker.register(_storage_event(item_id=7002, seq=1000, timestamp=1000.0))
+    tracker.register(_storage_event(item_id=7003, seq=2000, timestamp=1004.0))
+
+    def producer_flush():
+        try:
+            # Only the first event is stale.  The consumer below queues the
+            # second event while this thread owns dispatch and is paused in
+            # the external callback.
+            tracker.flush_stale(now=1003.0)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    def consumer_flush():
+        try:
+            with delivery_lock:
+                consumer_holds_delivery.set()
+                assert callback_entered.wait(timeout=2)
+                tracker.flush_stale(now=1007.0)
+        except BaseException as exc:  # pragma: no cover - diagnostic capture
+            thread_errors.append(exc)
+
+    producer = Thread(target=producer_flush, daemon=True)
+    consumer = Thread(target=consumer_flush, daemon=True)
+    producer.start()
+    assert callback_entered.wait(timeout=2)
+    consumer.start()
+    assert consumer_holds_delivery.wait(timeout=2)
+
+    consumer.join(timeout=2)
+    producer.join(timeout=2)
+
+    assert not consumer.is_alive()
+    assert not producer.is_alive()
+    assert thread_errors == []
+    assert [event.item_id for event in emitted] == [7002, 7003]
 
 
 def test_stale_flush_serializes_a_concurrent_pending_registration():

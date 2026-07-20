@@ -452,6 +452,28 @@ class FrameCollectorScanner:
         self._buffer_start_sequence = None
         self._synchronized = False
 
+    def can_anchor_at_start(self, data: bytes) -> bool:
+        """Return whether byte zero is an evidence-backed frame boundary."""
+        if len(data) < 5:
+            return False
+        first_length = int.from_bytes(data[0:2], "little")
+        if not 5 <= first_length <= MAX_TARGET_MESSAGE_LENGTH:
+            return False
+        opcode = int.from_bytes(data[3:5], "little")
+        if opcode in self._known_opcodes:
+            return True
+        if first_length == len(data):
+            return True
+        if first_length + 5 > len(data):
+            return False
+        second_length = int.from_bytes(
+            data[first_length : first_length + 2], "little"
+        )
+        return (
+            5 <= second_length <= MAX_TARGET_MESSAGE_LENGTH
+            and first_length + second_length <= len(data)
+        )
+
     def feed(self, data: bytes, context: PacketContext) -> None:
         if not data:
             return
@@ -579,6 +601,25 @@ class TargetMessageScanner:
     def reset(self) -> None:
         self._buffer.clear()
         self._buffer_start_sequence = None
+
+    def can_anchor_at_start(self, data: bytes) -> bool:
+        """Return whether the bytes contain a configured recovery header."""
+        if len(data) < 5:
+            return False
+        for offset in range(len(data) - 4):
+            message_length = int.from_bytes(data[offset : offset + 2], "little")
+            for spec in self._event_specs:
+                if data[offset + 2 : offset + 5] != spec.signature:
+                    continue
+                if not (
+                    spec.min_message_length
+                    <= message_length
+                    <= MAX_TARGET_MESSAGE_LENGTH
+                ):
+                    continue
+                if self._message_length_matches_spec(spec, message_length):
+                    return True
+        return False
 
     def feed(self, data: bytes, context: PacketContext) -> None:
         if not data:

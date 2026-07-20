@@ -62,6 +62,7 @@ def _event_spec_from_entry(
     if event == "LOOT_PREVIEW":
         if item_id_offset is None or quantity_offset is None:
             return None
+        item_instance_offset = _optional_int(entry.get("item_instance_offset"))
         return EventSpec(
             label="LOOT_PREVIEW",
             opcode=opcode,
@@ -71,8 +72,14 @@ def _event_spec_from_entry(
                 length,
                 item_id_offset + 4,
                 quantity_offset + 4,
-                _optional_int(entry.get("item_instance_offset"), width=8),
+                (
+                    item_instance_offset + 8
+                    if item_instance_offset is not None
+                    else None
+                ),
             ),
+            item_instance_offset=item_instance_offset,
+            single_record_message_length=length,
             default_context="Gathering",
         )
 
@@ -159,12 +166,12 @@ def _parse_opcode(value: object) -> Optional[int]:
     return opcode
 
 
-def _optional_int(value: object, width: int = 0) -> Optional[int]:
+def _optional_int(value: object) -> Optional[int]:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"expected a non-negative integer, got {value!r}")
-    return value + width if width else value
+    return value
 
 
 def _minimum_event_length(length: Optional[int], *ends: Optional[int]) -> int:

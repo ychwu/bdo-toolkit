@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from contextvars import ContextVar
 from dataclasses import dataclass
 import math
 import time
@@ -21,6 +22,7 @@ from ._capture_runtime import (
     CaptureEndpoint,
     CaptureStats,
     LivePacketCapture,
+    _attach_cleanup_owner,
 )
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
@@ -42,6 +44,10 @@ from .profiles import (
 
 
 _PACKET_WORKER_STOP = object()
+_ACTIVE_ORIGIN_SESSIONS: ContextVar[tuple[object, ...]] = ContextVar(
+    "bdo_toolkit_active_origin_session",
+    default=(),
+)
 
 
 class CaptureIntegrityError(RuntimeError):
@@ -332,6 +338,7 @@ class LiveCaptureSession:
     """
 
     _POLL_INTERVAL_SECONDS = 0.2
+    _DECODER_STOP_TIMEOUT_SECONDS = 5.0
 
     def __init__(
         self,
@@ -365,7 +372,7 @@ class LiveCaptureSession:
         self._delivery_lock = RLock()
         self._decoder_lock = Lock()
         self._state_lock = Lock()
-        self._cleanup_lock = Lock()
+        self._cleanup_lock = RLock()
         self._stop_requested = Event()
         self._finalizing = Event()
         self._stopped = Event()
@@ -374,6 +381,7 @@ class LiveCaptureSession:
         self._collector: Optional[_EventCollector] = None
         self._packet_handler: Optional[Callable[[object], None]] = None
         self._packet_worker: Optional[Thread] = None
+        self._packet_worker_stop_signaled = False
         self._stop_monitor: Optional[Thread] = None
         self._error: Optional[BaseException] = None
         self._stop_reason: Optional[str] = None
@@ -382,6 +390,7 @@ class LiveCaptureSession:
         self._packet_queue_peak = 0
         self._packet_queue_overflows = 0
         self._event_queue_peak = 0
+        self._cleanup_incomplete = False
 
     @property
     def running(self) -> bool:
@@ -396,6 +405,17 @@ class LiveCaptureSession:
     @property
     def stopped(self) -> bool:
         return self._stopped.is_set()
+
+    @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether a failed stop retained pipeline ownership for retry."""
+
+        capture = self._capture
+        with self._state_lock:
+            pipeline_incomplete = self._cleanup_incomplete
+        return pipeline_incomplete or (
+            capture is not None and capture.cleanup_incomplete
+        )
 
     @property
     def stop_reason(self) -> Optional[str]:
@@ -460,7 +480,11 @@ class LiveCaptureSession:
                 event_filter=self._event_filter,
                 on_event=self._enqueue,
                 opcode_profile=self._opcode_profile,
-                origin_observer=self._origin_observer,
+                origin_observer=(
+                    self._notify_origin_observer
+                    if self._origin_observer is not None
+                    else None
+                ),
             )
 
             packet_handler = make_packet_handler(collector.engine)
@@ -480,34 +504,180 @@ class LiveCaptureSession:
             self._capture = live_capture
             self._packet_handler = packet_handler
             self._packet_worker = worker
-            self._started = True
-            worker.start()
-            try:
-                live_capture.start()
-            except BaseException:
-                self._stop_requested.set()
-                self._signal_packet_worker_stop()
-                worker.join(timeout=2.0)
-                self._collector = None
-                self._capture = None
-                self._packet_handler = None
-                self._packet_worker = None
-                self._started = False
+            with self._state_lock:
+                self._started = True
+                self._stopped.clear()
                 self._stop_requested.clear()
+                self._finalizing.clear()
+            capture_started = False
+            try:
+                worker.start()
+                live_capture.start()
+                capture_started = True
+
+                monitor = Thread(
+                    target=self._monitor_stop_request,
+                    name="bdo-toolkit-items-stop",
+                    daemon=True,
+                )
+                self._stop_monitor = monitor
+                monitor.start()
+            except BaseException as exc:
+                self._rollback_failed_start(
+                    exc,
+                    capture_started=capture_started,
+                )
                 raise
 
-            monitor = Thread(
-                target=self._monitor_stop_request,
-                name="bdo-toolkit-items-stop",
-                daemon=True,
+    def _rollback_failed_start(
+        self,
+        error: BaseException,
+        *,
+        capture_started: bool,
+    ) -> None:
+        """Release every successfully started owner after startup fails.
+
+        This helper runs while ``_cleanup_lock`` is held. A failed auxiliary
+        ``Thread.start()`` is just as transactional as a native startup
+        failure: verified cleanup restores the pre-start state; anything that
+        cannot be verified remains attached to the original exception for a
+        same-session ``stop()`` retry.
+        """
+
+        self._finalizing.set()
+        self._stop_requested.set()
+        capture = self._capture
+        cleanup_failures: list[BaseException] = []
+
+        if capture_started and capture is not None and not capture.stopped:
+            try:
+                self._capture_stats = capture.stop()
+            except BaseException as stop_error:
+                cleanup_failures.append(stop_error)
+
+        capture_incomplete = capture is not None and (
+            capture.cleanup_incomplete
+            or (capture_started and not capture.stopped)
+        )
+        worker = self._packet_worker
+        worker_alive = worker is not None and worker.is_alive()
+
+        # A native callback may still race with this session until capture
+        # termination is verified. Keep the decoder alive in that case; the
+        # stop request makes every later native callback a no-op.
+        if not capture_incomplete:
+            decoder_deadline = (
+                time.monotonic() + self._DECODER_STOP_TIMEOUT_SECONDS
             )
-            self._stop_monitor = monitor
-            monitor.start()
+            self._signal_packet_worker_stop(decoder_deadline)
+            if (
+                worker_alive
+                and worker is not None
+                and worker is not current_thread()
+            ):
+                worker.join(
+                    timeout=max(0.0, decoder_deadline - time.monotonic())
+                )
+            worker_alive = worker is not None and worker.is_alive()
+
+        if capture_incomplete or worker_alive:
+            self._record_error(error)
+            with self._state_lock:
+                self._cleanup_incomplete = True
+            for failure in cleanup_failures:
+                if hasattr(error, "add_note"):
+                    error.add_note(
+                        "live item capture startup cleanup also failed: "
+                        f"{failure!r}"
+                    )
+            _attach_cleanup_owner(
+                error,
+                self,
+                context="live item capture startup",
+            )
+            return
+
+        for failure in cleanup_failures:
+            if hasattr(error, "add_note"):
+                error.add_note(
+                    "live item capture startup cleanup reported a fully "
+                    f"released error: {failure!r}"
+                )
+        self._reset_after_failed_start()
+
+    def _reset_after_failed_start(self) -> None:
+        """Restore reusable pre-start state after verified rollback."""
+
+        self._collector = None
+        self._capture = None
+        self._packet_handler = None
+        self._packet_worker = None
+        self._packet_worker_stop_signaled = False
+        self._stop_monitor = None
+        self._capture_stats = CaptureStats()
+        while True:
+            try:
+                self._packet_queue.get_nowait()
+            except Empty:
+                break
+        while True:
+            try:
+                self._queue.get_nowait()
+            except Empty:
+                break
+        with self._tail_lock:
+            self._tail_events.clear()
+        with self._state_lock:
+            self._started = False
+            self._error = None
+            self._stop_reason = None
+            self._cleanup_incomplete = False
+            self._packets_accepted = 0
+            self._packet_queue_peak = 0
+            self._packet_queue_overflows = 0
+            self._event_queue_peak = 0
+            # Atomic with _started=False so an old request_stop() either wins
+            # before rollback and is cleared here, or observes not-started.
+            self._stopped.clear()
+            self._stop_requested.clear()
+            self._finalizing.clear()
 
     def stop(self) -> None:
         """Stop capture and finalize queued events; safe from a control thread."""
+        if (
+            self._packet_worker is current_thread()
+            or self._inside_origin_observer()
+        ):
+            raise RuntimeError(
+                "stop() cannot block inside the live decoder or origin "
+                "observer; use request_stop() instead"
+            )
         self._require_started()
+        if (
+            self._packet_worker is current_thread()
+            or self._inside_origin_observer()
+        ):
+            raise RuntimeError(
+                "stop() cannot block inside the live decoder or origin "
+                "observer; use request_stop() instead"
+            )
         self._finish_stop("requested")
+
+    def request_stop(self) -> None:
+        """Request callback-safe shutdown without waiting for finalization."""
+
+        # Deliberately lock-free: a decoder/origin callback must be able to
+        # request shutdown while a control thread owns _cleanup_lock and waits
+        # for that callback's worker to finish.
+        with self._state_lock:
+            if not self._started:
+                raise RuntimeError("live capture session was not started")
+            if self._stopped.is_set():
+                return
+            # Events produced by packets already accepted before this request
+            # remain deliverable while the monitor joins and drains the worker.
+            self._finalizing.set()
+            self._stop_requested.set()
 
     def poll(self, timeout: Optional[float] = None) -> Optional[BDOEvent]:
         """Return one event, or ``None`` on timeout or after the final event.
@@ -516,6 +686,11 @@ class LiveCaptureSession:
         Even an indefinite poll wakes promptly when another thread calls
         ``stop()``.
         """
+        if self._inside_origin_observer():
+            raise RuntimeError(
+                "poll() cannot consume events inside origin_observer; "
+                "consume them after the callback returns"
+            )
         self._require_started()
         _validate_poll_timeout(timeout)
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -654,7 +829,13 @@ class LiveCaptureSession:
                 if capture is None or capture.running
                 else "capture-ended"
             )
-            self._finish_stop(reason)
+            try:
+                self._finish_stop(reason)
+            except BaseException as exc:
+                # A non-cooperative backend remains owned and retryable. The
+                # public stop()/poll() paths surface the same retained error;
+                # do not leak an unhandled exception from this daemon monitor.
+                self._record_error(exc)
 
     def _service_engine_clock(self) -> None:
         collector = self._collector
@@ -672,19 +853,28 @@ class LiveCaptureSession:
             self._record_error(exc)
             self._stop_requested.set()
 
-    def _signal_packet_worker_stop(self) -> None:
+    def _signal_packet_worker_stop(self, deadline: Optional[float] = None) -> bool:
         worker = self._packet_worker
         if worker is None:
-            return
+            return True
+        if self._packet_worker_stop_signaled:
+            return True
+        if deadline is None:
+            deadline = time.monotonic() + self._DECODER_STOP_TIMEOUT_SECONDS
         while worker.is_alive():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
             try:
                 self._packet_queue.put(
                     _PACKET_WORKER_STOP,
-                    timeout=self._POLL_INTERVAL_SECONDS,
+                    timeout=min(self._POLL_INTERVAL_SECONDS, remaining),
                 )
-                return
+                self._packet_worker_stop_signaled = True
+                return True
             except Full:
                 continue
+        return True
 
     def _enqueue(self, event: BDOEvent) -> None:
         # During shutdown the sniffer is joined before the consumer necessarily
@@ -750,10 +940,27 @@ class LiveCaptureSession:
                 self._record_error(capture_error)
 
             if capture is not None and not capture.stopped:
+                stop_failure: Optional[BaseException] = None
                 try:
                     self._capture_stats = capture.stop()
                 except BaseException as exc:
+                    stop_failure = exc
                     self._record_error(exc)
+                if not capture.stopped:
+                    cleanup_error = (
+                        capture.cleanup_error
+                        or stop_failure
+                        or RuntimeError(
+                            "live capture cleanup is incomplete after stop"
+                        )
+                    )
+                    self._record_error(cleanup_error)
+                    with self._state_lock:
+                        self._cleanup_incomplete = True
+                    # Do not queue the worker sentinel or finalize decoder
+                    # state while the native callback may still be active.
+                    # _stop_requested makes every later callback a no-op.
+                    raise cleanup_error
                 capture_error = capture.error
                 if isinstance(capture_error, BaseException):
                     self._record_error(capture_error)
@@ -762,14 +969,28 @@ class LiveCaptureSession:
 
             # Capture is joined before the sentinel is queued, so every packet
             # accepted by the callback appears ahead of it in FIFO order.
-            self._signal_packet_worker_stop()
+            decoder_deadline = (
+                time.monotonic() + self._DECODER_STOP_TIMEOUT_SECONDS
+            )
+            self._signal_packet_worker_stop(decoder_deadline)
             worker = self._packet_worker
-            if worker is not None and worker is not current_thread():
-                worker.join(timeout=5.0)
-                if worker.is_alive():
-                    self._record_error(
-                        RuntimeError("live packet decoder did not stop cleanly")
+            if worker is not None and worker.is_alive():
+                if worker is not current_thread():
+                    worker.join(
+                        timeout=max(0.0, decoder_deadline - time.monotonic())
                     )
+                if worker.is_alive():
+                    cleanup_error = RuntimeError(
+                        "live packet decoder cleanup is incomplete after the "
+                        f"{self._DECODER_STOP_TIMEOUT_SECONDS:g}-second deadline"
+                    )
+                    self._record_error(cleanup_error)
+                    with self._state_lock:
+                        self._cleanup_incomplete = True
+                    # The worker may still hold _decoder_lock or call into the
+                    # collector. Retain every dependency and retry only after
+                    # its termination can be verified.
+                    raise cleanup_error
             if collector is not None:
                 try:
                     with self._decoder_lock:
@@ -785,6 +1006,7 @@ class LiveCaptureSession:
 
             with self._state_lock:
                 self._stop_reason = "error" if self._error is not None else reason
+                self._cleanup_incomplete = False
             self._stopped.set()
 
     def _record_error(self, error: BaseException) -> None:
@@ -792,9 +1014,31 @@ class LiveCaptureSession:
             if self._error is None:
                 self._error = error
 
+    def _notify_origin_observer(
+        self,
+        observation: CompanionObservation,
+    ) -> object:
+        callback = self._origin_observer
+        if callback is None:
+            return None
+        active_sessions = _ACTIVE_ORIGIN_SESSIONS.get()
+        token = _ACTIVE_ORIGIN_SESSIONS.set(active_sessions + (self,))
+        try:
+            return callback(observation)
+        finally:
+            _ACTIVE_ORIGIN_SESSIONS.reset(token)
+
+    def _inside_origin_observer(self) -> bool:
+        return self in _ACTIVE_ORIGIN_SESSIONS.get()
+
     def _require_started(self) -> None:
-        if not self._started:
-            raise RuntimeError("live capture session was not started")
+        # Startup and verified rollback both mutate ``_started`` under the
+        # cleanup lock. Waiting here prevents a concurrent stop/poll from
+        # observing the provisional True and acting on a rolled-back session.
+        with self._cleanup_lock:
+            with self._state_lock:
+                if not self._started:
+                    raise RuntimeError("live capture session was not started")
 
     def __enter__(self) -> "LiveCaptureSession":
         self.start()
@@ -802,7 +1046,22 @@ class LiveCaptureSession:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         if self._started and not self._stopped.is_set():
-            self.stop()
+            try:
+                self.stop()
+            except BaseException as cleanup_error:
+                if exc_value is None:
+                    raise
+                if self.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc_value,
+                        self,
+                        context="live item capture context",
+                    )
+                if hasattr(exc_value, "add_note"):
+                    exc_value.add_note(
+                        "live item capture context cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
 
 
 def capture_live(
@@ -835,14 +1094,38 @@ def capture_live(
         # The deadline belongs to capture ownership, not generator progress.
         # It therefore fires even while the consumer is suspended after a
         # yielded event.
-        deadline_timer = Timer(
-            capture_seconds,
-            session._finish_stop,
-            args=("timeout",),
-        )
-        deadline_timer.name = "bdo-toolkit-items-deadline"
-        deadline_timer.daemon = True
-        deadline_timer.start()
+        def finish_at_deadline() -> None:
+            try:
+                session._finish_stop("timeout")
+            except BaseException as exc:
+                # _finish_stop has retained both the first error and every
+                # owner required for a retry. Avoid an unhandled Timer-thread
+                # traceback while the generator remains the public owner.
+                session._record_error(exc)
+
+        try:
+            deadline_timer = Timer(capture_seconds, finish_at_deadline)
+            deadline_timer.name = "bdo-toolkit-items-deadline"
+            deadline_timer.daemon = True
+            deadline_timer.start()
+        except BaseException as exc:
+            if deadline_timer is not None:
+                deadline_timer.cancel()
+            try:
+                session.stop()
+            except BaseException as cleanup_error:
+                if session.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc,
+                        session,
+                        context="timed live item capture startup",
+                    )
+                if hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "timed live item capture startup cleanup also "
+                        f"failed: {cleanup_error!r}"
+                    )
+            raise
     try:
         while True:
             if capture_seconds is None:
@@ -869,7 +1152,16 @@ def capture_live(
         # No yields during generator close. The session finalizes pending TCP
         # and origin state; a normal stop path drains it in the loop above.
         if not session.stopped:
-            session.stop()
+            try:
+                session.stop()
+            except BaseException as exc:
+                if session.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc,
+                        session,
+                        context="live item capture convenience wrapper",
+                    )
+                raise
 
 
 def _validate_poll_timeout(value: Optional[float]) -> None:

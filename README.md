@@ -84,6 +84,24 @@ decoded events before ending. A session is single-use; create a new one when
 the feature is started again. See the runnable
 [`controlled_live_capture.py`](examples/controlled_live_capture.py) example.
 
+Shutdown is bounded and verified. If native capture or a decoder/feature worker
+cannot be proven stopped, `stop()` raises, `session.cleanup_incomplete` remains
+true, and the same session retains its pipeline for another `stop()` attempt.
+If startup or a convenience wrapper cannot return that session normally, the
+escaping exception exposes it as `exception.cleanup_owner` when Python permits
+exception attributes. The first run error remains authoritative after cleanup
+eventually succeeds. Inside `origin_observer` or a Solare `on_update` callback,
+use non-blocking `request_stop()`; blocking stop/poll/wait/iteration on that
+same session is rejected to prevent callback self-deadlocks.
+
+`AsyncLiveCaptureSession.events()` fetches up to 64 immediately ready events per
+executor submission, but transfers the entire batch into session-owned pending
+storage before yielding the first event. Early break, iterator close,
+cancellation after a yield, and sequential handoff to `poll()` therefore keep
+every prefetched event reachable and ordered. Use one logical event consumer;
+overlapping blocking consumption is rejected. `poll()` validates its timeout
+even while draining pending data or after the synchronous session has stopped.
+
 Packet acquisition controls shared with live calibration live in
 `PacketCaptureOptions`. `LiveCaptureOptions` extends those settings with the
 decoded-event queue size used by `capture_live()`, `LiveCaptureSession`, and
@@ -107,6 +125,14 @@ runs on a worker thread. Packet-queue overflow fails the session with
 `CaptureIntegrityError` instead of silently continuing. Inspect
 `session.health.capture_is_clean` and its packet, native-drop, TCP-gap, and
 flow-eviction counters before treating a live stream as complete telemetry.
+An observed empty SYN anchors the first payload sequence. When capture begins
+after the handshake, a bounded initial reorder set is retained briefly so
+multiple lower/higher/overlapping segments can establish an evidence-backed
+frame origin; unresolved data is released after 250 ms, at capacity pressure,
+or at finalization. Out-of-order FIN is deferred while observed earlier bytes
+remain recoverable, and a FIN-only missing range uses the ordinary TCP-gap
+deadline. This recovers captured reordering but cannot reconstruct bytes that
+were never observed.
 
 ## Arena of Solare snapshots
 

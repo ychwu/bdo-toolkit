@@ -8,11 +8,12 @@ decoder finalization, and app-facing result delivery.
 
 from __future__ import annotations
 
+import inspect
 import math
 import os
 import time
 from dataclasses import dataclass
-from threading import Event, Lock
+from threading import Event, Lock, current_thread
 from typing import Any, Callable, Optional
 
 from ._capture_backend import (
@@ -25,6 +26,37 @@ from ._capture_options import PacketCaptureOptions
 
 DEFAULT_CAPTURE_BUFFER_BYTES = 64 * 1024 * 1024
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
+_CAPTURE_JOIN_TIMEOUT_SECONDS = 2.0
+
+
+def _attach_cleanup_owner(
+    error: BaseException,
+    owner: object,
+    *,
+    context: str,
+) -> None:
+    """Keep retry ownership reachable when startup/context entry cannot return."""
+
+    attached = False
+    try:
+        setattr(error, "cleanup_owner", owner)
+        attached = True
+    except BaseException:
+        # Built-in and ordinary application exceptions expose __dict__. Keep
+        # the original failure identity even for an exotic immutable subtype.
+        pass
+    if hasattr(error, "add_note"):
+        if attached:
+            error.add_note(
+                f"{context} cleanup is incomplete; retry stop() on "
+                "exception.cleanup_owner"
+            )
+        else:
+            error.add_note(
+                f"{context} cleanup is incomplete; this exception subtype "
+                "cannot expose cleanup_owner, so retain and stop the original "
+                "session object"
+            )
 
 
 @dataclass(frozen=True)
@@ -171,6 +203,8 @@ class LivePacketCapture:
         self._stats = CaptureStats()
         self._error: Optional[BaseException] = None
         self._buffer_error: Optional[BaseException] = None
+        self._cleanup_incomplete = False
+        self._cleanup_error: Optional[BaseException] = None
 
     @property
     def endpoint(self) -> Optional[CaptureEndpoint]:
@@ -228,6 +262,18 @@ class LivePacketCapture:
         return capture_error if isinstance(capture_error, BaseException) else None
 
     @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether shutdown still owns resources that require another attempt."""
+
+        return self._cleanup_incomplete
+
+    @property
+    def cleanup_error(self) -> Optional[BaseException]:
+        """Explicit failure explaining why the last shutdown was incomplete."""
+
+        return self._cleanup_error
+
+    @property
     def running(self) -> bool:
         capture = self._capture
         capture_thread = getattr(capture, "thread", None)
@@ -237,7 +283,7 @@ class LivePacketCapture:
             and not capture_thread.is_alive()
         )
         return (
-            self._started
+            (self._started or self._cleanup_incomplete)
             and not self._stopped
             and capture is not None
             and not thread_finished
@@ -376,19 +422,26 @@ class LivePacketCapture:
                         )
             except BaseException as exc:
                 self._record_error(exc)
-                if capture is not None and bool(getattr(capture, "running", False)):
-                    try:
-                        capture.stop()
-                    except BaseException:
-                        # Preserve the original startup failure.
-                        pass
-                if capture_socket is not None:
-                    try:
-                        capture_socket.close()
-                    except BaseException:
-                        pass
-                self._capture = None
-                self._capture_socket = None
+                try:
+                    self._shutdown_backend()
+                except BaseException as cleanup_error:
+                    # Startup remains the primary failure, but incomplete
+                    # cleanup must be explicit in its traceback and remains
+                    # retryable through stop().
+                    if hasattr(exc, "add_note"):
+                        exc.add_note(
+                            "live capture startup cleanup also failed: "
+                            f"{cleanup_error!r}"
+                        )
+                if not self._cleanup_incomplete:
+                    self._capture = None
+                    self._capture_socket = None
+                else:
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="live packet capture startup",
+                    )
                 raise
 
             self._started = True
@@ -397,53 +450,154 @@ class LivePacketCapture:
         """Stop and join capture, read counters, then close the owned socket."""
 
         with self._cleanup_lock:
-            if not self._started:
+            if not self._started and not self._cleanup_incomplete:
                 raise RuntimeError("live packet capture was not started")
             if self._stopped:
                 return self._stats
-
-            capture = self._capture
-            capture_socket = self._capture_socket
-
-            capture_error = getattr(capture, "exception", None)
-            if isinstance(capture_error, BaseException):
-                self._record_error(capture_error)
-
-            if capture is not None and bool(getattr(capture, "running", False)):
-                try:
-                    # AsyncSniffer.stop() joins by default. Avoid an explicit
-                    # keyword so existing lightweight Scapy-compatible fakes
-                    # and older supported versions remain usable.
-                    capture.stop()
-                except BaseException as exc:
-                    self._record_error(exc)
-            else:
-                capture_thread = getattr(capture, "thread", None)
-                if capture_thread is not None and capture_thread.is_alive():
-                    try:
-                        capture_thread.join(timeout=2.0)
-                    except BaseException as exc:
-                        self._record_error(exc)
-
-            received = dropped = interface_dropped = None
-            if capture_socket is not None:
-                raw_stats = _read_windows_capture_stats(capture_socket)
-                if raw_stats is not None:
-                    received, dropped, interface_dropped = raw_stats
-                try:
-                    capture_socket.close()
-                except BaseException as exc:
-                    self._record_error(exc)
-
-            self._stats = CaptureStats(
-                received=received,
-                dropped=dropped,
-                interface_dropped=interface_dropped,
-                capture_buffer_bytes=self._stats.capture_buffer_bytes,
-            )
-            self._capture_socket = None
-            self._stopped = True
+            self._shutdown_backend()
             return self._stats
+
+    def _shutdown_backend(self) -> None:
+        """Attempt every safe shutdown step and verify resource ownership.
+
+        Scapy's ordinary ``AsyncSniffer.stop()`` joins without a timeout. Ask
+        it only to signal the backend, then perform our own bounded join. A
+        caller-owned Npcap socket is closed before that join so a blocking read
+        has an independent way to wake even when the stop request raises.
+        """
+
+        capture = self._capture
+        capture_socket = self._capture_socket
+        failures: list[BaseException] = []
+
+        def retain(error: BaseException) -> None:
+            self._record_error(error)
+            if not any(error is previous for previous in failures):
+                failures.append(error)
+
+        capture_error = getattr(capture, "exception", None)
+        if isinstance(capture_error, BaseException):
+            self._record_error(capture_error)
+
+        capture_thread = getattr(capture, "thread", None)
+        thread_alive: Optional[bool] = None
+        if capture_thread is not None:
+            try:
+                thread_alive = bool(capture_thread.is_alive())
+            except BaseException as exc:
+                retain(exc)
+
+        if capture is not None and (
+            bool(getattr(capture, "running", False)) or thread_alive is True
+        ):
+            try:
+                stop_method = capture.stop
+                try:
+                    parameters = inspect.signature(stop_method).parameters.values()
+                except (TypeError, ValueError):
+                    # The real supported Scapy backend accepts ``join``. This
+                    # fallback is for non-introspectable compatible wrappers.
+                    stop_method(join=False)
+                else:
+                    supports_join = any(
+                        parameter.name == "join"
+                        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                        for parameter in parameters
+                    )
+                    if supports_join:
+                        stop_method(join=False)
+                    else:
+                        # Lightweight test/application fakes may expose only a
+                        # synchronous no-argument stop method.
+                        stop_method()
+            except BaseException as exc:
+                retain(exc)
+
+        received = self._stats.received
+        dropped = self._stats.dropped
+        interface_dropped = self._stats.interface_dropped
+        if capture_socket is not None:
+            raw_stats = _read_windows_capture_stats(capture_socket)
+            if raw_stats is not None:
+                received, dropped, interface_dropped = raw_stats
+            try:
+                capture_socket.close()
+            except BaseException as exc:
+                # Keep the socket reference so a later stop() can retry it.
+                retain(exc)
+            else:
+                self._capture_socket = None
+
+        self._stats = CaptureStats(
+            received=received,
+            dropped=dropped,
+            interface_dropped=interface_dropped,
+            capture_buffer_bytes=self._stats.capture_buffer_bytes,
+        )
+
+        if capture_thread is not None:
+            try:
+                thread_alive = bool(capture_thread.is_alive())
+            except BaseException as exc:
+                retain(exc)
+                thread_alive = None
+            if thread_alive is True:
+                if capture_thread is current_thread():
+                    retain(
+                        RuntimeError(
+                            "live capture cannot join its own capture thread"
+                        )
+                    )
+                else:
+                    try:
+                        capture_thread.join(
+                            timeout=_CAPTURE_JOIN_TIMEOUT_SECONDS
+                        )
+                    except BaseException as exc:
+                        retain(exc)
+                    try:
+                        thread_alive = bool(capture_thread.is_alive())
+                    except BaseException as exc:
+                        retain(exc)
+                        thread_alive = None
+
+        backend_running_without_thread = (
+            capture is not None
+            and capture_thread is None
+            and bool(getattr(capture, "running", False))
+        )
+        incomplete = (
+            thread_alive is True
+            or (thread_alive is None and capture_thread is not None)
+            or backend_running_without_thread
+            or self._capture_socket is not None
+        )
+        self._cleanup_incomplete = incomplete
+        self._stopped = not incomplete
+
+        if incomplete:
+            reasons: list[str] = []
+            if thread_alive is True or backend_running_without_thread:
+                reasons.append(
+                    "the capture thread/backend is still running after the "
+                    f"{_CAPTURE_JOIN_TIMEOUT_SECONDS:g}-second join deadline"
+                )
+            elif thread_alive is None and capture_thread is not None:
+                reasons.append("capture-thread termination could not be verified")
+            if self._capture_socket is not None:
+                reasons.append("the caller-owned capture socket did not close")
+            cleanup_error = RuntimeError(
+                "live packet capture cleanup is incomplete: " + "; ".join(reasons)
+            )
+            self._cleanup_error = cleanup_error
+            self._record_error(cleanup_error)
+            if failures:
+                raise cleanup_error from failures[0]
+            raise cleanup_error
+
+        self._cleanup_error = None
+        if failures:
+            raise failures[0]
 
     def raise_if_failed(self) -> None:
         """Raise the first retained capture failure, if one occurred."""

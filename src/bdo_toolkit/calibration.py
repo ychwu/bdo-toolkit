@@ -45,6 +45,7 @@ from ._capture_options import PacketCaptureOptions
 from ._capture_runtime import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     LivePacketCapture,
+    _attach_cleanup_owner,
 )
 from ._framing import FrameCollectorScanner
 from ._protocol import (
@@ -95,6 +96,8 @@ CALIBRATION_ACTIONS = (
 # hard ceiling on an accidentally unattended session.
 DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES = 50_000
 DEFAULT_CALIBRATION_MAX_RETAINED_BYTES = 64 * 1024 * 1024
+_CALIBRATION_MAX_ACTIVE_FLOWS = 64
+_CALIBRATION_FLOW_IDLE_SECONDS = 300.0
 
 OPCODE_PROFILE_EVENTS = (
     "LOOT_PREVIEW",
@@ -823,6 +826,10 @@ class CalibrationSession:
     ``frames_retained``, ``frames_discarded``, or ``retention`` to surface
     eviction. A truncated result calibrates only the retained tail.
 
+    TCP reassembly is also bounded to 64 active flows. The least-recently used
+    flow is finalized on overflow, and flows idle for 300 seconds are eligible
+    for finalization when the manager is serviced.
+
     Used as a context manager, the capture is stopped on exit even if the
     block raises; call ``stop()`` inside the block to get the result.
     """
@@ -886,6 +893,14 @@ class CalibrationSession:
         with self._lifecycle_lock:
             capture = self._capture
             return capture is not None and capture.running
+
+    @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether capture shutdown retained resources for a stop retry."""
+
+        with self._lifecycle_lock:
+            capture = self._capture
+            return capture is not None and capture.cleanup_incomplete
 
     @property
     def error(self) -> Optional[BaseException]:
@@ -962,6 +977,8 @@ class CalibrationSession:
                 scanner_factory=lambda: FrameCollectorScanner(
                     self._retain_frame
                 ),
+                max_flows=_CALIBRATION_MAX_ACTIVE_FLOWS,
+                idle_timeout=_CALIBRATION_FLOW_IDLE_SECONDS,
                 track_flow_generations=True,
             )
             capture = LivePacketCapture(
@@ -974,6 +991,17 @@ class CalibrationSession:
             try:
                 capture.start()
             except BaseException as exc:
+                self._record_error(exc)
+                if capture.cleanup_incomplete:
+                    # The capture thread may still call into this manager. Keep
+                    # both objects alive so stop() can retry verified shutdown
+                    # before finalizing stream state.
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="live calibration startup",
+                    )
+                    raise
                 try:
                     manager.finish()
                 except BaseException as cleanup_error:
@@ -984,7 +1012,6 @@ class CalibrationSession:
                         )
                 self._manager = None
                 self._capture = None
-                self._record_error(exc)
                 raise
 
     def stop(self) -> CalibrationResult:
@@ -1039,10 +1066,26 @@ class CalibrationSession:
 
         if self._error is not None:
             retain(self._error)
+        stop_failure: Optional[BaseException] = None
         try:
             capture.stop()
         except BaseException as exc:
+            stop_failure = exc
             retain(exc)
+        capture_stopped = bool(
+            getattr(capture, "stopped", not capture.running)
+        )
+        if not capture_stopped:
+            if stop_failure is None:
+                stop_failure = capture.cleanup_error or RuntimeError(
+                    "live calibration capture cleanup is incomplete"
+                )
+                retain(stop_failure)
+            self._record_error(failures[0])
+            # Reassembly state is still reachable from the capture callback.
+            # Do not finish or discard it until a later stop() verifies that
+            # the capture thread has terminated.
+            raise stop_failure
         try:
             capture.raise_if_failed()
         except BaseException as exc:
@@ -1122,6 +1165,12 @@ class CalibrationSession:
             except BaseException as cleanup_error:
                 if exc_value is None:
                     raise
+                if self.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc_value,
+                        self,
+                        context="live calibration context",
+                    )
                 if hasattr(exc_value, "add_note"):
                     exc_value.add_note(
                         "calibration context cleanup also failed: "

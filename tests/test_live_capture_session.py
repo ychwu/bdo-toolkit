@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from threading import Event, Thread
 
 import pytest
 
 from bdo_toolkit import (
+    AsyncLiveCaptureSession,
     BDOEvent,
     CaptureIntegrityError,
     EventFilter,
@@ -138,6 +140,465 @@ def test_session_stop_wakes_a_quiet_blocking_consumer(live_fakes):
     session.stop()
     with pytest.raises(RuntimeError, match="already started"):
         session.start()
+
+
+def test_incomplete_backend_stop_retains_live_session_owners_for_retry(
+    monkeypatch,
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+    cleanup_failure = RuntimeError("live packet capture cleanup is incomplete")
+
+    class RetryCapture:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.allow_cleanup = False
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.error = None
+            self.endpoint = None
+            self.buffer_error = None
+            self.stats = capture_runtime.CaptureStats()
+            self.stopped = False
+
+        @property
+        def running(self):
+            return not self.stopped
+
+        def start(self):
+            return None
+
+        def stop(self):
+            if not self.allow_cleanup:
+                self.cleanup_incomplete = True
+                self.cleanup_error = cleanup_failure
+                raise cleanup_failure
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.stopped = True
+            return self.stats
+
+        def snapshot_stats(self):
+            return self.stats
+
+    monkeypatch.setattr(capture_module, "LivePacketCapture", RetryCapture)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    session.start()
+    capture = session._capture
+    collector = session._collector
+    worker = session._packet_worker
+    assert isinstance(capture, RetryCapture)
+    assert collector is FakeCollector.instances[-1]
+    assert worker is not None
+
+    with pytest.raises(RuntimeError, match="cleanup is incomplete"):
+        session.stop()
+
+    assert not session.stopped
+    assert session._capture is capture
+    assert session._collector is collector
+    assert session._packet_worker is worker
+    assert collector.engine.finish_calls == 0
+    assert collector.finalize_calls == 0
+
+    capture.allow_cleanup = True
+    session.stop()
+
+    assert session.stopped
+    assert collector.engine.finish_calls == 1
+    assert collector.finalize_calls == 1
+    with pytest.raises(RuntimeError) as retained:
+        session.raise_if_failed()
+    assert retained.value is cleanup_failure
+
+
+def test_incomplete_start_cleanup_keeps_live_session_retryable(
+    monkeypatch,
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+    startup_failure = RuntimeError("adapter readiness timed out")
+
+    class FailedStartCapture:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.allow_cleanup = False
+            self.cleanup_incomplete = True
+            self.cleanup_error = RuntimeError("cleanup is incomplete")
+            self.error = startup_failure
+            self.endpoint = None
+            self.buffer_error = None
+            self.stats = capture_runtime.CaptureStats()
+            self.stopped = False
+
+        @property
+        def running(self):
+            return not self.stopped
+
+        def start(self):
+            raise startup_failure
+
+        def stop(self):
+            if not self.allow_cleanup:
+                raise self.cleanup_error
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.stopped = True
+            return self.stats
+
+        def snapshot_stats(self):
+            return self.stats
+
+    monkeypatch.setattr(capture_module, "LivePacketCapture", FailedStartCapture)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    assert started.value is startup_failure
+    assert started.value.cleanup_owner is session
+    capture = session._capture
+    assert isinstance(capture, FailedStartCapture)
+    assert session._collector is FakeCollector.instances[-1]
+    assert session._packet_worker is not None
+    assert not session.stopped
+
+    capture.allow_cleanup = True
+    session.stop()
+    assert session.stopped
+    with pytest.raises(RuntimeError) as retained:
+        session.raise_if_failed()
+    assert retained.value is startup_failure
+
+
+def test_failed_start_retains_a_stuck_decoder_owner_for_retry(
+    monkeypatch,
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+    startup_failure = RuntimeError("adapter failed after its first callback")
+    decoder_entered = Event()
+    decoder_release = Event()
+
+    def make_stuck_handler(engine):
+        del engine
+
+        def handle(packet):
+            del packet
+            decoder_entered.set()
+            decoder_release.wait()
+
+        return handle
+
+    class PartialStartCapture:
+        def __init__(self, *, on_packet, **kwargs):
+            del kwargs
+            self._on_packet = on_packet
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.error = startup_failure
+            self.endpoint = None
+            self.buffer_error = None
+            self.stats = capture_runtime.CaptureStats()
+            self.stopped = True
+            self.running = False
+
+        def start(self):
+            self._on_packet(object())
+            assert decoder_entered.wait(timeout=1.0)
+            raise startup_failure
+
+    monkeypatch.setattr(capture_module, "make_packet_handler", make_stuck_handler)
+    monkeypatch.setattr(capture_module, "LivePacketCapture", PartialStartCapture)
+    monkeypatch.setattr(
+        LiveCaptureSession,
+        "_DECODER_STOP_TIMEOUT_SECONDS",
+        0.05,
+    )
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    assert started.value is startup_failure
+    assert started.value.cleanup_owner is session
+    assert session.cleanup_incomplete
+    assert session._collector is FakeCollector.instances[-1]
+    assert session._packet_worker is not None
+    assert session._packet_worker.is_alive()
+
+    decoder_release.set()
+    session._packet_worker.join(timeout=1.0)
+    session.stop()
+    assert session.stopped
+    assert not session.cleanup_incomplete
+
+
+def test_decoder_thread_start_failure_rolls_back_to_not_started(
+    monkeypatch,
+    live_fakes,
+):
+    _, FakeSniffer = live_fakes
+    real_thread = capture_module.Thread
+    startup_failure = RuntimeError("decoder thread could not start")
+
+    def thread_factory(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        if kwargs.get("name") == "bdo-toolkit-items":
+            thread.start = lambda: (_ for _ in ()).throw(startup_failure)
+        return thread
+
+    monkeypatch.setattr(capture_module, "Thread", thread_factory)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    assert started.value is startup_failure
+    assert not hasattr(startup_failure, "cleanup_owner")
+    assert not session.cleanup_incomplete
+    assert session._capture is None
+    assert session._collector is None
+    assert session._packet_worker is None
+    assert FakeSniffer.instances == []
+    with pytest.raises(RuntimeError, match="not started"):
+        session.stop()
+
+
+def test_stop_monitor_thread_start_failure_stops_native_and_decoder(
+    monkeypatch,
+    live_fakes,
+):
+    _, FakeSniffer = live_fakes
+    real_thread = capture_module.Thread
+    startup_failure = RuntimeError("stop monitor could not start")
+    created_workers = []
+
+    def thread_factory(*args, **kwargs):
+        thread = real_thread(*args, **kwargs)
+        if kwargs.get("name") == "bdo-toolkit-items":
+            created_workers.append(thread)
+        elif kwargs.get("name") == "bdo-toolkit-items-stop":
+            thread.start = lambda: (_ for _ in ()).throw(startup_failure)
+        return thread
+
+    monkeypatch.setattr(capture_module, "Thread", thread_factory)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+
+    with pytest.raises(RuntimeError) as started:
+        session.start()
+
+    assert started.value is startup_failure
+    assert not hasattr(startup_failure, "cleanup_owner")
+    assert FakeSniffer.instances[-1].stop_calls == 1
+    assert len(created_workers) == 1
+    assert not created_workers[0].is_alive()
+    assert not session.cleanup_incomplete
+    assert session._capture is None
+    assert session._collector is None
+    assert session._packet_worker is None
+    with pytest.raises(RuntimeError, match="not started"):
+        session.stop()
+
+
+@pytest.mark.parametrize("control", ["stop", "poll"])
+def test_control_waiting_on_failed_start_rechecks_rolled_back_lifecycle(
+    monkeypatch,
+    live_fakes,
+    control,
+):
+    _, _ = live_fakes
+    start_entered = Event()
+    release_start = Event()
+    startup_failure = RuntimeError("first native start failed")
+
+    class RacingCapture:
+        instances = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.attempt = len(self.__class__.instances) + 1
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.error = None
+            self.endpoint = None
+            self.buffer_error = None
+            self.stats = capture_runtime.CaptureStats()
+            self.stopped = self.attempt == 1
+            self.running = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            if self.attempt == 1:
+                start_entered.set()
+                assert release_start.wait(timeout=2)
+                raise startup_failure
+            self.stopped = False
+            self.running = True
+
+        def stop(self):
+            self.running = False
+            self.stopped = True
+            return self.stats
+
+        def snapshot_stats(self):
+            return self.stats
+
+    monkeypatch.setattr(capture_module, "LivePacketCapture", RacingCapture)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    start_errors = []
+    control_errors = []
+
+    def run_start():
+        try:
+            session.start()
+        except BaseException as exc:
+            start_errors.append(exc)
+
+    def run_control():
+        try:
+            if control == "stop":
+                session.stop()
+            else:
+                session.poll(timeout=0)
+        except BaseException as exc:
+            control_errors.append(exc)
+
+    starter = Thread(target=run_start, daemon=True)
+    starter.start()
+    assert start_entered.wait(timeout=1)
+    controller = Thread(target=run_control, daemon=True)
+    controller.start()
+    time.sleep(0.05)
+    release_start.set()
+    starter.join(timeout=2)
+    controller.join(timeout=2)
+
+    assert not starter.is_alive()
+    assert not controller.is_alive()
+    assert start_errors == [startup_failure]
+    assert len(control_errors) == 1
+    assert isinstance(control_errors[0], RuntimeError)
+    assert "not started" in str(control_errors[0])
+    assert not session.stopped
+
+    session.start()
+    assert session.running
+    assert not session.stopped
+    session.stop()
+    assert session.stopped
+
+
+def test_request_stop_cannot_cross_failed_start_rollback_into_retry(
+    monkeypatch,
+    live_fakes,
+):
+    _, _ = live_fakes
+    start_entered = Event()
+    release_start = Event()
+    request_setting_stop = Event()
+    allow_request_set = Event()
+    startup_failure = RuntimeError("first native start failed")
+
+    class RacingCapture:
+        attempts = 0
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.__class__.attempts += 1
+            self.attempt = self.__class__.attempts
+            self.cleanup_incomplete = False
+            self.cleanup_error = None
+            self.error = None
+            self.endpoint = None
+            self.buffer_error = None
+            self.stats = capture_runtime.CaptureStats()
+            self.stopped = self.attempt == 1
+            self.running = False
+
+        def start(self):
+            if self.attempt == 1:
+                start_entered.set()
+                assert release_start.wait(timeout=2)
+                raise startup_failure
+            self.stopped = False
+            self.running = True
+
+        def stop(self):
+            self.running = False
+            self.stopped = True
+            return self.stats
+
+        def snapshot_stats(self):
+            return self.stats
+
+    monkeypatch.setattr(capture_module, "LivePacketCapture", RacingCapture)
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    original_stop_set = session._stop_requested.set
+    first_set = True
+
+    def gated_stop_set():
+        nonlocal first_set
+        if first_set:
+            first_set = False
+            request_setting_stop.set()
+            assert allow_request_set.wait(timeout=2)
+        original_stop_set()
+
+    session._stop_requested.set = gated_stop_set
+    start_errors = []
+    request_errors = []
+
+    def run_start():
+        try:
+            session.start()
+        except BaseException as exc:
+            start_errors.append(exc)
+
+    def run_request():
+        try:
+            session.request_stop()
+        except BaseException as exc:
+            request_errors.append(exc)
+
+    starter = Thread(target=run_start, daemon=True)
+    starter.start()
+    assert start_entered.wait(timeout=1)
+    requester = Thread(target=run_request, daemon=True)
+    requester.start()
+    assert request_setting_stop.wait(timeout=1)
+
+    release_start.set()
+    allow_request_set.set()
+    starter.join(timeout=2)
+    requester.join(timeout=2)
+
+    assert start_errors == [startup_failure]
+    assert request_errors == []
+    assert not session._stop_requested.is_set()
+    assert not session._finalizing.is_set()
+    assert not session.stopped
+
+    session.start()
+    time.sleep(0.05)
+    assert session.running
+    assert not session.stopped
+    session.stop()
+    assert session.stopped
 
 
 def test_live_session_defaults_to_activity_and_preserves_explicit_filters(live_fakes):
@@ -279,6 +740,394 @@ def test_native_callback_hands_slow_decode_to_worker(live_fakes, monkeypatch):
     assert session.health.packets_accepted == 1
 
 
+def test_stuck_decoder_stop_is_bounded_and_retryable(live_fakes, monkeypatch):
+    FakeCollector, FakeSniffer = live_fakes
+    decoder_entered = Event()
+    decoder_release = Event()
+
+    def make_stuck_handler(engine):
+        del engine
+
+        def handle(packet):
+            del packet
+            decoder_entered.set()
+            decoder_release.wait()
+
+        return handle
+
+    monkeypatch.setattr(capture_module, "make_packet_handler", make_stuck_handler)
+    monkeypatch.setattr(
+        LiveCaptureSession,
+        "_DECODER_STOP_TIMEOUT_SECONDS",
+        0.05,
+    )
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    session.start()
+    collector = FakeCollector.instances[-1]
+    FakeSniffer.instances[-1].emit_packet(object())
+    assert decoder_entered.wait(timeout=1.0)
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="decoder cleanup is incomplete"):
+        session.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert session.cleanup_incomplete
+    assert not session.stopped
+    assert collector.engine.finish_calls == 0
+    assert collector.finalize_calls == 0
+
+    decoder_release.set()
+    assert session._packet_worker is not None
+    session._packet_worker.join(timeout=1.0)
+    session.stop()
+
+    assert session.stopped
+    assert not session.cleanup_incomplete
+    assert collector.engine.finish_calls == 1
+    assert collector.finalize_calls == 1
+
+
+def test_decoder_callback_uses_request_stop_instead_of_recursive_stop(
+    live_fakes,
+    monkeypatch,
+):
+    _, FakeSniffer = live_fakes
+    callback_finished = Event()
+    callback_errors = []
+    sessions = []
+    delivered = _event(909)
+
+    def make_callback_handler(engine):
+        del engine
+
+        def handle(packet):
+            del packet
+            session = sessions[0]
+            try:
+                session.stop()
+            except BaseException as exc:
+                callback_errors.append(exc)
+            session.request_stop()
+            session._enqueue(delivered)
+            callback_finished.set()
+
+        return handle
+
+    monkeypatch.setattr(
+        capture_module,
+        "make_packet_handler",
+        make_callback_handler,
+    )
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface")
+    )
+    sessions.append(session)
+    session.start()
+    FakeSniffer.instances[-1].emit_packet(object())
+
+    assert callback_finished.wait(timeout=1.0)
+    assert len(callback_errors) == 1
+    assert isinstance(callback_errors[0], RuntimeError)
+    assert "request_stop" in str(callback_errors[0])
+    deadline = time.monotonic() + 1.0
+    while not session.stopped and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.stopped
+    assert list(session.events()) == [delivered]
+
+
+def test_origin_observer_from_wall_clock_uses_request_stop_without_deadlock(
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+    callback_done = Event()
+    callback_errors = []
+    sessions = []
+
+    def stop_from_observer(_observation):
+        try:
+            sessions[0].stop()
+        except BaseException as exc:
+            callback_errors.append(exc)
+        sessions[0].request_stop()
+        callback_done.set()
+
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=stop_from_observer,
+    )
+    sessions.append(session)
+    session.start()
+    collector = FakeCollector.instances[-1]
+    wrapped_observer = collector.kwargs["origin_observer"]
+    collector.engine.service_gaps = lambda _now: wrapped_observer(object())
+
+    assert callback_done.wait(timeout=2), "wall-clock observer deadlocked"
+    assert len(callback_errors) == 1
+    assert "request_stop" in str(callback_errors[0])
+    deadline = time.monotonic() + 2
+    while not session.stopped and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.stopped
+
+
+def test_origin_observer_from_poll_flush_uses_request_stop_without_deadlock(
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+    callback_done = Event()
+    callback_errors = []
+    sessions = []
+
+    def stop_from_observer(_observation):
+        try:
+            sessions[0].stop()
+        except BaseException as exc:
+            callback_errors.append(exc)
+        sessions[0].request_stop()
+        callback_done.set()
+
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=stop_from_observer,
+    )
+    sessions.append(session)
+    session.start()
+    collector = FakeCollector.instances[-1]
+    wrapped_observer = collector.kwargs["origin_observer"]
+    collector.flush_stale = lambda _now: wrapped_observer(object())
+
+    started = time.monotonic()
+    assert session.poll(timeout=0) is None
+    assert time.monotonic() - started < 1
+    assert callback_done.is_set()
+    assert len(callback_errors) == 1
+    assert "request_stop" in str(callback_errors[0])
+    deadline = time.monotonic() + 2
+    while not session.stopped and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.stopped
+
+
+def test_origin_observer_rejects_async_stop_from_another_thread(
+    live_fakes,
+):
+    FakeCollector, _ = live_fakes
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        callback_done = Event()
+        callback_errors = []
+        sessions = []
+
+        def stop_from_observer(_observation):
+            stopping = asyncio.run_coroutine_threadsafe(
+                sessions[0].stop(),
+                loop,
+            )
+            try:
+                stopping.result(timeout=1)
+            except BaseException as exc:
+                callback_errors.append(exc)
+            sessions[0].request_stop()
+            callback_done.set()
+
+        session = AsyncLiveCaptureSession(origin_observer=stop_from_observer)
+        sessions.append(session)
+        await session.start()
+        collector = FakeCollector.instances[-1]
+        wrapped_observer = collector.kwargs["origin_observer"]
+        collector.engine.service_gaps = lambda _now: wrapped_observer(object())
+
+        assert await asyncio.to_thread(callback_done.wait, 2)
+        assert len(callback_errors) == 1
+        assert isinstance(callback_errors[0], RuntimeError)
+        assert "request_stop" in str(callback_errors[0])
+        await asyncio.wait_for(session.stop(), timeout=2)
+        assert session.stopped
+
+    asyncio.run(scenario())
+
+
+def test_origin_observer_cannot_block_on_direct_poll(live_fakes):
+    FakeCollector, _ = live_fakes
+    callback_done = Event()
+    callback_errors = []
+    sessions = []
+
+    def poll_from_observer(_observation):
+        try:
+            sessions[0].poll()
+        except BaseException as exc:
+            callback_errors.append(exc)
+        sessions[0].request_stop()
+        callback_done.set()
+
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=poll_from_observer,
+    )
+    sessions.append(session)
+    session.start()
+    collector = FakeCollector.instances[-1]
+    wrapped_observer = collector.kwargs["origin_observer"]
+    collector.engine.service_gaps = lambda _now: wrapped_observer(object())
+
+    assert callback_done.wait(timeout=2), "observer poll deadlocked"
+    assert len(callback_errors) == 1
+    assert "cannot consume events" in str(callback_errors[0])
+    session.stop()
+
+
+def test_origin_observer_cannot_block_on_async_poll(live_fakes):
+    FakeCollector, _ = live_fakes
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        callback_done = Event()
+        callback_errors = []
+        sessions = []
+
+        def poll_from_observer(_observation):
+            polling = asyncio.run_coroutine_threadsafe(
+                sessions[0].poll(),
+                loop,
+            )
+            try:
+                polling.result(timeout=1)
+            except BaseException as exc:
+                callback_errors.append(exc)
+            sessions[0].request_stop()
+            callback_done.set()
+
+        session = AsyncLiveCaptureSession(origin_observer=poll_from_observer)
+        sessions.append(session)
+        await session.start()
+        collector = FakeCollector.instances[-1]
+        wrapped_observer = collector.kwargs["origin_observer"]
+        collector.engine.service_gaps = lambda _now: wrapped_observer(object())
+
+        assert await asyncio.to_thread(callback_done.wait, 2)
+        assert len(callback_errors) == 1
+        assert "cannot consume events" in str(callback_errors[0])
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_nested_origin_observers_keep_outer_session_guarded(live_fakes):
+    FakeCollector, _ = live_fakes
+    nested_done = Event()
+    callback_errors = []
+    sessions = []
+    wrapped = {}
+
+    def outer_observer(_observation):
+        wrapped["inner"](object())
+        sessions[0].request_stop()
+        nested_done.set()
+
+    def inner_observer(_observation):
+        try:
+            sessions[0].stop()
+        except BaseException as exc:
+            callback_errors.append(exc)
+
+    outer = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=outer_observer,
+    )
+    inner = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=inner_observer,
+    )
+    sessions.extend((outer, inner))
+    outer.start()
+    outer_collector = FakeCollector.instances[-1]
+    inner.start()
+    inner_collector = FakeCollector.instances[-1]
+    wrapped["inner"] = inner_collector.kwargs["origin_observer"]
+    outer_wrapped = outer_collector.kwargs["origin_observer"]
+    outer_collector.engine.service_gaps = lambda _now: outer_wrapped(object())
+
+    assert nested_done.wait(timeout=2), "nested origin callback deadlocked"
+    assert len(callback_errors) == 1
+    assert "request_stop" in str(callback_errors[0])
+    outer.stop()
+    inner.stop()
+
+
+def test_callback_request_stop_does_not_wait_on_concurrent_control_stop(
+    live_fakes,
+    monkeypatch,
+):
+    _, FakeSniffer = live_fakes
+    observer_entered = Event()
+    allow_request = Event()
+    request_done = Event()
+    sessions = []
+
+    def make_observer_handler(engine):
+        del engine
+
+        def handle(_packet):
+            observer = capture_module._EventCollector.instances[-1].kwargs[
+                "origin_observer"
+            ]
+            observer(object())
+
+        return handle
+
+    def request_from_observer(_observation):
+        observer_entered.set()
+        assert allow_request.wait(timeout=1)
+        sessions[0].request_stop()
+        request_done.set()
+
+    monkeypatch.setattr(capture_module, "make_packet_handler", make_observer_handler)
+    monkeypatch.setattr(
+        LiveCaptureSession,
+        "_DECODER_STOP_TIMEOUT_SECONDS",
+        0.5,
+    )
+    session = LiveCaptureSession(
+        live_options=LiveCaptureOptions(interface="test-interface"),
+        origin_observer=request_from_observer,
+    )
+    sessions.append(session)
+    session.start()
+    FakeSniffer.instances[-1].emit_packet(object())
+    assert observer_entered.wait(timeout=1)
+    stop_errors = []
+
+    def control_stop():
+        try:
+            session.stop()
+        except BaseException as exc:
+            stop_errors.append(exc)
+
+    stopper = Thread(target=control_stop, daemon=True)
+    stopper.start()
+    deadline = time.monotonic() + 1
+    while (
+        FakeSniffer.instances[-1].stop_calls == 0
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert FakeSniffer.instances[-1].stop_calls == 1
+    allow_request.set()
+
+    assert request_done.wait(timeout=0.25), "request_stop waited on cleanup lock"
+    stopper.join(timeout=1)
+    assert not stopper.is_alive()
+    assert stop_errors == []
+    assert session.stopped
+
+
 def test_session_services_tcp_gap_clock_while_idle(live_fakes):
     FakeCollector, _ = live_fakes
     session = LiveCaptureSession(
@@ -415,6 +1264,48 @@ def test_capture_live_remains_a_timed_blocking_wrapper(live_fakes):
     assert FakeCollector.instances[-1].finalize_calls == 1
 
 
+def test_capture_live_timer_start_failure_stops_started_session(monkeypatch):
+    startup_failure = RuntimeError("deadline timer could not start")
+
+    class StartedSession:
+        instances = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.stopped = False
+            self.cleanup_incomplete = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            return None
+
+        def stop(self):
+            self.stopped = True
+
+    class FailedTimer:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            self.name = ""
+            self.daemon = False
+            self.cancelled = False
+
+        def start(self):
+            raise startup_failure
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(capture_module, "LiveCaptureSession", StartedSession)
+    monkeypatch.setattr(capture_module, "Timer", FailedTimer)
+    events = capture_module.capture_live(capture_seconds=1.0)
+
+    with pytest.raises(RuntimeError) as started:
+        next(events)
+
+    assert started.value is startup_failure
+    assert StartedSession.instances[-1].stopped
+
+
 def test_capture_live_deadline_stops_while_consumer_is_suspended(monkeypatch):
     emitted = _event(99)
 
@@ -493,6 +1384,48 @@ def test_closing_capture_live_stops_its_delegated_session(monkeypatch):
     events.close()
 
     assert FakeSession.instances[-1].stopped
+
+
+def test_capture_live_close_exposes_owner_when_cleanup_is_incomplete(
+    monkeypatch,
+):
+    emitted = _event(43)
+    cleanup_failure = RuntimeError("delegated cleanup is incomplete")
+
+    class IncompleteSession:
+        _POLL_INTERVAL_SECONDS = 0.2
+        instances = []
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.stopped = False
+            self.cleanup_incomplete = False
+            self.delivered = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            return None
+
+        def poll(self, timeout=None):
+            del timeout
+            if not self.delivered:
+                self.delivered = True
+                return emitted
+            return None
+
+        def stop(self):
+            self.cleanup_incomplete = True
+            raise cleanup_failure
+
+    monkeypatch.setattr(capture_module, "LiveCaptureSession", IncompleteSession)
+    events = capture_module.capture_live()
+    assert next(events) is emitted
+
+    with pytest.raises(RuntimeError) as closed:
+        events.close()
+
+    assert closed.value is cleanup_failure
+    assert cleanup_failure.cleanup_owner is IncompleteSession.instances[-1]
 
 
 def test_session_validates_configuration_before_capture_starts():

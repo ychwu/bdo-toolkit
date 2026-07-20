@@ -58,6 +58,12 @@ class _TeeScanner:
             self._tap.scan_standalone(data, context)
         self._primary.scan_standalone(data, context)
 
+    def can_anchor_at_start(self, data: bytes) -> bool:
+        # Observers must never make primary event reassembly less conservative.
+        # The generic tap accepts weaker standalone-frame evidence that is safe
+        # for observation but can be a coincidental header in a target suffix.
+        return self._primary.can_anchor_at_start(data)
+
     def reset(self) -> None:
         if self._tap is not None:
             self._tap.reset()

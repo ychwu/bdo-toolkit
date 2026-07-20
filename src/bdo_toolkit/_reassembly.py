@@ -10,11 +10,20 @@ from typing import Callable, Optional, Protocol
 from ._protocol import (
     GAP_RESET_SECONDS,
     MAX_PENDING_SEGMENTS,
+    MAX_TARGET_MESSAGE_LENGTH,
     TCP_SEQUENCE_HALF_RANGE,
     TCP_SEQUENCE_MODULUS,
     FlowKey,
     PacketContext,
 )
+
+
+# When capture begins after the SYN, the first callback can be a later TCP
+# segment that raced ahead of its prefix. Hold a bounded initial reorder set
+# briefly; proven frame boundaries are delivered immediately, and every other
+# path is released by live clock service, capacity pressure, or finish().
+_INITIAL_REORDER_GRACE_SECONDS = 0.25
+_INITIAL_ANCHOR_PROBE_BYTES = (MAX_TARGET_MESSAGE_LENGTH * 2) + 5
 
 
 class StreamScanner(Protocol):
@@ -38,15 +47,22 @@ class TCPFlowState:
     scanner: StreamScanner
     next_sequence: Optional[int] = None
     pending: dict[int, PendingSegment] = field(default_factory=dict)
+    unanchored: dict[int, PendingSegment] = field(default_factory=dict)
+    unanchored_started_at: Optional[float] = None
     gap_started_at: Optional[float] = None
     generation: int = 0
     on_gap_reset: Optional[Callable[[], None]] = None
     last_activity_at: Optional[float] = None
+    fin_sequence: Optional[int] = None
+    fin_observed_at: Optional[float] = None
 
     def reset(self) -> None:
         self.next_sequence = None
         self.pending.clear()
+        self._clear_unanchored()
         self.gap_started_at = None
+        self.fin_sequence = None
+        self.fin_observed_at = None
         self.scanner.reset()
 
     def anchor_sequence(self, sequence: int) -> None:
@@ -58,7 +74,10 @@ class TCPFlowState:
         the stream's accidental starting point.
         """
         if self.next_sequence is None:
-            self.next_sequence = sequence & 0xFFFFFFFF
+            if self.unanchored:
+                self._commit_unanchored(sequence & 0xFFFFFFFF)
+            else:
+                self.next_sequence = sequence & 0xFFFFFFFF
 
     def add_segment(
         self, sequence: int, payload: bytes, context: PacketContext
@@ -67,11 +86,143 @@ class TCPFlowState:
             return
 
         if self.next_sequence is None:
-            self.next_sequence = sequence & 0xFFFFFFFF
-        else:
-            sequence = _unwrap_tcp_sequence(sequence, self.next_sequence)
+            self._add_unanchored_segment(sequence, payload, context)
+            return
 
+        self._add_anchored_segment(sequence, payload, context)
+
+    def mark_fin(self, sequence: int, timestamp: float) -> None:
+        """Remember the first sequence after all payload preceding FIN."""
+
+        self.fin_sequence = sequence & 0xFFFFFFFF
+        self.fin_observed_at = timestamp
+        self._start_fin_gap_timer_if_needed()
+
+    def _start_fin_gap_timer_if_needed(self) -> None:
+        if (
+            self.fin_sequence is None
+            or self.fin_observed_at is None
+            or self.next_sequence is None
+            or self.unanchored
+            or self.pending
+        ):
+            return
+        fin_sequence = _unwrap_tcp_sequence(
+            self.fin_sequence,
+            self.next_sequence,
+        )
+        if self.next_sequence < fin_sequence and self.gap_started_at is None:
+            self.gap_started_at = self.fin_observed_at
+
+    def fin_is_reassembled(self) -> bool:
+        """Return whether every observed range through FIN is now contiguous."""
+
+        if (
+            self.fin_sequence is None
+            or self.next_sequence is None
+            or self.unanchored
+            or self.pending
+        ):
+            return False
+        return self.next_sequence >= _unwrap_tcp_sequence(
+            self.fin_sequence,
+            self.next_sequence,
+        )
+
+    def _add_unanchored_segment(
+        self, sequence: int, payload: bytes, context: PacketContext
+    ) -> None:
+        """Establish a credible stream origin when no SYN was captured."""
+        sequence &= 0xFFFFFFFF
+        previous = self.unanchored.get(sequence)
+        if previous is None or len(payload) > len(previous.data):
+            self.unanchored[sequence] = PendingSegment(payload, context)
+        if self.unanchored_started_at is None:
+            self.unanchored_started_at = context.timestamp
+
+        ordered = self._ordered_unanchored()
+        start_sequence, probe = self._contiguous_unanchored_probe(ordered)
+        can_anchor = getattr(self.scanner, "can_anchor_at_start", None)
+        if can_anchor is not None and can_anchor(probe):
+            self._commit_unanchored(start_sequence)
+        elif len(self.unanchored) > MAX_PENDING_SEGMENTS:
+            # Preserve the same hard count bound as ordinary gap buffering.
+            # Under pressure, the earliest observed byte is the least-bad
+            # origin and the scanner's normal resynchronization remains active.
+            self._commit_unanchored(start_sequence)
+
+    def _ordered_unanchored(self) -> list[tuple[int, PendingSegment]]:
+        if not self.unanchored:
+            return []
+        reference = next(iter(self.unanchored))
+        ordered = sorted(
+            (
+                _unwrap_tcp_sequence(sequence, reference),
+                segment,
+            )
+            for sequence, segment in self.unanchored.items()
+        )
+        if ordered[0][0] < 0:
+            ordered = [
+                (sequence + TCP_SEQUENCE_MODULUS, segment)
+                for sequence, segment in ordered
+            ]
+        return ordered
+
+    @staticmethod
+    def _contiguous_unanchored_probe(
+        ordered: list[tuple[int, PendingSegment]],
+    ) -> tuple[int, bytes]:
+        assert ordered
+        start_sequence = ordered[0][0]
+        cursor = start_sequence
+        probe = bytearray()
+        for sequence, segment in ordered:
+            if sequence > cursor:
+                break
+            overlap = max(0, cursor - sequence)
+            if overlap >= len(segment.data):
+                continue
+            remaining = segment.data[overlap:]
+            capacity = _INITIAL_ANCHOR_PROBE_BYTES - len(probe)
+            if capacity <= 0:
+                break
+            probe.extend(remaining[:capacity])
+            cursor = max(cursor, sequence + len(segment.data))
+            if len(remaining) > capacity:
+                break
+        return start_sequence, bytes(probe)
+
+    def _commit_unanchored(self, sequence: Optional[int] = None) -> None:
+        if not self.unanchored:
+            return
+        ordered = self._ordered_unanchored()
+        if sequence is None:
+            sequence = ordered[0][0]
+        self._clear_unanchored()
+        self.next_sequence = sequence
+        for segment_sequence, segment in ordered:
+            self._add_anchored_segment(
+                segment_sequence,
+                segment.data,
+                segment.context,
+                scan_retransmission=False,
+            )
+
+    def _clear_unanchored(self) -> None:
+        self.unanchored.clear()
+        self.unanchored_started_at = None
+
+    def _add_anchored_segment(
+        self,
+        sequence: int,
+        payload: bytes,
+        context: PacketContext,
+        *,
+        scan_retransmission: bool = True,
+    ) -> None:
         assert self.next_sequence is not None
+        sequence = _unwrap_tcp_sequence(sequence, self.next_sequence)
 
         # Ignore bytes already delivered by an earlier copy/retransmission.
         if sequence < self.next_sequence:
@@ -87,9 +238,11 @@ class TCPFlowState:
                 # earlier segment after a later sequence number. It cannot
                 # advance the reassembled stream, but it may still contain a
                 # self-contained target frame worth scanning.
-                self.scanner.scan_standalone(payload, overlap_context)
+                if scan_retransmission:
+                    self.scanner.scan_standalone(payload, overlap_context)
                 return
-            self.scanner.scan_standalone(payload[:overlap], overlap_context)
+            if scan_retransmission:
+                self.scanner.scan_standalone(payload[:overlap], overlap_context)
             payload = payload[overlap:]
             sequence = self.next_sequence
 
@@ -158,6 +311,13 @@ class TCPFlowState:
         enough at the supplied clock value.
         """
         resets = 0
+        if (
+            self.unanchored
+            and self.unanchored_started_at is not None
+            and now - self.unanchored_started_at
+            >= _INITIAL_REORDER_GRACE_SECONDS
+        ):
+            self._commit_unanchored()
         while (
             self.pending
             and self.gap_started_at is not None
@@ -165,6 +325,26 @@ class TCPFlowState:
         ):
             self._resume_after_gap()
             resets += 1
+        self._start_fin_gap_timer_if_needed()
+        if (
+            not self.pending
+            and not self.unanchored
+            and self.fin_sequence is not None
+            and self.next_sequence is not None
+            and self.gap_started_at is not None
+            and now - self.gap_started_at >= GAP_RESET_SECONDS
+        ):
+            fin_sequence = _unwrap_tcp_sequence(
+                self.fin_sequence,
+                self.next_sequence,
+            )
+            if self.next_sequence < fin_sequence:
+                self.scanner.reset()
+                if self.on_gap_reset is not None:
+                    self.on_gap_reset()
+                self.next_sequence = fin_sequence
+                self.gap_started_at = None
+                resets += 1
         return resets
 
     def _resume_after_gap(self) -> None:
@@ -188,6 +368,7 @@ class TCPFlowState:
         complete, decodable frames in ``pending`` forever; the gap timer only
         fires when another packet arrives on the flow.
         """
+        self._commit_unanchored()
         while self.pending:
             self._resume_after_gap()
 
@@ -253,8 +434,15 @@ class FlowManager:
         """
         with self._lock:
             before = self._tcp_gap_resets
-            for state in self._flows.values():
+            completed_fin_flows: list[FlowKey] = []
+            for flow, state in self._flows.items():
                 state.service_gaps(now)
+                if state.fin_is_reassembled():
+                    completed_fin_flows.append(flow)
+            for flow in completed_fin_flows:
+                state = self._flows.pop(flow)
+                state.finish()
+                self._notify_flow_close(flow)
             if self._idle_timeout is not None:
                 expired = [
                     flow
@@ -374,12 +562,30 @@ class FlowManager:
                 ),
             )
 
-        if rst or fin:
-            # Processed any final payload first. Drain complete frames stranded
-            # behind a capture gap before discarding the closed-flow state.
+        if not rst and state.fin_sequence is not None and state.fin_is_reassembled():
             state.finish()
             self._flows.pop(flow, None)
             self._notify_flow_close(flow)
+            return
+
+        if rst:
+            # RST is an abortive close; drain what is already available, then
+            # discard the connection state immediately.
+            state.finish()
+            self._flows.pop(flow, None)
+            self._notify_flow_close(flow)
+        elif fin:
+            # FIN can race ahead of earlier payload callbacks. Keep bounded
+            # provisional/gap state until all observed bytes through FIN are
+            # contiguous, rather than splitting one frame across two states.
+            fin_sequence = (
+                sequence + (1 if syn else 0) + len(payload)
+            ) & 0xFFFFFFFF
+            state.mark_fin(fin_sequence, timestamp)
+            if state.fin_is_reassembled():
+                state.finish()
+                self._flows.pop(flow, None)
+                self._notify_flow_close(flow)
 
     def finish(self) -> None:
         with self._lock:

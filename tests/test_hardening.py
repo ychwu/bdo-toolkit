@@ -895,6 +895,42 @@ def test_runtime_profile_preserves_distinct_same_opcode_layouts(tmp_path):
     }
 
 
+def test_runtime_loot_profile_preserves_instance_and_length_geometry(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    payload = {
+        "profile_active": True,
+        "specs": {
+            "LOOT_PREVIEW": [
+                {
+                    "event": "LOOT_PREVIEW",
+                    "opcode": "0x1643",
+                    "length": 244,
+                    "item_id_offset": 23,
+                    "quantity_offset": 27,
+                    "item_instance_offset": 58,
+                },
+                {
+                    "event": "LOOT_PREVIEW",
+                    "opcode": "0x1643",
+                    "length": 244,
+                    "item_id_offset": 23,
+                    "quantity_offset": 27,
+                    "item_instance_offset": 66,
+                },
+            ]
+        },
+    }
+    profile_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+
+    assert len(loaded.specs) == 2
+    assert {
+        (spec.item_instance_offset, spec.single_record_message_length)
+        for spec in loaded.specs
+    } == {(58, 244), (66, 244)}
+
+
 def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
     path = tmp_path / "opcodes.json"
     path.write_text("{}", encoding="utf-8")

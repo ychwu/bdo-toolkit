@@ -5,7 +5,10 @@ import pytest
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._framing import TargetMessageScanner
 from bdo_toolkit._protocol import GAP_RESET_SECONDS, EventSpec, FlowKey
-from bdo_toolkit._reassembly import FlowManager
+from bdo_toolkit._reassembly import (
+    _INITIAL_REORDER_GRACE_SECONDS,
+    FlowManager,
+)
 
 
 _SPEC = EventSpec(
@@ -134,6 +137,313 @@ def test_empty_syn_anchor_reassembles_second_half_first_and_deduplicates(
         timestamp=1.3,
     )
     assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+
+
+@pytest.mark.parametrize("payload_sequence", [1000, 0xFFFFFFF9])
+def test_missing_syn_reassembles_second_half_first(payload_sequence: int):
+    events = []
+    frames = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        frame_observer=frames.append,
+    )
+    frame = _target_frame()
+    split_at = 17
+
+    # Capture attached after the handshake and the callback for the later TCP
+    # segment raced ahead of its prefix.  The first bytes are provisional
+    # until the lower sequence arrives, including across uint32 wrap.
+    _segment(
+        engine,
+        sequence=(payload_sequence + split_at) & 0xFFFFFFFF,
+        payload=frame[split_at:],
+        timestamp=1.0,
+    )
+    assert events == []
+    assert frames == []
+
+    _segment(
+        engine,
+        sequence=payload_sequence,
+        payload=frame[:split_at],
+        timestamp=1.1,
+    )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert [collected.message for collected in frames] == [frame]
+    assert frames[0].stream_sequence == payload_sequence
+
+
+@pytest.mark.parametrize("payload_sequence", [1000, 0xFFFFFFF9])
+@pytest.mark.parametrize(
+    "boundaries,arrival_order",
+    [
+        ((0, 7, 18, 31), (1, 2, 0)),
+        ((0, 6, 13, 22, 31), (2, 1, 3, 0)),
+    ],
+)
+def test_missing_syn_retains_multiple_initial_reorders_until_head_arrives(
+    payload_sequence: int,
+    boundaries: tuple[int, ...],
+    arrival_order: tuple[int, ...],
+):
+    events = []
+    frames = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        frame_observer=frames.append,
+    )
+    frame = _target_frame()
+    pieces = [
+        frame[start:end]
+        for start, end in zip(boundaries, boundaries[1:])
+    ]
+
+    for arrival_index, piece_index in enumerate(arrival_order):
+        start = boundaries[piece_index]
+        _segment(
+            engine,
+            sequence=(payload_sequence + start) & 0xFFFFFFFF,
+            payload=pieces[piece_index],
+            timestamp=1.0 + arrival_index * 0.01,
+        )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert [collected.message for collected in frames] == [frame]
+    assert frames[0].stream_sequence == payload_sequence
+
+
+@pytest.mark.parametrize("with_frame_observer", [False, True])
+def test_observer_cannot_make_target_suffix_an_initial_anchor(
+    with_frame_observer: bool,
+):
+    events = []
+    frames = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        frame_observer=frames.append if with_frame_observer else None,
+    )
+    frame = _target_frame(item_id=0x00010008)
+    split_at = 23
+
+    # The suffix happens to begin with 08 00 and is eight bytes long. That is
+    # weak generic-frame evidence, but an optional observer must not let it
+    # become the primary stream anchor before the real target header arrives.
+    _segment(
+        engine,
+        sequence=1000 + split_at,
+        payload=frame[split_at:],
+        timestamp=1.0,
+    )
+    _segment(
+        engine,
+        sequence=1000,
+        payload=frame[:split_at],
+        timestamp=1.1,
+    )
+
+    assert [(event.item_id, event.quantity) for event in events] == [
+        (0x00010008, 8)
+    ]
+    if with_frame_observer:
+        assert [collected.message for collected in frames] == [frame]
+
+
+def test_missing_syn_initial_reorder_trims_overlapping_provisional_segments():
+    events = []
+    frames = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        frame_observer=frames.append,
+    )
+    frame = _target_frame()
+
+    for start, end, timestamp in (
+        (10, 23, 1.0),
+        (18, 31, 1.1),
+        (0, 14, 1.2),
+    ):
+        _segment(
+            engine,
+            sequence=1000 + start,
+            payload=frame[start:end],
+            timestamp=timestamp,
+        )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert [collected.message for collected in frames] == [frame]
+    assert frames[0].stream_sequence == 1000
+
+
+@pytest.mark.parametrize("payload_sequence", [1000, 0xFFFFFFF9])
+def test_out_of_order_fin_waits_for_missing_initial_prefix(
+    payload_sequence: int,
+):
+    events = []
+    closed = []
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: TargetMessageScanner(
+            lambda event, _raw: events.append(event),
+            (_SPEC,),
+        ),
+        on_flow_close=closed.append,
+    )
+    frame = _target_frame()
+    split_at = 17
+
+    _segment(
+        manager,
+        sequence=(payload_sequence + split_at) & 0xFFFFFFFF,
+        payload=frame[split_at:],
+        timestamp=1.0,
+        fin=True,
+    )
+    assert events == []
+    assert closed == []
+
+    _segment(
+        manager,
+        sequence=payload_sequence,
+        payload=frame[:split_at],
+        timestamp=1.1,
+    )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert len(closed) == 1
+
+
+def test_unproven_initial_segment_is_released_by_wall_clock_service():
+    feeds = []
+
+    class UnprovenScanner:
+        def can_anchor_at_start(self, _data):
+            return False
+
+        def feed(self, data, context):
+            feeds.append((data, context))
+
+        def scan_standalone(self, _data, _context):
+            pass
+
+        def reset(self):
+            pass
+
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=UnprovenScanner,
+    )
+    payload = b"\xff\xfe\xfd"
+
+    _segment(manager, sequence=1000, payload=payload, timestamp=10.0)
+    assert feeds == []
+
+    assert (
+        manager.service_gaps(
+            10.0 + _INITIAL_REORDER_GRACE_SECONDS - 0.001
+        )
+        == 0
+    )
+    assert feeds == []
+
+    assert (
+        manager.service_gaps(
+            10.0 + _INITIAL_REORDER_GRACE_SECONDS + 0.001
+        )
+        == 0
+    )
+    assert [(data, context.stream_start) for data, context in feeds] == [
+        (payload, 1000)
+    ]
+
+
+def test_wall_clock_release_closes_deferred_fin_after_provisional_payload():
+    feeds = []
+    closed = []
+
+    class UnprovenScanner:
+        def can_anchor_at_start(self, _data):
+            return False
+
+        def feed(self, data, context):
+            feeds.append((data, context))
+
+        def scan_standalone(self, _data, _context):
+            pass
+
+        def reset(self):
+            pass
+
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=UnprovenScanner,
+        on_flow_close=closed.append,
+    )
+    payload = b"\xff\xfe\xfd"
+
+    _segment(
+        manager,
+        sequence=1000,
+        payload=payload,
+        timestamp=10.0,
+        fin=True,
+    )
+    assert feeds == []
+    assert closed == []
+
+    manager.service_gaps(
+        10.0 + _INITIAL_REORDER_GRACE_SECONDS + 0.001
+    )
+
+    assert [(data, context.stream_start) for data, context in feeds] == [
+        (payload, 1000)
+    ]
+    assert len(closed) == 1
+
+
+def test_wall_clock_closes_fin_only_gap_when_missing_bytes_never_arrive():
+    feeds = []
+    closed = []
+
+    class RecordingScanner:
+        def feed(self, data, context):
+            feeds.append((data, context))
+
+        def scan_standalone(self, _data, _context):
+            pass
+
+        def reset(self):
+            pass
+
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=RecordingScanner,
+        on_flow_close=closed.append,
+    )
+    _segment(manager, sequence=99, timestamp=1.0, syn=True)
+    _segment(manager, sequence=100, payload=b"0123456789", timestamp=1.1)
+    _segment(manager, sequence=120, timestamp=1.2, fin=True)
+    assert [data for data, _context in feeds] == [b"0123456789"]
+    assert closed == []
+
+    assert manager.service_gaps(1.2 + GAP_RESET_SECONDS - 0.001) == 0
+    assert closed == []
+    assert manager.service_gaps(1.2 + GAP_RESET_SECONDS + 0.001) == 1
+    assert len(closed) == 1
+    assert manager.tcp_gap_resets == 1
+
+    # The completed state was removed; later clock service cannot close it a
+    # second time or retain a dead flow indefinitely.
+    manager.service_gaps(100.0)
+    assert len(closed) == 1
 
 
 def test_idle_and_capacity_removal_notify_flow_owner_without_false_loss_count():

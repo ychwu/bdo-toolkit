@@ -44,6 +44,7 @@ class FakeLiveCaptureSession:
         self.error = None
         self.start_error = None
         self.stop_error = None
+        self.cleanup_incomplete = False
         self.start_calls = 0
         self.stop_calls = 0
         self.poll_calls = []
@@ -131,6 +132,9 @@ class FakeCalibrationSession:
         self.bytes_discarded = 0
         self.retention_truncated = False
         self.retention = object()
+        self.cleanup_incomplete = False
+        self.stop_error = None
+        self.abort_error = None
         self.start_calls = 0
         self.stop_calls = 0
         self.abort_calls = 0
@@ -161,13 +165,20 @@ class FakeCalibrationSession:
         self.stop_calls += 1
         self.stop_entered.set()
         self.stop_release.wait()
+        if self.stop_error is not None:
+            raise self.stop_error
         self._running = False
+        self.cleanup_incomplete = False
         return self.result
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self._running:
             self.abort_calls += 1
+            if self.abort_error is not None:
+                self.cleanup_incomplete = True
+                raise self.abort_error
             self._running = False
+            self.cleanup_incomplete = False
 
 
 @pytest.fixture
@@ -271,11 +282,186 @@ def test_async_live_batch_uses_one_executor_submission_for_ready_events(
             return original_submit(function)
 
         session._submit = counted_submit
-        received = await session._poll_batch()
+        await session._fill_pending_events()
 
-        assert list(received) == expected
+        assert list(session._pending_events) == expected
         assert submissions == 1
         await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_async_live_public_poll_consumes_prefetch_after_anext(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(3)]
+        for event in expected:
+            fake.emit(event)
+
+        iterator = session.events()
+        assert await anext(iterator) is expected[0]
+        assert await session.poll(timeout=0) is expected[1]
+        assert await session.poll(timeout=0) is expected[2]
+
+        await iterator.aclose()
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
+def test_async_live_prefetch_does_not_bypass_timeout_validation(
+    fake_async_sessions,
+    invalid_timeout,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        events = [_event(index) for index in range(3)]
+        for event in events:
+            fake.emit(event)
+
+        iterator = session.events()
+        assert await anext(iterator) is events[0]
+        with pytest.raises(ValueError, match="timeout"):
+            await session.poll(timeout=invalid_timeout)
+
+        assert await session.poll(timeout=0) is events[1]
+        assert await session.poll(timeout=0) is events[2]
+        await iterator.aclose()
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_async_live_prefetch_survives_early_iterator_close(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(3)]
+        for event in expected:
+            fake.emit(event)
+
+        iterator = session.events()
+        assert await anext(iterator) is expected[0]
+        await iterator.aclose()
+
+        replacement = session.events()
+        assert await anext(replacement) is expected[1]
+        assert await anext(replacement) is expected[2]
+        await replacement.aclose()
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_async_live_prefetch_survives_early_async_for_break(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(3)]
+        for event in expected:
+            fake.emit(event)
+
+        received = []
+        async for event in session.events():
+            received.append(event)
+            break
+
+        assert received == expected[:1]
+        assert await session.poll(timeout=0) is expected[1]
+        assert await session.poll(timeout=0) is expected[2]
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_async_live_prefetch_survives_consumer_cancellation_after_yield(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(3)]
+        for event in expected:
+            fake.emit(event)
+
+        yielded = asyncio.Event()
+
+        async def consume():
+            async for event in session.events():
+                assert event is expected[0]
+                yielded.set()
+                await asyncio.Future()
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.wait_for(yielded.wait(), 1.0)
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+
+        assert await session.poll(timeout=0) is expected[1]
+        assert await session.poll(timeout=0) is expected[2]
+        await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_async_live_cancelled_batch_fetch_preserves_shutdown_event(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        finalized = _event(9)
+        fake.final_event = finalized
+        iterator = session.events()
+
+        pending = asyncio.create_task(anext(iterator))
+        await asyncio.to_thread(fake.poll_entered.wait, 1.0)
+        pending.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+        assert session.stopped
+        assert await session.poll(timeout=0) is finalized
+
+    asyncio.run(scenario())
+
+
+def test_async_live_stopped_batch_drains_before_terminal_error(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        expected = [_event(index) for index in range(3)]
+        for event in expected:
+            fake.emit(event)
+        fake.error = OSError("decoder failed after batch")
+        await session.stop()
+
+        received = []
+        with pytest.raises(OSError, match="decoder failed after batch"):
+            async for event in session.events():
+                received.append(event)
+
+        assert received == expected
 
     asyncio.run(scenario())
 
@@ -340,6 +526,27 @@ def test_async_live_rejects_concurrent_consumers(fake_async_sessions):
 
         await session.stop()
         await first_consumer
+
+    asyncio.run(scenario())
+
+
+def test_async_live_rejects_poll_while_iterator_fetch_is_active(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        iterator = session.events()
+
+        first_consumer = asyncio.create_task(anext(iterator))
+        await asyncio.to_thread(fake.poll_entered.wait, 1.0)
+        with pytest.raises(RuntimeError, match="one consumer"):
+            await session.poll(timeout=0)
+
+        await session.stop()
+        with pytest.raises(StopAsyncIteration):
+            await first_consumer
 
     asyncio.run(scenario())
 
@@ -462,6 +669,71 @@ def test_cancelled_async_live_stop_keeps_cancellation_on_cleanup_failure(
     asyncio.run(scenario())
 
 
+def test_async_live_incomplete_cleanup_can_be_retried(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        cleanup_error = OSError("native capture is still running")
+        fake.cleanup_incomplete = True
+        fake.stop_error = cleanup_error
+
+        with pytest.raises(OSError) as raised:
+            await session.stop()
+
+        assert raised.value is cleanup_error
+        assert session.cleanup_incomplete
+        assert not session._executor_closed
+        assert fake.stop_calls == 1
+
+        fake.cleanup_incomplete = False
+        fake.stop_error = None
+        await session.stop()
+
+        assert session.stopped
+        assert session._executor_closed
+        assert fake.stop_calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_async_live_incomplete_cleanup_retries_on_next_stop(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        cleanup_error = OSError("native capture is still running")
+        fake.cleanup_incomplete = True
+        fake.stop_error = cleanup_error
+        fake.stop_release.clear()
+
+        stopping = asyncio.create_task(session.stop())
+        await asyncio.to_thread(fake.stop_entered.wait, 1.0)
+        stopping.cancel()
+        fake.stop_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+
+        assert session.cleanup_incomplete
+        assert not session._executor_closed
+        assert session._stop_future is None
+
+        fake.cleanup_incomplete = False
+        fake.stop_error = None
+        await session.stop()
+
+        assert session.stopped
+        assert session._executor_closed
+        assert fake.stop_calls == 2
+
+    asyncio.run(scenario())
+
+
 def test_async_live_poll_forwards_timeout(fake_async_sessions):
     async def scenario():
         session = AsyncLiveCaptureSession()
@@ -471,6 +743,22 @@ def test_async_live_poll_forwards_timeout(fake_async_sessions):
         assert await session.poll(timeout=0.01) is None
         assert fake.poll_calls == [0.01]
         await session.stop()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
+def test_async_live_stopped_poll_still_validates_timeout(
+    fake_async_sessions,
+    invalid_timeout,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        await session.stop()
+
+        with pytest.raises(ValueError):
+            await session.poll(timeout=invalid_timeout)
 
     asyncio.run(scenario())
 
@@ -563,6 +851,36 @@ def test_cancelled_async_calibration_stop_preserves_exact_result(
     asyncio.run(scenario())
 
 
+def test_async_calibration_incomplete_cleanup_can_be_retried(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncCalibrationSession(item_id=7003)
+        await session.start()
+        fake = FakeCalibrationSession.instances[-1]
+        cleanup_error = OSError("calibration capture is still running")
+        fake.cleanup_incomplete = True
+        fake.stop_error = cleanup_error
+
+        with pytest.raises(OSError) as raised:
+            await session.stop()
+
+        assert raised.value is cleanup_error
+        assert session.cleanup_incomplete
+        assert session.running
+        assert fake.stop_calls == 1
+
+        fake.cleanup_incomplete = False
+        fake.stop_error = None
+        assert await session.stop() is fake.result
+
+        assert session.result is fake.result
+        assert not session.running
+        assert fake.stop_calls == 2
+
+    asyncio.run(scenario())
+
+
 def test_async_calibration_abort_is_idempotent_and_prevents_stop(
     fake_async_sessions,
 ):
@@ -598,5 +916,55 @@ def test_async_calibration_cancelled_start_aborts_late_success(
             await starting
         assert fake.abort_calls == 1
         assert not fake.running
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("prior_terminal", ["stop", "abort"])
+def test_async_calibration_cancelled_reuse_exposes_current_run_for_retry(
+    fake_async_sessions,
+    prior_terminal,
+):
+    async def scenario():
+        session = AsyncCalibrationSession(item_id=7003)
+        fake = FakeCalibrationSession.instances[-1]
+        first_result = object()
+        second_result = object()
+        fake.result = first_result
+
+        await session.start()
+        if prior_terminal == "stop":
+            assert await session.stop() is first_result
+        else:
+            await session.abort()
+        prior_stop_calls = fake.stop_calls
+        prior_abort_calls = fake.abort_calls
+
+        fake.result = second_result
+        fake.start_entered.clear()
+        fake.start_release.clear()
+        cleanup_error = OSError("second calibration cleanup is incomplete")
+        fake.abort_error = cleanup_error
+
+        starting = asyncio.create_task(session.start())
+        await asyncio.to_thread(fake.start_entered.wait, 1.0)
+        starting.cancel()
+        fake.start_release.set()
+
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await starting
+
+        assert cancelled.value.cleanup_owner is session
+        assert session.cleanup_incomplete
+        assert session.running
+        assert session.result is None
+        assert fake.abort_calls == prior_abort_calls + 1
+
+        fake.abort_error = None
+        fake.cleanup_incomplete = False
+        assert await session.stop() is second_result
+        assert fake.stop_calls == prior_stop_calls + 1
+        assert not session.running
+        assert session.result is second_result
 
     asyncio.run(scenario())
