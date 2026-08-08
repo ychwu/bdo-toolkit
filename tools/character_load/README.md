@@ -80,23 +80,24 @@ record families (`INVENTORY_TRANSFER` and `STORAGE_ITEM_DELTA`) and their
 patch-specific opcodes, first-item positions, and normalized base lengths.
 There is currently no separate mandatory character-load calibration, but
 ordinary calibration is not a generic schema learner: quantity and instance
-still assume `item+4` / `item+35`, receipt context discovery searches for known
-values, and current storage destination recovery expects `item-9`.
+still assume `item+4` / `item+35`, and receipt context discovery searches for
+known values. Storage destination/mode/token positions remain decoder-owned;
+the current decoder recognizes both the July 17 and August 7 layouts.
 
 Inventory hydration should resume from that profile when the patch retains the
 shared transfer record and all-zero character-load context: its count is
-searched in the prefix, stride is derived per frame, and trailing slot/container
-positions are learned jointly from the hydration itself.
+searched in the prefix, stride is derived per frame, and container metadata is
+learned from either a validated record tail or a common wrapper-header byte.
 
-Storage hydration has a narrower guarantee. Current snapshot/live/empty
-classification recognizes observed item-relative mode, token, count, and
-destination relationships that ordinary calibration does not fully discover
-or persist. An opcode-only change or whole-wrapper shift is expected to recover
-after calibration only while the shared within-record/context assumptions also
-hold; a change to those relationships requires a decoder update or a future
-snapshot-specific detection/calibration enhancement. In every case, replay the
-new capture and confirm the diagnostic summary before relying on it in an
-application.
+Storage hydration has a narrower guarantee. Record count is searched in the
+prefix and stride is derived structurally, but snapshot/live/empty and town
+metadata use observed destination/mode/token wrapper layouts that ordinary
+calibration does not discover or persist. The July 17 and August 7 layouts are
+recognized. An opcode/base change should recover after calibration while the
+shared record assumptions and one recognized wrapper layout survive; a new
+wrapper-metadata layout requires a decoder update or a future snapshot-specific
+detection/calibration enhancement. In every case, replay the new capture and
+confirm the diagnostic summary before relying on it in an application.
 
 ## Deliberate limitations
 
@@ -104,14 +105,17 @@ application.
   imply a maximum capacity of 184, and the tool will not invent a `/192` value.
 - Storage output distinguishes explicit empty envelopes from known destinations
   that were not transmitted. A missing destination is not silently called empty.
-- Record-level inventory slot and container fields are discovered jointly from
-  validated multi-record geometry rather than frozen at one patch's offsets.
+- Inventory container fields are discovered from validated multi-record
+  geometry rather than frozen at one patch's offsets. July layouts expose a
+  record-tail slot/container pair; the August 7 layout exposes a wrapper-level
+  container byte and no validated per-record slot, so `inventory_slot` is
+  `None` there.
   Raw codes `0x00`, `0x10`, `0x18`, and `0x0B` have provisional Main, Pearl,
   Global Currencies, and Enhancement labels respectively. These labels agree
-  across the July 17 initial-load and character-switch pcaps but remain
-  experimental; use the numeric code as identity. Count-zero groups contain
-  no record-level fields and remain unclassified. If a future patch introduces
-  an unknown container code, the current joint layout check leaves all records
+  across the July 17 captures and the August 7 character-switch pcap but remain
+  experimental; use the numeric code as identity. Count-zero groups remain
+  unclassified. If a future patch introduces an unknown container code, the
+  current layout check leaves all records
   for that opcode unclassified instead of guessing an offset or silently
   assigning the new code to an existing label; decoded items are still kept.
 - The hydration packets do not currently distinguish initial login from a
