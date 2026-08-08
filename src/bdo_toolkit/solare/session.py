@@ -70,7 +70,12 @@ class LiveSolareSession:
     ranking tables independently confirm.
     """
 
-    _WORKER_STOP_TIMEOUT_SECONDS = 5.0
+    # Unknown Solare detail geometries are learned only after the complete
+    # snapshot has been structurally confirmed.  That bounded, fail-closed
+    # finalization can legitimately take several seconds on the full 720
+    # records, so leave headroom beyond the historical five-second decoder
+    # cleanup deadline while still bounding a genuinely stuck worker.
+    _WORKER_STOP_TIMEOUT_SECONDS = 15.0
 
     def __init__(
         self,
@@ -121,6 +126,7 @@ class LiveSolareSession:
         self._writer: Any = None
         self._saved_packets = 0
         self._traffic_announced = False
+        self._tcp_gap_warning_announced = False
         self._confirmed_health: Optional[SolareCaptureHealth] = None
         self._result: Optional[SolareCaptureResult] = None
         self._error: Optional[BaseException] = None
@@ -451,20 +457,19 @@ class LiveSolareSession:
                     if not capture.running:
                         reason = "capture-ended"
                         break
+                    self._service_drained_clocks()
                     tracker = self._tracker
-                    if tracker is not None:
-                        # Progress milestones intentionally avoid rescanning on
-                        # every frame. An idle queue marks the end of a burst,
-                        # so refresh once for exact-size retry windows whose
-                        # final count falls between those milestones.
-                        tracker.refresh()
-                        self._latch_confirmation()
-                        if self._stop_on_complete and tracker.complete:
-                            reason = "complete-snapshot"
-                            break
+                    if (
+                        self._stop_on_complete
+                        and tracker is not None
+                        and tracker.complete
+                    ):
+                        reason = "complete-snapshot"
+                        break
                     continue
 
                 self._process_packet(packet)
+                self._service_drained_clocks()
                 tracker = self._tracker
                 if (
                     self._stop_on_complete
@@ -696,9 +701,36 @@ class LiveSolareSession:
         except BaseException:
             self._decoder_failed = True
             raise
+        self._announce_tcp_gap_loss()
 
         tracker = self._tracker
         if tracker is not None and tracker.complete:
+            self._latch_confirmation()
+
+    def _service_drained_clocks(self) -> None:
+        """Advance live-only clocks only after queued packet work is caught up.
+
+        Wall-clock TCP-gap recovery or candidate-tail closure while packets
+        remain queued could skip a delayed prefix or a later same-family
+        frame that Npcap already delivered. Waiting for an empty decode queue
+        preserves that evidence. The second check protects candidate
+        finalization from packets enqueued while gap service was running.
+        """
+
+        if not self._packet_queue.empty():
+            return
+
+        collector = self._collector
+        if collector is not None:
+            collector.service_gaps(time.time())
+            self._announce_tcp_gap_loss()
+
+        if not self._packet_queue.empty():
+            return
+
+        tracker = self._tracker
+        if tracker is not None:
+            tracker.service_candidate_idle(time.monotonic())
             self._latch_confirmation()
 
     def _write_packet(self, packet: object) -> None:
@@ -798,6 +830,31 @@ class LiveSolareSession:
             SolareUpdate(
                 kind=SolareUpdateKind.TRAFFIC,
                 message="inbound game-server traffic is flowing",
+            )
+        )
+
+    def _announce_tcp_gap_loss(self) -> None:
+        """Warn once when this pre-confirmation attempt becomes ineligible."""
+
+        collector = self._collector
+        if (
+            self._tcp_gap_warning_announced
+            or self._confirmed_health is not None
+            or collector is None
+            or collector.tcp_gap_resets == 0
+        ):
+            return
+        self._tcp_gap_warning_announced = True
+        count = collector.tcp_gap_resets
+        self._emit(
+            SolareUpdate(
+                kind=SolareUpdateKind.WARNING,
+                message=(
+                    "TCP reassembly reset "
+                    f"{count} time{'s' if count != 1 else ''} after an "
+                    "unresolved sequence gap; this capture attempt will "
+                    "remain fail-closed. Stop and retry with a fresh capture"
+                ),
             )
         )
 

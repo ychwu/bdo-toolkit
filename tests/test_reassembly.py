@@ -4,7 +4,12 @@ import pytest
 
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._framing import TargetMessageScanner
-from bdo_toolkit._protocol import GAP_RESET_SECONDS, EventSpec, FlowKey
+from bdo_toolkit._protocol import (
+    GAP_RESET_SECONDS,
+    MAX_PENDING_SEGMENTS,
+    EventSpec,
+    FlowKey,
+)
 from bdo_toolkit._reassembly import (
     _INITIAL_REORDER_GRACE_SECONDS,
     FlowManager,
@@ -54,6 +59,149 @@ def _segment(
         syn=syn,
         fin=fin,
     )
+
+
+class _RecordingScanner:
+    def __init__(self) -> None:
+        self.feeds: list[bytes] = []
+        self.resets = 0
+
+    def feed(self, data, _context):
+        self.feeds.append(data)
+
+    def scan_standalone(self, _data, _context):
+        pass
+
+    def reset(self):
+        self.resets += 1
+
+
+def test_consumer_can_raise_reorder_count_without_changing_default_policy():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        max_pending_segments=256,
+        max_pending_bytes=1_024,
+    )
+    expected = bytes(range(130))
+
+    _segment(manager, sequence=99, timestamp=1.0, syn=True)
+    for offset, value in enumerate(expected[1:], start=1):
+        _segment(
+            manager,
+            sequence=100 + offset,
+            payload=bytes((value,)),
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    # More than the generic 128-segment policy remains losslessly buffered for
+    # this explicitly configured consumer until the missing head arrives.
+    assert scanner.feeds == []
+    _segment(
+        manager,
+        sequence=100,
+        payload=expected[:1],
+        timestamp=1.2,
+    )
+
+    assert b"".join(scanner.feeds) == expected
+    assert scanner.resets == 0
+    assert manager.tcp_gap_resets == 0
+
+
+def test_default_reorder_count_policy_remains_unchanged():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+    )
+
+    _segment(manager, sequence=99, timestamp=1.0, syn=True)
+    for offset in range(1, MAX_PENDING_SEGMENTS + 2):
+        _segment(
+            manager,
+            sequence=100 + offset,
+            payload=b"x",
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    assert scanner.resets == 1
+    assert manager.tcp_gap_resets == 1
+
+
+def test_custom_reorder_byte_ceiling_still_resets_and_reports_loss():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        max_pending_segments=256,
+        max_pending_bytes=4,
+    )
+
+    _segment(manager, sequence=99, timestamp=1.0, syn=True)
+    _segment(
+        manager,
+        sequence=101,
+        payload=b"abc",
+        timestamp=1.1,
+    )
+    _segment(
+        manager,
+        sequence=104,
+        payload=b"def",
+        timestamp=1.2,
+    )
+
+    assert b"".join(scanner.feeds) == b"abcdef"
+    assert scanner.resets == 1
+    assert manager.tcp_gap_resets == 1
+
+
+def test_custom_reorder_byte_ceiling_is_restored_after_each_gap_resume():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        max_pending_segments=256,
+        max_pending_bytes=4,
+    )
+
+    _segment(manager, sequence=99, timestamp=1.0, syn=True)
+    _segment(manager, sequence=101, payload=b"a", timestamp=1.1)
+    _segment(manager, sequence=200, payload=b"b" * 100, timestamp=1.2)
+
+    # Restarting at the earliest byte still leaves the later 100-byte segment
+    # behind another gap. Capacity recovery must therefore continue instead
+    # of retaining that segment above the configured four-byte ceiling.
+    assert b"".join(scanner.feeds) == b"a" + (b"b" * 100)
+    assert scanner.resets == 2
+    assert manager.tcp_gap_resets == 2
+    assert all(not state.pending for state in manager._flows.values())
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "error"),
+    (
+        ("max_pending_segments", True, TypeError),
+        ("max_pending_segments", 1.5, TypeError),
+        ("max_pending_segments", 0, ValueError),
+        ("max_pending_bytes", False, TypeError),
+        ("max_pending_bytes", 1.5, TypeError),
+        ("max_pending_bytes", 0, ValueError),
+    ),
+)
+def test_reorder_capacity_configuration_is_validated(
+    keyword: str,
+    value: object,
+    error: type[Exception],
+):
+    with pytest.raises(error):
+        FlowManager(
+            server_ports=(8889,),
+            scanner_factory=_RecordingScanner,
+            **{keyword: value},
+        )
 
 
 def test_wall_clock_service_releases_complete_frame_behind_idle_gap():
@@ -136,6 +284,26 @@ def test_empty_syn_anchor_reassembles_second_half_first_and_deduplicates(
         payload=frame,
         timestamp=1.3,
     )
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+
+
+def test_missing_syn_proven_origin_commits_without_clock_service():
+    events = []
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: TargetMessageScanner(
+            lambda event, _raw: events.append(event),
+            (_SPEC,),
+        ),
+    )
+
+    _segment(
+        manager,
+        sequence=1000,
+        payload=_target_frame(),
+        timestamp=1.0,
+    )
+
     assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
 
 
@@ -321,7 +489,7 @@ def test_out_of_order_fin_waits_for_missing_initial_prefix(
     assert len(closed) == 1
 
 
-def test_unproven_initial_segment_is_released_by_wall_clock_service():
+def test_unproven_initial_segment_is_released_only_when_owner_services_clock():
     feeds = []
 
     class UnprovenScanner:
@@ -346,6 +514,8 @@ def test_unproven_initial_segment_is_released_by_wall_clock_service():
     _segment(manager, sequence=1000, payload=payload, timestamp=10.0)
     assert feeds == []
 
+    # FlowManager owns no timer thread. The grace expires only when its owning
+    # root supplies a later clock value through service_gaps().
     assert (
         manager.service_gaps(
             10.0 + _INITIAL_REORDER_GRACE_SECONDS - 0.001
@@ -363,6 +533,46 @@ def test_unproven_initial_segment_is_released_by_wall_clock_service():
     assert [(data, context.stream_start) for data, context in feeds] == [
         (payload, 1000)
     ]
+
+
+def test_missing_syn_late_prefix_is_not_retroactively_joined_after_commit():
+    events = []
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: TargetMessageScanner(
+            lambda event, _raw: events.append(event),
+            (_SPEC,),
+        ),
+    )
+    frame = _target_frame()
+    split_at = 17
+
+    _segment(
+        manager,
+        sequence=1000 + split_at,
+        payload=frame[split_at:],
+        timestamp=1.0,
+    )
+    manager.service_gaps(1.0 + _INITIAL_REORDER_GRACE_SECONDS + 0.001)
+
+    # Commitment is one-way: this older prefix is inspected standalone and
+    # cannot be joined to the suffix already delivered.
+    _segment(
+        manager,
+        sequence=1000,
+        payload=frame[:split_at],
+        timestamp=1.3,
+    )
+    assert events == []
+
+    # The chosen stream origin remains usable for later complete frames.
+    _segment(
+        manager,
+        sequence=1000 + len(frame),
+        payload=_target_frame(item_id=7308),
+        timestamp=1.4,
+    )
+    assert [(event.item_id, event.quantity) for event in events] == [(7308, 8)]
 
 
 def test_wall_clock_release_closes_deferred_fin_after_provisional_payload():

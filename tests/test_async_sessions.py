@@ -262,36 +262,29 @@ def test_async_live_iterator_drains_finalized_tail_after_external_stop(
     asyncio.run(scenario())
 
 
-def test_async_live_batch_uses_one_executor_submission_for_ready_events(
+def test_async_live_events_preserve_ready_event_order(
     fake_async_sessions,
 ):
     async def scenario():
         session = AsyncLiveCaptureSession()
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
-        expected = [_event(index) for index in range(10)]
+        expected = [_event(index) for index in range(3)]
         for event in expected:
             fake.emit(event)
 
-        submissions = 0
-        original_submit = session._submit
+        iterator = session.events()
+        received = [await anext(iterator) for _ in expected]
 
-        def counted_submit(function):
-            nonlocal submissions
-            submissions += 1
-            return original_submit(function)
-
-        session._submit = counted_submit
-        await session._fill_pending_events()
-
-        assert list(session._pending_events) == expected
-        assert submissions == 1
+        assert received == expected
+        assert fake.poll_calls == [None, None, None]
+        await iterator.aclose()
         await session.stop()
 
     asyncio.run(scenario())
 
 
-def test_async_live_public_poll_consumes_prefetch_after_anext(
+def test_async_live_iterator_handoff_to_poll_preserves_ready_events(
     fake_async_sessions,
 ):
     async def scenario():
@@ -306,6 +299,7 @@ def test_async_live_public_poll_consumes_prefetch_after_anext(
         assert await anext(iterator) is expected[0]
         assert await session.poll(timeout=0) is expected[1]
         assert await session.poll(timeout=0) is expected[2]
+        assert fake.poll_calls == [None, 0, 0]
 
         await iterator.aclose()
         await session.stop()
@@ -314,7 +308,7 @@ def test_async_live_public_poll_consumes_prefetch_after_anext(
 
 
 @pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
-def test_async_live_prefetch_does_not_bypass_timeout_validation(
+def test_async_live_active_poll_validates_timeout_before_worker_submission(
     fake_async_sessions,
     invalid_timeout,
 ):
@@ -322,24 +316,17 @@ def test_async_live_prefetch_does_not_bypass_timeout_validation(
         session = AsyncLiveCaptureSession()
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
-        events = [_event(index) for index in range(3)]
-        for event in events:
-            fake.emit(event)
 
-        iterator = session.events()
-        assert await anext(iterator) is events[0]
         with pytest.raises(ValueError, match="timeout"):
             await session.poll(timeout=invalid_timeout)
 
-        assert await session.poll(timeout=0) is events[1]
-        assert await session.poll(timeout=0) is events[2]
-        await iterator.aclose()
+        assert fake.poll_calls == []
         await session.stop()
 
     asyncio.run(scenario())
 
 
-def test_async_live_prefetch_survives_early_iterator_close(
+def test_async_live_early_iterator_close_leaves_later_events_available(
     fake_async_sessions,
 ):
     async def scenario():
@@ -357,13 +344,14 @@ def test_async_live_prefetch_survives_early_iterator_close(
         replacement = session.events()
         assert await anext(replacement) is expected[1]
         assert await anext(replacement) is expected[2]
+        assert fake.poll_calls == [None, None, None]
         await replacement.aclose()
         await session.stop()
 
     asyncio.run(scenario())
 
 
-def test_async_live_prefetch_survives_early_async_for_break(
+def test_async_live_early_break_leaves_later_events_available_to_poll(
     fake_async_sessions,
 ):
     async def scenario():
@@ -382,12 +370,13 @@ def test_async_live_prefetch_survives_early_async_for_break(
         assert received == expected[:1]
         assert await session.poll(timeout=0) is expected[1]
         assert await session.poll(timeout=0) is expected[2]
+        assert fake.poll_calls == [None, 0, 0]
         await session.stop()
 
     asyncio.run(scenario())
 
 
-def test_async_live_prefetch_survives_consumer_cancellation_after_yield(
+def test_async_live_consumer_cancellation_after_yield_leaves_later_events(
     fake_async_sessions,
 ):
     async def scenario():
@@ -412,6 +401,8 @@ def test_async_live_prefetch_survives_consumer_cancellation_after_yield(
         with pytest.raises(asyncio.CancelledError):
             await consumer
 
+        assert not session.stopped
+        assert fake.stop_calls == 0
         assert await session.poll(timeout=0) is expected[1]
         assert await session.poll(timeout=0) is expected[2]
         await session.stop()
@@ -419,7 +410,7 @@ def test_async_live_prefetch_survives_consumer_cancellation_after_yield(
     asyncio.run(scenario())
 
 
-def test_async_live_cancelled_batch_fetch_preserves_shutdown_event(
+def test_async_live_cancelled_iterator_next_preserves_settled_event(
     fake_async_sessions,
 ):
     async def scenario():
@@ -438,12 +429,40 @@ def test_async_live_cancelled_batch_fetch_preserves_shutdown_event(
             await pending
 
         assert session.stopped
-        assert await session.poll(timeout=0) is finalized
+        replacement = session.events()
+        assert await anext(replacement) is finalized
+        assert fake.poll_calls == [None]
+        with pytest.raises(StopAsyncIteration):
+            await anext(replacement)
 
     asyncio.run(scenario())
 
 
-def test_async_live_stopped_batch_drains_before_terminal_error(
+def test_async_live_cancelled_poll_preserves_settled_event(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncLiveCaptureSession()
+        await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        finalized = _event(9)
+        fake.final_event = finalized
+
+        pending = asyncio.create_task(session.poll())
+        await asyncio.to_thread(fake.poll_entered.wait, 1.0)
+        pending.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+        assert session.stopped
+        assert await session.poll(timeout=0) is finalized
+        assert fake.poll_calls == [None]
+
+    asyncio.run(scenario())
+
+
+def test_async_live_stopped_session_drains_before_retained_error(
     fake_async_sessions,
 ):
     async def scenario():
@@ -453,15 +472,16 @@ def test_async_live_stopped_batch_drains_before_terminal_error(
         expected = [_event(index) for index in range(3)]
         for event in expected:
             fake.emit(event)
-        fake.error = OSError("decoder failed after batch")
+        fake.error = OSError("decoder failed after buffered events")
         await session.stop()
 
-        received = []
-        with pytest.raises(OSError, match="decoder failed after batch"):
-            async for event in session.events():
-                received.append(event)
-
-        assert received == expected
+        iterator = session.events()
+        assert await anext(iterator) is expected[0]
+        assert await session.poll(timeout=-1) is expected[1]
+        assert await session.poll(timeout=-1) is expected[2]
+        with pytest.raises(OSError, match="decoder failed after buffered events"):
+            await session.poll(timeout=-1)
+        await iterator.aclose()
 
     asyncio.run(scenario())
 
@@ -748,17 +768,24 @@ def test_async_live_poll_forwards_timeout(fake_async_sessions):
 
 
 @pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
-def test_async_live_stopped_poll_still_validates_timeout(
+def test_async_live_stopped_poll_ignores_timeout_while_draining(
     fake_async_sessions,
     invalid_timeout,
 ):
     async def scenario():
         session = AsyncLiveCaptureSession()
         await session.start()
+        fake = FakeLiveCaptureSession.instances[-1]
+        queued = _event(1)
+        finalized = _event(2)
+        fake.emit(queued)
+        fake.final_event = finalized
         await session.stop()
 
-        with pytest.raises(ValueError):
-            await session.poll(timeout=invalid_timeout)
+        assert await session.poll(timeout=invalid_timeout) is queued
+        assert await session.poll(timeout=invalid_timeout) is finalized
+        assert await session.poll(timeout=invalid_timeout) is None
+        assert fake.poll_calls == [0, 0, 0]
 
     asyncio.run(scenario())
 

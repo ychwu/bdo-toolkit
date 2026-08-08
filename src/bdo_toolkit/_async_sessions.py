@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from types import TracebackType
@@ -33,15 +32,6 @@ from .origin_learning import CompanionObservation
 
 
 T = TypeVar("T")
-_ASYNC_EVENT_BATCH_SIZE = 64
-
-
-@dataclass(frozen=True, slots=True)
-class _EventBatch:
-    """Events removed from the sync session and any error found after them."""
-
-    events: tuple[BDOEvent, ...]
-    terminal_error: BaseException | None = None
 
 
 async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
@@ -68,33 +58,6 @@ async def _await_preserving_future(future: asyncio.Future[T]) -> T:
 
 def _thread_task(function: Callable[[], T]) -> asyncio.Task[T]:
     return asyncio.create_task(asyncio.to_thread(function))
-
-
-def _poll_event_batch(
-    session: LiveCaptureSession,
-    max_items: int = _ASYNC_EVENT_BATCH_SIZE,
-    *,
-    block: bool = True,
-) -> _EventBatch:
-    """Block for one event, then drain an immediately available small batch."""
-
-    first = session.poll(timeout=None if block else 0)
-    if first is None:
-        return _EventBatch(())
-    events = [first]
-    while len(events) < max_items:
-        try:
-            event = session.poll(timeout=0)
-        except BaseException as exc:
-            # A stopped synchronous session reports its retained background
-            # error only after all queued/tail events have drained. Preserve
-            # the events already removed by this batch and defer that error
-            # until the async facade has delivered them too.
-            return _EventBatch(tuple(events), terminal_error=exc)
-        if event is None:
-            break
-        events.append(event)
-    return _EventBatch(tuple(events))
 
 
 class AsyncLiveCaptureSession:
@@ -128,11 +91,10 @@ class AsyncLiveCaptureSession:
         self._executor_closed = False
         self._stop_future: asyncio.Future[None] | None = None
         self._poll_active = False
-        # Batch-prefetched events belong to the session, not to an individual
-        # async-generator frame. This keeps them reachable after an early
-        # break, aclose(), cancellation, or a handoff to poll().
+        # A cancelled worker poll may already have removed one event before it
+        # settles. Keep that event session-owned so the next consumer can
+        # retrieve it. Single-consumer enforcement bounds this deque to one.
         self._pending_events: deque[BDOEvent] = deque()
-        self._pending_error: BaseException | None = None
         self._start_attempted = False
         self._start_complete = False
 
@@ -191,17 +153,6 @@ class AsyncLiveCaptureSession:
     def _inside_origin_observer(self) -> bool:
         predicate = getattr(self._session, "_inside_origin_observer", None)
         return bool(predicate is not None and predicate())
-
-    def _accept_event_batch(self, batch: _EventBatch) -> None:
-        """Take ownership of every result removed by a worker batch poll."""
-
-        self._pending_events.extend(batch.events)
-        if batch.terminal_error is not None and self._pending_error is None:
-            self._pending_error = batch.terminal_error
-
-    def _raise_pending_error(self) -> None:
-        if self._pending_error is not None:
-            raise self._pending_error
 
     async def start(self) -> None:
         """Start capture without blocking the asyncio event loop."""
@@ -310,6 +261,7 @@ class AsyncLiveCaptureSession:
 
         Cancelling a pending poll is terminal for this single-consumer session:
         capture is stopped before ``CancelledError`` is re-raised.
+        After completed stop, ``timeout`` is ignored while buffered data drains.
         """
 
         if self._inside_origin_observer():
@@ -319,11 +271,14 @@ class AsyncLiveCaptureSession:
             )
         if self._poll_active:
             raise RuntimeError("async live capture session supports one consumer")
-        if not self._start_complete and not self._session.stopped:
+        stopped_at_entry = self._session.stopped
+        if not self._start_complete and not stopped_at_entry:
             raise RuntimeError("live capture session was not started")
-        # Session-owned prefetch and the stopped fast path must not bypass the
-        # synchronous API's timeout validation contract.
-        _validate_poll_timeout(timeout)
+        # A cancellation-preserved event must not bypass the active timeout
+        # contract. Preserve the historical stopped fast path: it cannot wait
+        # and ignores the caller's timeout while draining.
+        if not stopped_at_entry:
+            _validate_poll_timeout(timeout)
 
         self._poll_active = True
         try:
@@ -331,7 +286,6 @@ class AsyncLiveCaptureSession:
                 self._shutdown_executor()
             if self._pending_events:
                 return self._pending_events.popleft()
-            self._raise_pending_error()
 
             if self._session.stopped:
                 # After stop(), finalization is complete and a zero-time poll
@@ -376,12 +330,7 @@ class AsyncLiveCaptureSession:
             self._poll_active = False
 
     async def events(self) -> AsyncIterator[BDOEvent]:
-        """Yield events in order until capture stops and final events drain.
-
-        The blocking bridge fetches up to 64 immediately available events per
-        executor submission. Individual :meth:`poll` calls retain their
-        one-event semantics for UI and timeout-driven consumers.
-        """
+        """Yield events in order until capture stops and final events drain."""
 
         if self._inside_origin_observer():
             raise RuntimeError(
@@ -389,72 +338,10 @@ class AsyncLiveCaptureSession:
                 "consume them after the callback returns"
             )
         while True:
-            if self._pending_events:
-                yield self._pending_events.popleft()
-                continue
-            await self._fill_pending_events()
-            if not self._pending_events:
+            event = await self.poll(timeout=None)
+            if event is None:
                 return
-
-    async def _fill_pending_events(self) -> None:
-        if self._inside_origin_observer():
-            raise RuntimeError(
-                "events() cannot consume events inside origin_observer; "
-                "consume them after the callback returns"
-            )
-        if self._poll_active:
-            raise RuntimeError("async live capture session supports one consumer")
-        if not self._start_complete and not self._session.stopped:
-            raise RuntimeError("live capture session was not started")
-
-        self._poll_active = True
-        try:
-            if self._pending_events:
-                return
-            self._raise_pending_error()
-
-            if self._session.stopped:
-                self._shutdown_executor()
-                self._accept_event_batch(
-                    _poll_event_batch(self._session, block=False)
-                )
-                return
-
-            poll_future = self._submit(partial(_poll_event_batch, self._session))
-            try:
-                batch = await _await_preserving_future(poll_future)
-            except asyncio.CancelledError:
-                stop_future: asyncio.Future[None] | None = None
-                try:
-                    stop_future = self._ensure_stop_future()
-                    await _wait_ignoring_cancellation(stop_future)
-                except BaseException:
-                    pass
-                try:
-                    batch = await _wait_ignoring_cancellation(poll_future)
-                except BaseException:
-                    pass
-                else:
-                    self._accept_event_batch(batch)
-                if not self._session.cleanup_incomplete:
-                    self._shutdown_executor()
-                else:
-                    if (
-                        stop_future is not None
-                        and self._stop_future is stop_future
-                    ):
-                        self._stop_future = None
-                raise
-            except BaseException:
-                if self._session.stopped:
-                    self._shutdown_executor()
-                raise
-
-            self._accept_event_batch(batch)
-            if self._session.stopped:
-                self._shutdown_executor()
-        finally:
-            self._poll_active = False
+            yield event
 
     def __aiter__(self) -> AsyncIterator[BDOEvent]:
         return self.events()

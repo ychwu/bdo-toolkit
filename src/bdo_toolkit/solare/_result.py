@@ -8,7 +8,13 @@ from typing import Optional
 from bdo_toolkit._protocol import BDOFrame
 
 from ._constants import class_name
-from ._details import decode_solare_details
+from ._detail_learning import learn_unknown_solare_details
+from ._details import (
+    _overall_layout_for,
+    _rich_layout_for,
+    decode_solare_details,
+    decode_solare_overall_details,
+)
 from ._discovery import (
     DiscoveredSolareFamily,
     SolareDiscoveryResult,
@@ -68,17 +74,13 @@ def _ranking_players(rich: DiscoveredSolareFamily) -> tuple[SolarePlayer, ...]:
 
 def _overall_entries(
     overall: DiscoveredSolareFamily,
-    overall_uids: tuple[bytes, ...] = (),
 ) -> tuple[SolareOverallEntry, ...]:
-    if overall_uids and len(overall_uids) != overall.record_count:
-        overall_uids = ()
     return tuple(
         SolareOverallEntry(
             name=name,
             global_rank=rank,
-            overall_uid_raw=(overall_uids[index] if overall_uids else None),
         )
-        for index, (name, rank) in enumerate(zip(overall.names, overall.ranks))
+        for name, rank in zip(overall.names, overall.ranks)
     )
 
 
@@ -95,6 +97,23 @@ def _details_match_discovery(
     decoded = tuple(
         (player.global_rank, player.name, player.primary_class.code)
         for player in sorted(players, key=lambda player: player.global_rank)
+    )
+    return decoded == discovered
+
+
+def _overall_details_match_discovery(
+    entries: tuple[SolareOverallEntry, ...],
+    overall: DiscoveredSolareFamily,
+) -> bool:
+    discovered = tuple(
+        sorted(
+            zip(overall.ranks, overall.names),
+            key=lambda row: row[0],
+        )
+    )
+    decoded = tuple(
+        (entry.global_rank, entry.name)
+        for entry in sorted(entries, key=lambda entry: entry.global_rank)
     )
     return decoded == discovered
 
@@ -157,23 +176,65 @@ def _resource_loss_summary(health: SolareCaptureHealth) -> Optional[str]:
     return f"{losses[0]} and {losses[1]}"
 
 
+def _capture_loss_summary(health: SolareCaptureHealth) -> Optional[str]:
+    """Name every observed acquisition loss, including pre-confirmation gaps."""
+
+    losses: list[str] = []
+    resource_loss = _resource_loss_summary(health)
+    if resource_loss is not None:
+        losses.append(resource_loss)
+    if health.tcp_gap_resets:
+        count = health.tcp_gap_resets
+        losses.append(
+            "TCP reassembly reset "
+            f"{count} time{'s' if count != 1 else ''} after an unresolved "
+            "sequence gap"
+        )
+    if health.pcap_dropped not in (None, 0):
+        backend_drop_count = health.pcap_dropped
+        assert backend_drop_count is not None
+        losses.append(
+            "the capture backend reported "
+            f"{backend_drop_count} dropped "
+            f"packet{'s' if backend_drop_count != 1 else ''}"
+        )
+    if health.pcap_interface_dropped not in (None, 0):
+        interface_drop_count = health.pcap_interface_dropped
+        assert interface_drop_count is not None
+        losses.append(
+            "the capture interface reported "
+            f"{interface_drop_count} dropped "
+            f"packet{'s' if interface_drop_count != 1 else ''}"
+        )
+    if not losses:
+        return None
+    if len(losses) == 1:
+        return losses[0]
+    return "; ".join(losses[:-1]) + f"; and {losses[-1]}"
+
+
 def _noncomplete_message(
     status: SolareDetectionStatus,
     health: SolareCaptureHealth,
     *,
     integrity_rejected: bool,
 ) -> str:
-    resource_loss = _resource_loss_summary(health)
-    if resource_loss is not None:
+    capture_loss = _capture_loss_summary(health)
+    if capture_loss is not None:
+        retry = (
+            "Retry after reducing capture load"
+            if _resource_loss_summary(health) is not None
+            else "Retry with a fresh capture"
+        )
         if integrity_rejected:
             return (
                 "the structural tables matched, but acquisition integrity was "
-                f"lost because {resource_loss}; snapshot publication was "
-                "withheld. Retry after reducing capture load"
+                f"lost because {capture_loss}; snapshot publication was "
+                f"withheld. {retry}"
             )
         return (
             f"{_message_for_status(status)}; acquisition integrity was lost "
-            f"because {resource_loss}. Retry after reducing capture load"
+            f"because {capture_loss}. {retry}"
         )
 
     if integrity_rejected:
@@ -197,7 +258,8 @@ def _evidence(
     discovery: SolareDiscoveryResult,
     health: SolareCaptureHealth,
     *,
-    detail_layout_id: Optional[str] = None,
+    class_detail_layout_id: Optional[str] = None,
+    overall_detail_layout_id: Optional[str] = None,
 ) -> SolareEvidence:
     ranked = discovery.ranked_candidate
     overall = discovery.overall or discovery.partial_overall
@@ -211,9 +273,12 @@ def _evidence(
         exact_cross_check=discovery.exact_cross_check,
         rich_layout=_family_layout(
             rich,
-            detail_layout_id=detail_layout_id,
+            detail_layout_id=class_detail_layout_id,
         ),
-        overall_layout=_family_layout(overall),
+        overall_layout=_family_layout(
+            overall,
+            detail_layout_id=overall_detail_layout_id,
+        ),
         health=health,
     )
 
@@ -229,9 +294,9 @@ def build_solare_result(
 
     A snapshot is returned only after the rich 620-player class table and an
     independent complete overall top 100 agree on every shared rank and name.
-    Deeper performance decoding is optional: an unfamiliar detail geometry
-    still yields the confirmed ranking snapshot, while omitting unsupported
-    capabilities.
+    Deeper detail decoding is optional: an unfamiliar geometry may use bounded
+    ephemeral inference after confirmation, while every unsupported or
+    ambiguous capability is still omitted from the ranking snapshot.
     """
 
     retain_raw_extensions = validate_retain_raw_extensions(
@@ -267,31 +332,93 @@ def build_solare_result(
 
     players = _ranking_players(rich)
     overall_entries = _overall_entries(overall)
-    capabilities = {"rankings"}
-    detail_layout_id: Optional[str] = None
+    class_table_capabilities = {"rankings"}
+    overall_capabilities = {"rankings"}
+    class_detail_layout_id: Optional[str] = None
+    overall_detail_layout_id: Optional[str] = None
     rich_frames = family_frames(frame_tuple, rich)
     overall_frames = family_frames(frame_tuple, overall)
-    details = decode_solare_details(
+    class_details = decode_solare_details(
         rich_frames,
         rich,
-        overall_frames=overall_frames,
-        overall=overall,
         retain_raw_extensions=retain_raw_extensions,
     )
-    if details is not None and _details_match_discovery(details.players, rich):
-        players = tuple(
-            sorted(details.players, key=lambda player: player.global_rank)
+    overall_details = decode_solare_overall_details(
+        overall_frames,
+        overall,
+        retain_raw_extensions=retain_raw_extensions,
+    )
+    learn_rich = _rich_layout_for(rich) is None
+    learn_overall = _overall_layout_for(overall) is None
+    if learn_rich or learn_overall:
+        known_rich_elos: Optional[dict[str, int]] = None
+        if (
+            not learn_rich
+            and class_details is not None
+            and "elo" in class_details.capabilities
+            and all(player.elo is not None for player in class_details.players)
+        ):
+            known_rich_elos = {
+                player.name: player.elo
+                for player in class_details.players
+                if player.elo is not None
+            }
+        known_overall_elos: Optional[dict[str, int]] = None
+        if (
+            not learn_overall
+            and overall_details is not None
+            and "elo" in overall_details.capabilities
+            and all(entry.elo is not None for entry in overall_details.entries)
+        ):
+            known_overall_elos = {
+                entry.name: entry.elo
+                for entry in overall_details.entries
+                if entry.elo is not None
+            }
+        learned_class, learned_overall = learn_unknown_solare_details(
+            rich_frames,
+            rich,
+            overall_frames,
+            overall,
+            learn_rich=learn_rich,
+            learn_overall=learn_overall,
+            retain_raw_extensions=retain_raw_extensions,
+            known_rich_elos=known_rich_elos,
+            known_overall_elos=known_overall_elos,
         )
-        detail_layout_id = details.layout_id
-        capabilities.add("performance")
-        if retain_raw_extensions:
-            capabilities.add("raw_extensions")
-        overall_entries = _overall_entries(overall, details.overall_uids)
+        if class_details is None and learn_rich:
+            class_details = learned_class
+        if overall_details is None and learn_overall:
+            overall_details = learned_overall
+
+    if class_details is not None and _details_match_discovery(
+        class_details.players,
+        rich,
+    ):
+        players = tuple(
+            sorted(class_details.players, key=lambda player: player.global_rank)
+        )
+        class_detail_layout_id = class_details.layout_id
+        class_table_capabilities.update(class_details.capabilities)
+
+    if overall_details is not None and _overall_details_match_discovery(
+        overall_details.entries,
+        overall,
+    ):
+        overall_entries = tuple(
+            sorted(
+                overall_details.entries,
+                key=lambda entry: entry.global_rank,
+            )
+        )
+        overall_detail_layout_id = overall_details.layout_id
+        overall_capabilities.update(overall_details.capabilities)
 
     evidence = _evidence(
         discovery,
         health,
-        detail_layout_id=detail_layout_id,
+        class_detail_layout_id=class_detail_layout_id,
+        overall_detail_layout_id=overall_detail_layout_id,
     )
     snapshot = SolareLeaderboardSnapshot(
         snapshot_id=solare_snapshot_id(
@@ -304,7 +431,8 @@ def build_solare_result(
         players=players,
         overall_top_100=overall_entries,
         evidence=evidence,
-        capabilities=frozenset(capabilities),
+        class_table_capabilities=frozenset(class_table_capabilities),
+        overall_capabilities=frozenset(overall_capabilities),
     )
     return SolareCaptureResult(
         status=status,

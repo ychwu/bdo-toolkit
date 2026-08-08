@@ -24,11 +24,21 @@ DISCOVERY_SYNC_HEADERS = 3
 DISCOVERY_SYNC_BUFFER_LIMIT = (BDO_MAX_FRAME_SIZE * 2) + BDO_HEADER_SIZE
 LIVE_CAPTURE_BUFFER_BYTES = 64 * 1024 * 1024
 SOLARE_DEFAULT_CAPTURE_SECONDS = 120.0
+# An exact trailing 50-frame family remains provisional while another Solare-
+# sized frame could still extend it into a rich-table prefix. Ordinary small
+# game traffic must not keep that candidate boundary open indefinitely.
+LIVE_CANDIDATE_IDLE_SECONDS = 1.5
 DISCOVERY_RETENTION_MAX_FRAMES = 768
 DISCOVERY_RETENTION_MAX_BYTES = 16 * 1024 * 1024
 LIVE_PACKET_QUEUE_MAX = 4096
 LIVE_UPDATE_QUEUE_MAX = 64
 SOLARE_MAX_ACTIVE_FLOWS = 64
+# Windows/Npcap can deliver one lossless receive burst hundreds of TCP
+# callbacks out of sequence. Solare permits a larger per-flow reorder count
+# than the generic item route, while an explicit byte ceiling preserves the
+# existing bounded-memory posture.
+SOLARE_MAX_PENDING_SEGMENTS = 2048
+SOLARE_MAX_PENDING_BYTES = 8 * 1024 * 1024
 
 PLAYER_NAME_BYTES = frozenset(
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"

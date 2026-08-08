@@ -32,3 +32,9 @@ def fixture_path(name: str) -> Path:
 
 def baseline_path_for_fixture(pcap: Path) -> Path:
     return (BASELINE_DIR / pcap.relative_to(FIXTURE_DIR)).with_suffix(".jsonl")
+
+
+def opcode_profile_for_fixture(pcap: Path) -> Path:
+    """Use a fixture-local patch profile when present, else the July baseline."""
+    sidecar = pcap.with_suffix(".profile.json")
+    return sidecar if sidecar.is_file() else JULY6_OPCODE_PROFILE

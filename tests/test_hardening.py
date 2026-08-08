@@ -19,6 +19,7 @@ from bdo_toolkit import _capture_backend as capture_backend_module
 from bdo_toolkit import capture as capture_module
 from bdo_toolkit._capture_backend import import_scapy
 from bdo_toolkit._engine import PacketEngine
+from bdo_toolkit._framing import TargetMessageScanner
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit._specs import event_specs_from_profile
 from bdo_toolkit.calibration import (
@@ -662,6 +663,105 @@ def test_declared_count_length_mismatch_fails_closed_without_markers():
     assert decoded == []
 
 
+def _august7_storage_wrapper(
+    *,
+    mode: int,
+    token: bytes,
+    storage_id: int = 0x0020,
+    count: int = 2,
+) -> bytes:
+    stride = 228
+    base_length = 270
+    length = base_length + (count - 1) * stride
+    message = bytearray(length)
+    message[0:2] = length.to_bytes(2, "little")
+    message[3:5] = (0x1C51).to_bytes(2, "little")
+    message[5:7] = count.to_bytes(2, "little")
+    message[8:12] = storage_id.to_bytes(4, "little")
+    message[31:39] = token
+    message[39] = mode
+    for index in range(count):
+        offset = 44 + stride * index
+        message[offset : offset + 4] = (7003 + index).to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = (index + 1).to_bytes(4, "little")
+        # Deliberately omit the legacy FF marker: declared count geometry must
+        # prove every record without relying on an item-type-specific pattern.
+        message[offset + 35 : offset + 43] = (index + 1).to_bytes(8, "little")
+    return bytes(message)
+
+
+@pytest.mark.parametrize(
+    ("mode", "token", "expected_operation"),
+    (
+        (2, b"\x00" * 8, "snapshot"),
+        (1, bytes.fromhex("1122334455667788"), "live"),
+        (0, b"\x00" * 8, "unknown"),
+    ),
+)
+def test_august_storage_layout_decodes_count_destination_and_operation(
+    mode,
+    token,
+    expected_operation,
+):
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x1C51,
+        item_offset=44,
+        quantity_offset=48,
+        min_message_length=270,
+        storage_instance_offset=79,
+        single_record_message_length=270,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(
+        engine,
+        1,
+        _august7_storage_wrapper(mode=mode, token=token),
+    )
+    engine.finish()
+
+    assert [event.item_id for event in decoded] == [7003, 7004]
+    assert [event.record_index for event in decoded] == [1, 2]
+    assert {event.record_count for event in decoded} == {2}
+    assert {event.storage_id for event in decoded} == {0x0020}
+    assert {event.storage_operation for event in decoded} == {expected_operation}
+
+
+def test_august_snapshot_count_conflict_fails_closed_without_marker_fallback():
+    message = bytearray(
+        _august7_storage_wrapper(mode=2, token=b"\x00" * 8, count=2)
+    )
+    message[5:7] = (3).to_bytes(2, "little")
+    decoded: list = []
+    spec = EventSpec(
+        label="INVENTORY_TO_STORAGE",
+        opcode=0x1C51,
+        item_offset=44,
+        quantity_offset=48,
+        min_message_length=270,
+        storage_instance_offset=79,
+        single_record_message_length=270,
+        default_context="Storage",
+    )
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(spec,),
+        on_event=lambda event, raw: decoded.append(event),
+    )
+
+    _segment(engine, 1, bytes(message))
+    engine.finish()
+
+    assert decoded == []
+
+
 def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
     message = bytearray(479)
     message[0:2] = (479).to_bytes(2, "little")
@@ -895,7 +995,73 @@ def test_runtime_profile_preserves_distinct_same_opcode_layouts(tmp_path):
     }
 
 
-def test_runtime_loot_profile_preserves_instance_and_length_geometry(tmp_path):
+def test_runtime_loot_profile_preserves_disjoint_length_variants(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    payload = {
+        "profile_active": True,
+        "specs": {
+            "LOOT_PREVIEW": [
+                {
+                    "event": "LOOT_PREVIEW",
+                    "opcode": "0x1643",
+                    "length": 244,
+                    "item_id_offset": 23,
+                    "quantity_offset": 27,
+                    "item_instance_offset": 58,
+                },
+                {
+                    "event": "LOOT_PREVIEW",
+                    "opcode": "0x1643",
+                    "length": 252,
+                    "item_id_offset": 23,
+                    "quantity_offset": 27,
+                    "item_instance_offset": 66,
+                },
+            ]
+        },
+    }
+    profile_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+
+    assert len(loaded.specs) == 2
+    assert {
+        (spec.item_instance_offset, spec.single_record_message_length)
+        for spec in loaded.specs
+    } == {(58, 244), (66, 252)}
+
+    events = []
+    scanner = TargetMessageScanner(
+        lambda event, _raw: events.append(event),
+        loaded.specs,
+    )
+    context = PacketContext(
+        timestamp=1.0,
+        flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+    )
+    for length, instance_offset, instance in (
+        (244, 58, bytes.fromhex("0102030405060708")),
+        (252, 66, bytes.fromhex("1112131415161718")),
+    ):
+        message = bytearray(length)
+        message[0:2] = length.to_bytes(2, "little")
+        message[3:5] = (0x1643).to_bytes(2, "little")
+        message[23:27] = (7003).to_bytes(4, "little")
+        message[27:31] = (3).to_bytes(4, "little")
+        message[instance_offset : instance_offset + 8] = instance
+        scanner.scan_standalone(bytes(message), context)
+
+    assert [
+        (event.message_length, event.item_instance) for event in events
+    ] == [
+        (244, bytes.fromhex("0102030405060708")),
+        (252, bytes.fromhex("1112131415161718")),
+    ]
+
+
+def test_runtime_loot_profile_rejects_overlapping_instance_only_variants(
+    tmp_path,
+):
     profile_path = tmp_path / "opcodes.json"
     payload = {
         "profile_active": True,
@@ -922,13 +1088,115 @@ def test_runtime_loot_profile_preserves_instance_and_length_geometry(tmp_path):
     }
     profile_path.write_text(json.dumps(payload), encoding="utf-8")
 
+    with pytest.raises(
+        ProfileError,
+        match=r"Ambiguous LOOT_PREVIEW.*0x1643.*58.*66",
+    ):
+        event_specs_from_profile(load_opcode_profile(profile_path))
+
+
+@pytest.mark.parametrize(
+    "second_layout",
+    (
+        {
+            "length": None,
+            "item_id_offset": 23,
+            "quantity_offset": 27,
+            "item_instance_offset": 58,
+        },
+        {
+            "length": 244,
+            "item_id_offset": 33,
+            "quantity_offset": 37,
+            "item_instance_offset": 68,
+        },
+    ),
+    ids=("exact-and-open-length", "different-record-offsets"),
+)
+def test_runtime_loot_profile_rejects_every_overlapping_opcode_layout(
+    tmp_path,
+    second_layout,
+):
+    profile_path = tmp_path / "opcodes.json"
+    second = {
+        "event": "LOOT_PREVIEW",
+        "opcode": "0x1643",
+        **second_layout,
+    }
+    payload = {
+        "profile_active": True,
+        "specs": {
+            "LOOT_PREVIEW": [
+                {
+                    "event": "LOOT_PREVIEW",
+                    "opcode": "0x1643",
+                    "length": 244,
+                    "item_id_offset": 23,
+                    "quantity_offset": 27,
+                    "item_instance_offset": 58,
+                },
+                second,
+            ]
+        },
+    }
+    profile_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(
+        ProfileError,
+        match=r"Ambiguous LOOT_PREVIEW.*overlapping runtime message-length",
+    ):
+        event_specs_from_profile(load_opcode_profile(profile_path))
+
+
+def test_advanced_loot_merge_rejects_ambiguity_before_backup_or_write(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    first = MessageSpec(
+        "LOOT_PREVIEW",
+        0x1643,
+        244,
+        item_id_offset=23,
+        quantity_offset=27,
+        item_instance_offset=58,
+    )
+    second = MessageSpec(
+        "LOOT_PREVIEW",
+        0x1643,
+        244,
+        item_id_offset=23,
+        quantity_offset=27,
+        item_instance_offset=66,
+    )
+    update_profile([first], profile_path)
+    original = profile_path.read_bytes()
+
+    with pytest.raises(ProfileError, match="replace the LOOT_PREVIEW family"):
+        update_profile([second], profile_path, replace=False)
+
+    assert profile_path.read_bytes() == original
+    assert not (tmp_path / "opcodes_backups").exists()
+
+    replacement = update_profile([second], profile_path, backup=False)
     loaded = event_specs_from_profile(load_opcode_profile(profile_path))
 
-    assert len(loaded.specs) == 2
-    assert {
-        (spec.item_instance_offset, spec.single_record_message_length)
-        for spec in loaded.specs
-    } == {(58, 244), (66, 244)}
+    assert replacement.written
+    assert [spec.item_instance_offset for spec in loaded.specs] == [66]
+
+
+def test_profile_update_does_not_runtime_validate_incomplete_nonloot_specs(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+    incomplete_evidence = MessageSpec(
+        "STORAGE_ITEM_DELTA",
+        0x126D,
+        257,
+    )
+
+    update = update_profile([incomplete_evidence], profile_path, backup=False)
+    written = json.loads(profile_path.read_text(encoding="utf-8"))
+
+    assert update.written
+    assert written["specs"]["STORAGE_ITEM_DELTA"] == [
+        incomplete_evidence.to_json_dict()
+    ]
 
 
 def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):

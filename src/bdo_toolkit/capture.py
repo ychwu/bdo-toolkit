@@ -653,14 +653,6 @@ class LiveCaptureSession:
                 "observer; use request_stop() instead"
             )
         self._require_started()
-        if (
-            self._packet_worker is current_thread()
-            or self._inside_origin_observer()
-        ):
-            raise RuntimeError(
-                "stop() cannot block inside the live decoder or origin "
-                "observer; use request_stop() instead"
-            )
         self._finish_stop("requested")
 
     def request_stop(self) -> None:

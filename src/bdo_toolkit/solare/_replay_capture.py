@@ -13,6 +13,8 @@ from ._constants import (
     DISCOVERY_MAX_FRAME_LENGTH,
     DISCOVERY_MIN_FRAME_LENGTH,
     SOLARE_MAX_ACTIVE_FLOWS,
+    SOLARE_MAX_PENDING_BYTES,
+    SOLARE_MAX_PENDING_SEGMENTS,
 )
 from ._scanner import SolareDiscoveryStreamScanner
 from .models import SolareCaptureHealth
@@ -53,6 +55,8 @@ class SolareFrameCollector:
                 self._count_gap_reset,
             ),
             max_flows=SOLARE_MAX_ACTIVE_FLOWS,
+            max_pending_segments=SOLARE_MAX_PENDING_SEGMENTS,
+            max_pending_bytes=SOLARE_MAX_PENDING_BYTES,
             on_flow_eviction=self._count_flow_eviction,
             track_flow_generations=True,
         )
@@ -122,6 +126,11 @@ class SolareFrameCollector:
 
     def finish(self) -> None:
         self._manager.finish()
+
+    def service_gaps(self, now: float) -> int:
+        """Advance TCP gap clocks after the live decode queue is drained."""
+
+        return self._manager.service_gaps(now)
 
     def health(
         self,

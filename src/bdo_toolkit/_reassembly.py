@@ -20,8 +20,8 @@ from ._protocol import (
 
 # When capture begins after the SYN, the first callback can be a later TCP
 # segment that raced ahead of its prefix. Hold a bounded initial reorder set
-# briefly; proven frame boundaries are delivered immediately, and every other
-# path is released by live clock service, capacity pressure, or finish().
+# until framing proves an origin or an owning root services the grace period;
+# capacity pressure and finish() provide the remaining bounded release paths.
 _INITIAL_REORDER_GRACE_SECONDS = 0.25
 _INITIAL_ANCHOR_PROBE_BYTES = (MAX_TARGET_MESSAGE_LENGTH * 2) + 5
 
@@ -45,6 +45,8 @@ class PendingSegment:
 @dataclass
 class TCPFlowState:
     scanner: StreamScanner
+    max_pending_segments: int = MAX_PENDING_SEGMENTS
+    max_pending_bytes: Optional[int] = None
     next_sequence: Optional[int] = None
     pending: dict[int, PendingSegment] = field(default_factory=dict)
     unanchored: dict[int, PendingSegment] = field(default_factory=dict)
@@ -145,11 +147,23 @@ class TCPFlowState:
         can_anchor = getattr(self.scanner, "can_anchor_at_start", None)
         if can_anchor is not None and can_anchor(probe):
             self._commit_unanchored(start_sequence)
-        elif len(self.unanchored) > MAX_PENDING_SEGMENTS:
-            # Preserve the same hard count bound as ordinary gap buffering.
+        elif self._pending_capacity_exceeded(self.unanchored):
+            # Preserve the same hard bounds as ordinary gap buffering.
             # Under pressure, the earliest observed byte is the least-bad
             # origin and the scanner's normal resynchronization remains active.
             self._commit_unanchored(start_sequence)
+
+    def _pending_capacity_exceeded(
+        self,
+        segments: dict[int, PendingSegment],
+    ) -> bool:
+        if len(segments) > self.max_pending_segments:
+            return True
+        return (
+            self.max_pending_bytes is not None
+            and sum(len(segment.data) for segment in segments.values())
+            > self.max_pending_bytes
+        )
 
     def _ordered_unanchored(self) -> list[tuple[int, PendingSegment]]:
         if not self.unanchored:
@@ -194,6 +208,8 @@ class TCPFlowState:
         return start_sequence, bytes(probe)
 
     def _commit_unanchored(self, sequence: Optional[int] = None) -> None:
+        # Origin commitment is intentionally one-way. Bytes already delivered
+        # to a scanner cannot later be retracted and joined to an older prefix.
         if not self.unanchored:
             return
         ordered = self._ordered_unanchored()
@@ -256,8 +272,14 @@ class TCPFlowState:
             # A local capture should rarely lose TCP segments. If it does, do
             # not remain blocked forever: after a short gap, restart at the
             # earliest available segment and let the target scanner resync.
-            if len(self.pending) > MAX_PENDING_SEGMENTS:
-                self._resume_after_gap()
+            if self._pending_capacity_exceeded(self.pending):
+                # One restart may expose another later gap whose retained
+                # segment is itself larger than the configured byte ceiling.
+                # Keep making bounded progress until the retained map is back
+                # within both limits. Every restart remains observable as
+                # capture loss through the ordinary gap-reset accounting.
+                while self._pending_capacity_exceeded(self.pending):
+                    self._resume_after_gap()
             else:
                 self.service_gaps(context.timestamp)
             return
@@ -386,11 +408,27 @@ class FlowManager:
         on_flow_close: Optional[Callable[[FlowKey], None]] = None,
         idle_timeout: Optional[float] = None,
         track_flow_generations: bool = False,
+        max_pending_segments: int = MAX_PENDING_SEGMENTS,
+        max_pending_bytes: Optional[int] = None,
     ) -> None:
         if max_flows is not None and max_flows <= 0:
             raise ValueError("max_flows must be positive or None")
         if idle_timeout is not None and idle_timeout <= 0:
             raise ValueError("idle_timeout must be positive or None")
+        if (
+            isinstance(max_pending_segments, bool)
+            or not isinstance(max_pending_segments, int)
+        ):
+            raise TypeError("max_pending_segments must be an integer")
+        if max_pending_segments <= 0:
+            raise ValueError("max_pending_segments must be positive")
+        if max_pending_bytes is not None and (
+            isinstance(max_pending_bytes, bool)
+            or not isinstance(max_pending_bytes, int)
+        ):
+            raise TypeError("max_pending_bytes must be an integer or None")
+        if max_pending_bytes is not None and max_pending_bytes <= 0:
+            raise ValueError("max_pending_bytes must be positive or None")
         self.server_ports = frozenset(server_ports)
         self._scanner_factory = scanner_factory
         self._max_flows = max_flows
@@ -398,6 +436,8 @@ class FlowManager:
         self._on_flow_close = on_flow_close
         self._idle_timeout = idle_timeout
         self._track_flow_generations = track_flow_generations
+        self._max_pending_segments = max_pending_segments
+        self._max_pending_bytes = max_pending_bytes
         self._next_flow_generation = 0
         self._flows: OrderedDict[FlowKey, TCPFlowState] = OrderedDict()
         self._tcp_gap_resets = 0
@@ -412,6 +452,8 @@ class FlowManager:
             generation = self._next_flow_generation
         return TCPFlowState(
             scanner=self._scanner_factory(),
+            max_pending_segments=self._max_pending_segments,
+            max_pending_bytes=self._max_pending_bytes,
             generation=generation,
             on_gap_reset=self._record_gap_reset,
         )
@@ -428,9 +470,11 @@ class FlowManager:
     def service_gaps(self, now: float) -> int:
         """Advance pending-gap timers using a caller-supplied wall clock.
 
-        Live capture roots should call this during their normal poll/tick even
-        when no packets arrived. The return value is the number of new resets
-        performed during this call; ``tcp_gap_resets`` is cumulative.
+        ``FlowManager`` does not own a timer thread. Live capture roots that
+        require wall-clock release should call this during their normal
+        poll/tick even when no packets arrived. The return value is the number
+        of new resets performed during this call; ``tcp_gap_resets`` is
+        cumulative.
         """
         with self._lock:
             before = self._tcp_gap_resets

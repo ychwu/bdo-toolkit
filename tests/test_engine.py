@@ -1,5 +1,7 @@
 ﻿"""Unit tests for engine behaviors the pcap fixtures do not exercise."""
 
+import random
+
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit import _engine as engine_module
 from bdo_toolkit._framing import FrameCollectorScanner, TargetMessageScanner
@@ -86,6 +88,141 @@ def _frame_context(sequence: int = 100) -> PacketContext:
         flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
         stream_start=sequence,
     )
+
+
+def _slow_can_anchor_at_start(specs, data: bytes) -> bool:
+    """Frozen byte-by-byte reference for the optimized anchor predicate."""
+    if len(data) < 5:
+        return False
+    for offset in range(len(data) - 4):
+        message_length = int.from_bytes(data[offset : offset + 2], "little")
+        for spec in specs:
+            if data[offset + 2 : offset + 5] != spec.signature:
+                continue
+            if not spec.min_message_length <= message_length <= 0xFFFF:
+                continue
+            if TargetMessageScanner._message_length_matches_spec(
+                spec, message_length
+            ):
+                return True
+    return False
+
+
+def test_target_anchor_skips_invalid_signature_before_valid_header():
+    spec = EventSpec(
+        "LOOT_PREVIEW",
+        0x1234,
+        5,
+        9,
+        13,
+        single_record_message_length=13,
+    )
+    scanner = TargetMessageScanner(lambda *_: None, (spec,))
+    invalid = (12).to_bytes(2, "little") + spec.signature + b"\x00" * 8
+    valid = (13).to_bytes(2, "little") + spec.signature + b"\x00" * 8
+
+    assert scanner.can_anchor_at_start(invalid + valid)
+    assert not scanner.can_anchor_at_start(spec.signature + b"\x00" * 16)
+    assert not scanner.can_anchor_at_start(b"\x00" + spec.signature + b"\x00" * 16)
+
+
+def test_target_scanner_caches_signatures_for_anchor_and_decode(monkeypatch):
+    specs = (
+        EventSpec(
+            "LOOT_PREVIEW",
+            0x1234,
+            5,
+            9,
+            13,
+            single_record_message_length=13,
+        ),
+        EventSpec(
+            "LOOT_PREVIEW",
+            0x1234,
+            5,
+            9,
+            21,
+            single_record_message_length=21,
+        ),
+        EventSpec(
+            "LOOT_PREVIEW",
+            0x5678,
+            5,
+            9,
+            13,
+            single_record_message_length=13,
+        ),
+    )
+    original_getter = EventSpec.signature.fget
+    assert original_getter is not None
+    signature_reads = 0
+
+    def counted_signature(spec):
+        nonlocal signature_reads
+        signature_reads += 1
+        return original_getter(spec)
+
+    monkeypatch.setattr(EventSpec, "signature", property(counted_signature))
+    events = []
+    scanner = TargetMessageScanner(
+        lambda event, _raw: events.append(event),
+        specs,
+    )
+    assert signature_reads == len(specs)
+
+    frame = bytearray(13)
+    frame[0:2] = len(frame).to_bytes(2, "little")
+    frame[2:5] = b"\x00\x34\x12"
+    frame[5:9] = (7003).to_bytes(4, "little")
+    frame[9:13] = (3).to_bytes(4, "little")
+    signature_reads = 0
+
+    assert scanner.can_anchor_at_start(bytes(frame))
+    scanner.scan_standalone(bytes(frame), _frame_context())
+
+    assert signature_reads == 0
+    assert [(event.item_id, event.quantity) for event in events] == [(7003, 3)]
+
+
+def test_target_anchor_optimized_search_matches_slow_reference():
+    specs = (
+        EventSpec(
+            "LOOT_PREVIEW",
+            0x1234,
+            5,
+            9,
+            13,
+            single_record_message_length=13,
+        ),
+        EventSpec(
+            "LOOT_PREVIEW",
+            0x1234,
+            5,
+            9,
+            21,
+            single_record_message_length=21,
+        ),
+        EventSpec("INVENTORY_TRANSFER", 0x4321, 5, 9, 13),
+    )
+    scanner = TargetMessageScanner(lambda *_: None, specs)
+    rng = random.Random(0xBD0)
+
+    for _ in range(500):
+        data = bytearray(rng.randrange(0, 257))
+        for index in range(len(data)):
+            data[index] = rng.randrange(256)
+        if len(data) >= 5 and rng.randrange(3) == 0:
+            spec = rng.choice(specs)
+            offset = rng.randrange(len(data) - 4)
+            data[offset : offset + 2] = rng.choice(
+                (0, 4, 13, 21, 244, 0xFFFF)
+            ).to_bytes(2, "little")
+            data[offset + 2 : offset + 5] = spec.signature
+
+        frozen = bytes(data)
+        assert scanner.can_anchor_at_start(frozen) == _slow_can_anchor_at_start(
+            specs, frozen
+        )
 
 
 def test_generic_frame_tap_uses_known_opcode_to_escape_bogus_large_length():

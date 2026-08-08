@@ -242,7 +242,7 @@ def test_live_retention_keeps_newest_tail_and_reports_truncation(
     assert "live retention truncated" in result.summary()
 
 
-def test_live_calibration_bounds_and_expires_reassembly_flows(
+def test_live_calibration_bounds_reassembly_flows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -255,7 +255,7 @@ def test_live_calibration_bounds_and_expires_reassembly_flows(
     manager = session._manager
     assert manager is not None
     assert manager._max_flows == 64
-    assert manager._idle_timeout == 300.0
+    assert manager._idle_timeout is None
 
     for index in range(65):
         manager.process_tcp_segment(
@@ -274,9 +274,8 @@ def test_live_calibration_bounds_and_expires_reassembly_flows(
     ) not in manager._flows
     assert manager._next_flow_generation == 65
 
-    manager.service_gaps(now=365.0)
-    assert not manager._flows
     session.stop()
+    assert not manager._flows
 
 
 def test_live_retention_enforces_payload_byte_limit() -> None:

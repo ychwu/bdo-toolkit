@@ -12,7 +12,13 @@ from bdo_toolkit.solare._constants import (
     CLASS_NAMES,
     DISCOVERY_RETENTION_MAX_BYTES,
     DISCOVERY_RETENTION_MAX_FRAMES,
+    LIVE_CANDIDATE_IDLE_SECONDS,
 )
+from bdo_toolkit.solare._details import (
+    SolareDetailDecode,
+    SolareOverallDetailDecode,
+)
+from bdo_toolkit.solare._discovery import DiscoveredSolareFamily
 from bdo_toolkit.solare._replay_capture import SolareFrameCollector
 from bdo_toolkit.solare._result import build_solare_result
 from bdo_toolkit.solare._live_tracker import LiveSolareDiscoveryTracker
@@ -21,9 +27,12 @@ from bdo_toolkit.solare.models import (
     SolareCaptureHealth,
     SolareCaptureResult,
     SolareClass,
+    SolareClassPerformance,
     SolareDetectionStatus,
     SolareEvidence,
+    SolareOverallEntry,
     SolarePlayer,
+    SolareSpecialization,
     SolareUpdate,
     SolareUpdateKind,
     solare_snapshot_id,
@@ -311,7 +320,16 @@ def test_complete_result_is_opcode_agnostic_and_falls_back_to_rankings() -> None
     assert len(result.snapshot.players) == 620
     assert result.snapshot.players[0].name == "Player0001"
     assert result.snapshot.players[-1].global_rank == 620
+    assert result.snapshot.class_table_capabilities == frozenset({"rankings"})
+    assert result.snapshot.overall_capabilities == frozenset({"rankings"})
     assert result.snapshot.capabilities == frozenset({"rankings"})
+    assert all(
+        entry.total_wins is None
+        and entry.total_draws is None
+        and entry.total_losses is None
+        and entry.total_matches is None
+        for entry in result.snapshot.overall_top_100
+    )
     assert result.snapshot.observed_at == pytest.approx(2_049.0)
     assert result.evidence.exact_cross_check == 100
     assert result.evidence.rich_layout is not None
@@ -358,7 +376,340 @@ def test_complete_result_allows_one_overall_only_player() -> None:
     assert 21 not in {player.global_rank for player in result.snapshot.players}
     overall_only = result.snapshot.overall_top_100[20]
     assert (overall_only.global_rank, overall_only.name) == (21, "Player0021")
-    assert overall_only.overall_uid_raw is None
+    assert overall_only.elo is None
+    assert overall_only.classes_played == ()
+    assert overall_only.total_wins is None
+    assert overall_only.total_draws is None
+    assert overall_only.total_losses is None
+    assert overall_only.total_matches is None
+    assert result.snapshot.class_table_capabilities == frozenset({"rankings"})
+    assert result.snapshot.overall_capabilities == frozenset({"rankings"})
+
+
+def test_overall_only_player_keeps_direct_overall_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overall details survive even when no class-table row can be joined."""
+
+    import bdo_toolkit.solare._result as result_module
+
+    rich_ranks = (*range(1, 21), *range(22, 622))
+    frames = _complete_frames(rich_ranks=rich_ranks)
+    class_code = next(iter(CLASS_NAMES))
+    player_class = SolareClass(class_code, CLASS_NAMES[class_code])
+    specialization = SolareSpecialization(
+        code=1,
+        branch="advanced",
+        name="Awakening",
+    )
+
+    def fake_decode_class(
+        _frames: Sequence[BDOFrame],
+        rich: DiscoveredSolareFamily,
+        *,
+        retain_raw_extensions: bool = False,
+    ) -> SolareDetailDecode:
+        assert retain_raw_extensions is False
+        players = tuple(
+            SolarePlayer(
+                name=name,
+                global_rank=rank,
+                primary_class=SolareClass(
+                    discovered_class,
+                    CLASS_NAMES[discovered_class],
+                ),
+                elo=5_000 - rank,
+            )
+            for name, rank, discovered_class in zip(
+                rich.names,
+                rich.ranks,
+                rich.class_codes,
+            )
+        )
+        return SolareDetailDecode(
+            layout_id="synthetic-class-v1",
+            players=players,
+            capabilities=frozenset({"rankings", "elo"}),
+        )
+
+    def fake_decode_overall(
+        _frames: Sequence[BDOFrame],
+        overall: DiscoveredSolareFamily,
+        *,
+        retain_raw_extensions: bool = False,
+    ) -> SolareOverallDetailDecode:
+        assert retain_raw_extensions is False
+        entries = tuple(
+            SolareOverallEntry(
+                name=name,
+                global_rank=rank,
+                elo=4_000 - rank,
+                classes_played=(
+                    SolareClassPerformance(
+                        slot=0,
+                        primary=True,
+                        player_class=player_class,
+                        specialization=specialization,
+                        matches=20,
+                        wins=10,
+                        draws=1,
+                        losses=9,
+                        recent_results_raw=(1, 0, 1),
+                        recent_results_wire_text="1,0,1",
+                    ),
+                ),
+                total_wins=15,
+                total_draws=1,
+                total_losses=4,
+            )
+            for name, rank in zip(overall.names, overall.ranks)
+        )
+        return SolareOverallDetailDecode(
+            layout_id="synthetic-overall-v1",
+            entries=entries,
+            capabilities=frozenset(
+                {
+                    "rankings",
+                    "elo",
+                    "performance",
+                    "aggregate_performance",
+                }
+            ),
+        )
+
+    monkeypatch.setattr(result_module, "decode_solare_details", fake_decode_class)
+    monkeypatch.setattr(
+        result_module,
+        "decode_solare_overall_details",
+        fake_decode_overall,
+    )
+
+    result = build_solare_result(frames, _health(frames))
+
+    assert result.snapshot is not None
+    overall_only = result.snapshot.overall_top_100[20]
+    assert (overall_only.global_rank, overall_only.name) == (21, "Player0021")
+    assert overall_only.elo == 3_979
+    assert len(overall_only.classes_played) == 1
+    performance = overall_only.classes_played[0]
+    assert performance.player_class == player_class
+    assert performance.matches == 20
+    assert performance.record_is_balanced
+    assert overall_only.total_wins == 15
+    assert overall_only.total_draws == 1
+    assert overall_only.total_losses == 4
+    assert overall_only.total_matches == 20
+    assert overall_only.total_matches == performance.matches
+    assert (
+        overall_only.total_wins,
+        overall_only.total_draws,
+        overall_only.total_losses,
+    ) != (performance.wins, performance.draws, performance.losses)
+    assert result.snapshot.get_player(overall_only.name) is None
+    rich_overlap = result.snapshot.get_player("Player0001")
+    overall_overlap = result.snapshot.get_overall_entry("Player0001")
+    assert rich_overlap is not None
+    assert overall_overlap is not None
+    assert rich_overlap.elo == 4_999
+    assert overall_overlap.elo == 3_999
+    assert result.snapshot.class_table_capabilities == frozenset(
+        {"rankings", "elo"}
+    )
+    assert result.snapshot.overall_capabilities == frozenset(
+        {
+            "rankings",
+            "elo",
+            "performance",
+            "aggregate_performance",
+        }
+    )
+    assert result.snapshot.capabilities == frozenset({"rankings", "elo"})
+    assert result.evidence.rich_layout is not None
+    assert result.evidence.rich_layout.detail_layout_id == "synthetic-class-v1"
+    assert result.evidence.overall_layout is not None
+    assert (
+        result.evidence.overall_layout.detail_layout_id
+        == "synthetic-overall-v1"
+    )
+
+
+def test_class_details_never_populate_structural_overall_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid class decoder is not an enrichment source for overall rows."""
+
+    import bdo_toolkit.solare._result as result_module
+
+    frames = _complete_frames()
+
+    def fake_decode_class(
+        _frames: Sequence[BDOFrame],
+        rich: DiscoveredSolareFamily,
+        *,
+        retain_raw_extensions: bool = False,
+    ) -> SolareDetailDecode:
+        assert retain_raw_extensions is False
+        players = tuple(
+            SolarePlayer(
+                name=name,
+                global_rank=rank,
+                primary_class=SolareClass(
+                    class_code,
+                    CLASS_NAMES[class_code],
+                ),
+                elo=4_000 - rank,
+            )
+            for name, rank, class_code in zip(
+                rich.names,
+                rich.ranks,
+                rich.class_codes,
+            )
+        )
+        return SolareDetailDecode(
+            layout_id="synthetic-class-v1",
+            players=players,
+            capabilities=frozenset({"rankings", "elo"}),
+        )
+
+    monkeypatch.setattr(
+        result_module,
+        "decode_solare_details",
+        fake_decode_class,
+    )
+
+    result = build_solare_result(frames, _health(frames))
+
+    assert result.snapshot is not None
+    assert result.snapshot.players[0].elo == 3_999
+    assert result.snapshot.overall_top_100[0].elo is None
+    assert result.snapshot.overall_top_100[0].classes_played == ()
+    assert result.snapshot.overall_top_100[0].total_wins is None
+    assert result.snapshot.overall_top_100[0].total_draws is None
+    assert result.snapshot.overall_top_100[0].total_losses is None
+    assert result.snapshot.overall_top_100[0].total_matches is None
+    assert result.snapshot.class_table_capabilities == frozenset(
+        {"rankings", "elo"}
+    )
+    assert result.snapshot.overall_capabilities == frozenset({"rankings"})
+    assert result.snapshot.capabilities == frozenset({"rankings"})
+    assert result.evidence.rich_layout is not None
+    assert result.evidence.rich_layout.detail_layout_id == "synthetic-class-v1"
+    assert result.evidence.overall_layout is not None
+    assert result.evidence.overall_layout.detail_layout_id is None
+
+
+def test_overall_details_survive_when_class_detail_decoder_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One table's detail failure cannot suppress the other table's decode."""
+
+    import bdo_toolkit.solare._result as result_module
+
+    frames = _complete_frames()
+    class_code = next(iter(CLASS_NAMES))
+    player_class = SolareClass(class_code, CLASS_NAMES[class_code])
+
+    def fail_class_decode(
+        _frames: Sequence[BDOFrame],
+        _rich: DiscoveredSolareFamily,
+        *,
+        retain_raw_extensions: bool = False,
+    ) -> None:
+        assert retain_raw_extensions is False
+        return None
+
+    def decode_overall(
+        _frames: Sequence[BDOFrame],
+        overall: DiscoveredSolareFamily,
+        *,
+        retain_raw_extensions: bool = False,
+    ) -> SolareOverallDetailDecode:
+        assert retain_raw_extensions is False
+        entries = tuple(
+            SolareOverallEntry(
+                name=name,
+                global_rank=rank,
+                elo=4_000 - rank,
+                classes_played=(
+                    SolareClassPerformance(
+                        slot=0,
+                        primary=True,
+                        player_class=player_class,
+                        matches=100,
+                        wins=60,
+                        draws=1,
+                        losses=39,
+                        recent_results_raw=(1, 0, 1),
+                        recent_results_wire_text="1,0,1",
+                    ),
+                ),
+                total_wins=63,
+                total_draws=1,
+                total_losses=36,
+            )
+            for name, rank in zip(overall.names, overall.ranks)
+        )
+        return SolareOverallDetailDecode(
+            layout_id="synthetic-overall-v1",
+            entries=entries,
+            capabilities=frozenset(
+                {
+                    "rankings",
+                    "elo",
+                    "performance",
+                    "aggregate_performance",
+                }
+            ),
+        )
+
+    monkeypatch.setattr(result_module, "decode_solare_details", fail_class_decode)
+    monkeypatch.setattr(
+        result_module,
+        "decode_solare_overall_details",
+        decode_overall,
+    )
+
+    result = build_solare_result(frames, _health(frames))
+
+    assert result.snapshot is not None
+    class_row = result.snapshot.players[0]
+    assert class_row.elo is None
+    assert class_row.classes_played == ()
+    assert result.snapshot.class_table_capabilities == frozenset({"rankings"})
+    assert result.evidence.rich_layout is not None
+    assert result.evidence.rich_layout.detail_layout_id is None
+
+    overall_row = result.snapshot.overall_top_100[0]
+    assert overall_row.elo == 3_999
+    assert len(overall_row.classes_played) == 1
+    assert overall_row.classes_played[0].record_is_balanced
+    assert overall_row.total_wins == 63
+    assert overall_row.total_draws == 1
+    assert overall_row.total_losses == 36
+    assert overall_row.total_matches == 100
+    assert (
+        overall_row.total_wins,
+        overall_row.total_draws,
+        overall_row.total_losses,
+    ) != (
+        overall_row.classes_played[0].wins,
+        overall_row.classes_played[0].draws,
+        overall_row.classes_played[0].losses,
+    )
+    assert result.snapshot.overall_capabilities == frozenset(
+        {
+            "rankings",
+            "elo",
+            "performance",
+            "aggregate_performance",
+        }
+    )
+    assert result.evidence.overall_layout is not None
+    assert (
+        result.evidence.overall_layout.detail_layout_id
+        == "synthetic-overall-v1"
+    )
+    assert result.snapshot.capabilities == frozenset({"rankings"})
 
 
 def test_complete_result_accepts_the_minimum_twenty_exact_overlaps() -> None:
@@ -459,9 +810,13 @@ def test_live_rich_prefix_is_tentative_until_its_family_boundary() -> None:
         tracker.observe(frame)
     assert not tracker.complete
 
-    # Queue idleness alone cannot turn the exact top-100 prefix of another
+    # Candidate idleness alone cannot turn the exact top-100 prefix of another
     # class table into independent overall-table proof.
-    tracker.refresh()
+    assert tracker._last_candidate_activity_at is not None
+    tracker.service_candidate_idle(
+        tracker._last_candidate_activity_at
+        + LIVE_CANDIDATE_IDLE_SECONDS
+    )
     assert not tracker.complete
 
     interleaved = _shift_frames(
@@ -484,6 +839,61 @@ def test_live_rich_prefix_is_tentative_until_its_family_boundary() -> None:
     tracker.observe(second_rich[50])
     tracker.refresh()
     assert not tracker.complete
+
+
+def test_subthreshold_idle_cannot_latch_before_delayed_same_family_frame() -> None:
+    first_rich = _complete_frames(include_overall=False)
+    second_rich = _shift_frames(
+        _complete_frames(
+            rich_opcode=0x6666,
+            include_overall=False,
+        ),
+        sequence_delta=sum(frame.length for frame in first_rich) + 100_000,
+        timestamp_delta=10_000.0,
+    )
+    tracker = LiveSolareDiscoveryTracker(lambda _update: None)
+
+    for frame in first_rich + second_rich[:50]:
+        tracker.observe(frame)
+    assert tracker._last_candidate_activity_at is not None
+    last_candidate = tracker._last_candidate_activity_at
+
+    # The old queue-idle path finalized after roughly 0.2 seconds. A frame
+    # already delayed inside the decode queue could then be ignored forever.
+    assert not tracker.service_candidate_idle(last_candidate + 0.2)
+    assert not tracker.complete
+
+    tracker.observe(second_rich[50])
+    assert tracker._last_candidate_activity_at is not None
+    assert not tracker.service_candidate_idle(
+        tracker._last_candidate_activity_at
+        + LIVE_CANDIDATE_IDLE_SECONDS
+    )
+    assert not tracker.complete
+
+
+def test_candidate_idle_closes_overall_tail_amid_unrelated_traffic() -> None:
+    tracker = LiveSolareDiscoveryTracker(lambda _update: None)
+
+    for frame in _complete_frames():
+        tracker.observe(frame)
+
+    # The exact 50-frame tail is intentionally provisional during an active
+    # candidate burst. Unrelated small game packets never reach this tracker,
+    # so the session can service the candidate-specific clock while they keep
+    # the global packet queue busy.
+    assert not tracker.complete
+    assert tracker._last_candidate_activity_at is not None
+    last_candidate = tracker._last_candidate_activity_at
+    assert not tracker.service_candidate_idle(
+        last_candidate + LIVE_CANDIDATE_IDLE_SECONDS - 0.001
+    )
+    assert not tracker.complete
+    assert tracker.service_candidate_idle(
+        last_candidate + LIVE_CANDIDATE_IDLE_SECONDS
+    )
+    assert tracker.complete
+    assert tracker.confirmed_frames is not None
 
 
 def test_sequence_less_frames_use_ordinal_distance_units() -> None:
@@ -807,6 +1217,30 @@ def test_inconclusive_result_names_bounded_pipeline_loss(
     assert "Retry after reducing capture load" in (result.message or "")
 
 
+@pytest.mark.parametrize(
+    ("health_change", "expected_message"),
+    (
+        ({"tcp_gap_resets": 2}, "TCP reassembly reset 2 times"),
+        ({"pcap_dropped": 3}, "capture backend reported 3 dropped packets"),
+        (
+            {"pcap_interface_dropped": 4},
+            "capture interface reported 4 dropped packets",
+        ),
+    ),
+)
+def test_preconfirmation_capture_loss_is_named(
+    health_change: dict[str, int],
+    expected_message: str,
+) -> None:
+    health = SolareCaptureHealth(payload_segments=1, **health_change)
+
+    result = build_solare_result((), health)
+
+    assert result.status is SolareDetectionStatus.INCONCLUSIVE
+    assert expected_message in (result.message or "")
+    assert "Retry with a fresh capture" in (result.message or "")
+
+
 def test_candidate_rollover_is_explained_only_without_stronger_loss() -> None:
     rolled_over = build_solare_result(
         (),
@@ -912,6 +1346,61 @@ def test_frame_collector_reassembles_generic_messages_and_tracks_health() -> Non
     assert collector.health().payload_bytes == len(stream)
     assert collector.health().synchronized_messages == 3
     assert collector.health().retained_large_messages == 0
+
+
+def test_solare_collector_tolerates_large_lossless_npcap_reorder_burst() -> None:
+    observed: list[BDOFrame] = []
+    collector = SolareFrameCollector((8889,), observed.append)
+    message = bytearray(8_192)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[2] = 0
+    message[3:5] = (0x4567).to_bytes(2, "little")
+    stream = bytes(message) * 2
+    pieces = tuple(
+        stream[offset : offset + 23]
+        for offset in range(0, len(stream), 23)
+    )
+
+    # Anchor with the SYN, then emulate a Windows/Npcap callback batch whose
+    # first 23 bytes arrive after more than 700 later segments. This exceeds
+    # both the generic item-route count policy and the 665-segment peak from
+    # the July 30 regression capture, but remains under Solare's explicit
+    # count/byte limits and under the ordinary gap deadline.
+    collector.process_tcp_segment(
+        source_ip=FLOW.source_ip,
+        source_port=FLOW.source_port,
+        destination_ip=FLOW.destination_ip,
+        destination_port=FLOW.destination_port,
+        sequence=999,
+        payload=b"",
+        timestamp=1.0,
+        syn=True,
+    )
+    for index, piece in enumerate(pieces[1:], start=1):
+        collector.process_tcp_segment(
+            source_ip=FLOW.source_ip,
+            source_port=FLOW.source_port,
+            destination_ip=FLOW.destination_ip,
+            destination_port=FLOW.destination_port,
+            sequence=1_000 + index * 23,
+            payload=piece,
+            timestamp=1.0 + index / 1_000,
+        )
+    collector.process_tcp_segment(
+        source_ip=FLOW.source_ip,
+        source_port=FLOW.source_port,
+        destination_ip=FLOW.destination_ip,
+        destination_port=FLOW.destination_port,
+        sequence=1_000,
+        payload=pieces[0],
+        timestamp=1.3,
+    )
+    collector.finish()
+
+    assert [frame.opcode for frame in observed] == [0x4567, 0x4567]
+    assert collector.health().synchronized_messages == 2
+    assert collector.health().tcp_gap_resets == 0
+    assert collector.health().capture_is_clean
 
 
 @pytest.mark.parametrize("close_flag", ("fin", "rst"))

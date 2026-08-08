@@ -53,6 +53,13 @@ apps:
   alternatives; every supplied criterion must match. Names and event types are
   exact and case-sensitive.
 
+Opcode profiles are patch-specific. Runtime conversion rejects distinct
+same-opcode `LOOT_PREVIEW` layouts whose accepted message-length domains
+overlap, because such layouts cannot always be selected without guessing. If
+an advanced profile merge raises `ProfileError`, keep only the layout for that
+game patch or recalibrate with replacement; disjoint exact-length variants
+remain supported.
+
 For an app with Start and Stop controls, use `LiveCaptureSession` instead of
 trying to interrupt the blocking iterator yourself:
 
@@ -94,13 +101,19 @@ eventually succeeds. Inside `origin_observer` or a Solare `on_update` callback,
 use non-blocking `request_stop()`; blocking stop/poll/wait/iteration on that
 same session is rejected to prevent callback self-deadlocks.
 
-`AsyncLiveCaptureSession.events()` fetches up to 64 immediately ready events per
-executor submission, but transfers the entire batch into session-owned pending
-storage before yielding the first event. Early break, iterator close,
-cancellation after a yield, and sequential handoff to `poll()` therefore keep
-every prefetched event reachable and ordered. Use one logical event consumer;
-overlapping blocking consumption is rejected. `poll()` validates its timeout
-even while draining pending data or after the synchronous session has stopped.
+`AsyncLiveCaptureSession.events()` consumes one event at a time through
+`await poll(timeout=None)`. The blocking wait runs on the session's private
+worker, so a quiet iterator neither blocks the asyncio event loop nor
+busy-polls. Iteration does not prefetch later events: early break, iterator
+close, and sequential handoff to `poll()` leave them in the synchronous queue,
+reachable and ordered. If cancellation races a worker poll that already
+removed one event, the facade retains that single event for the next `poll()`
+call or replacement iterator. Use one logical event consumer; overlapping
+blocking consumption is rejected. While capture is active, `poll()` validates
+its timeout before returning cancellation-preserved data. After completed
+stop, the timeout is ignored while buffered data drains without waiting. This
+one-worker-crossing-per-event design favors simple ownership and cancellation
+semantics; use the character-load snapshot API for bulk hydration.
 
 Packet acquisition controls shared with live calibration live in
 `PacketCaptureOptions`. `LiveCaptureOptions` extends those settings with the
@@ -128,11 +141,14 @@ flow-eviction counters before treating a live stream as complete telemetry.
 An observed empty SYN anchors the first payload sequence. When capture begins
 after the handshake, a bounded initial reorder set is retained briefly so
 multiple lower/higher/overlapping segments can establish an evidence-backed
-frame origin; unresolved data is released after 250 ms, at capacity pressure,
-or at finalization. Out-of-order FIN is deferred while observed earlier bytes
-remain recoverable, and a FIN-only missing range uses the ordinary TCP-gap
-deadline. This recovers captured reordering but cannot reconstruct bytes that
-were never observed.
+frame origin. Ordinary item live capture services the reassembly clock, so
+unresolved data is released after a 250 ms grace, at capacity pressure, or at
+finalization. Origin commitment is one-way: a still-earlier segment arriving
+after commitment cannot be joined retroactively to bytes already delivered,
+so a frame spanning that boundary may be missed. Out-of-order FIN is deferred
+while observed earlier bytes remain recoverable, and a FIN-only missing range
+uses the ordinary TCP-gap deadline. This is best-effort recovery for captured
+reordering; it cannot reconstruct bytes that were never observed.
 
 ## Arena of Solare snapshots
 
@@ -151,9 +167,18 @@ if not result.complete:
 
 snapshot = result.snapshot
 assert snapshot is not None
-for entry in snapshot.overall_top_100:
-    details = snapshot.get_player(entry.name)
-    print(entry.global_rank, entry.name, details.elo if details else None)
+for player in snapshot.overall_top_100:
+    print(
+        player.global_rank,
+        player.name,
+        player.elo,
+        player.total_wins,
+        player.total_draws,
+        player.total_losses,
+        player.total_matches,  # derived from the three wire totals
+    )
+    for class_record in player.classes_played:
+        print("  per class:", class_record.player_class, class_record.matches)
 ```
 
 Replay and live capture use the same incremental classifier. It discovers the
@@ -162,6 +187,15 @@ as identity; opcode is only an opaque key that keeps observed message families
 apart. Reset-aligned generations allow a complete refresh between partial
 ones, and the first snapshot to complete in observation order is selected and
 latched.
+
+Known detail geometries use reviewed registered decoders. After a patch
+produces a structurally confirmed but unregistered geometry, the toolkit can
+instead infer Elo, per-class performance, overall aggregate W/D/L, and
+explicitly requested raw boundaries from the complete 620 + 100 records. This
+learning is bounded, fail-closed, and ephemeral: it uses no opcode, needs no
+calibration, writes no offsets, and reruns for each unknown snapshot. Solare
+does not expose a UID: the observed source-specific byte fields cannot be
+located geometry-independently or assigned a proven account/character scope.
 
 The blocking live convenience reports progress, stops after confirmation, and
 has a 120-second default deadline:
@@ -179,18 +213,35 @@ Start capture before opening or refreshing the Leaderboard tab. Pass
 `capture_seconds=None` only for an intentional indefinite wait. Explicit
 `LiveSolareSession` and `AsyncLiveSolareSession` instances have no built-in
 deadline: the caller controls `start()`, `wait()`, `request_stop()`, and
-`stop()`. An `on_update` callback must stay lightweight; it may call the
+`stop()`. Synchronous Solare polling/waiting always validates timeout values.
+The async facade validates them while capture is active; after completed stop,
+its `poll()` and `wait()` ignore the argument and drain terminal state without
+waiting. An `on_update` callback must stay lightweight; it may call the
 non-blocking `request_stop()`, but it must not call blocking control or update
 consumption methods on the same session.
 
 The two wire tables stay separate in the public snapshot. `players` contains
-the 31 class top-20 groups and their optional details;
-`overall_top_100` is the authoritative overall board. A highly represented
-class can place a 21st player in the overall top 100 even though its class board
-stops at 20. In that case `get_player(entry.name)` returns `None` for the
-overall-only entry. The compatibility `top_100` property contains only the
-detailed rich-table players whose global rank is 1 through 100, so it may be
-shorter than 100 in this legitimate case.
+the independently decoded 31 class top-20 groups; `overall_top_100` contains
+100 independently decoded overall records. The overall response carries its
+own Elo, overall W/D/L totals, class slots, performance, recent results, and
+optional raw extensions on supported layouts. These values are read directly
+from each overall record, never copied from `snapshot.players`.
+
+`total_wins`, `total_draws`, and `total_losses` are the separate overall-record
+counters. `total_matches` is explicitly derived as their sum because no direct
+total-matches scalar has been validated. `classes_played` remains a capped
+one-to-three-slot collection of detailed per-class records. Do not present its
+first slot—or a sum of its slots—as the overall total: players can have activity
+outside the exposed slots, and the overall record can use different W/L
+bookkeeping even when the match totals agree.
+
+A highly represented class can place a 21st player in the overall top 100 even
+though its class board stops at 20. That overall-only player still retains
+every validated detail carried by the overall response, while
+`get_player(name)` correctly remains a class-table-only query. Use
+`get_overall_entry(name)` for the overall table. The compatibility `top_100`
+property contains only class-table players whose global rank is 1 through 100,
+so it may be shorter than 100 in this legitimate case.
 
 Snapshot publication also requires clean acquisition health: any TCP gap or
 reported packet drop, packet-queue overflow, or active-flow eviction before
@@ -199,8 +250,21 @@ to match. Candidate discovery is bounded to 768 frames and 16 MiB and evaluates
 the retained window before discarding older candidates. The live packet queue
 is bounded to 4,096 packets, the progress queue to 64 updates, and active TCP
 reassembly to 64 flows; the related counters live under
-`result.evidence.health`. A rollover `warning` is progress, not an unbounded
-audit log, while the newest terminal `finished` update remains available.
+`result.evidence.health`. Rollover and acquisition `warning` updates are
+progress, not an unbounded audit log, while the newest terminal `finished`
+update remains available.
+
+Solare also has a route-specific, bounded TCP reorder window of 2,048 segments
+and 8 MiB per flow. The generic item-event route keeps its existing
+128-segment policy. This accommodates lossless Windows/Npcap callback bursts
+that can arrive hundreds of segments out of sequence without treating them as
+packet loss; exceeding either Solare limit still resets reassembly, marks
+health unclean, and withholds the snapshot. Live gap and candidate clocks
+advance only after already-queued packet work is drained. Once no
+leaderboard-sized candidate frame has arrived for 1.5 seconds, the live tracker
+may close an exact trailing 50-frame overall response even if unrelated small
+game traffic continues. All structural checks, including rich-table-prefix
+rejection, remain required at that boundary.
 
 With `stop_on_complete=False`, the first snapshot and its health are latched
 while capture may continue; later decoder messages are not retained or allowed
@@ -209,10 +273,26 @@ as long as capture runs. That disk lifetime is caller-owned: set a deadline,
 stop explicitly, or rotate files outside the toolkit.
 
 The June 24, July 14, and July 17 capture generations use different opcodes
-and record geometry; the structural classifier confirms all three. Deeper
-player statistics are enabled only when a geometry-specific decoder validates
-every record. Check `snapshot.capabilities`: `"rankings"` is independent from
-`"performance"`. `"raw_extensions"` is additionally opt-in.
+and record geometry; the structural classifier confirms all three. Registered
+profiles remain the fast path. Tests also hide those profiles and force five
+complete historical captures through unknown-layout inference: every public
+field and opted-in raw byte matches the registered result. On the development
+machine, the learned detail scan adds roughly one second; full forced-unknown
+historical replays with raw retention take about 1.6 to 1.9 seconds end to end.
+Seeing `snapshot-confirmed` shortly before the terminal result is expected.
+
+The registered class decoder publishes its optional detail bundle only after
+all 620 rows validate. Learned Elo and performance groups are independently
+gated. The overall decoder validates or learns Elo, per-class performance, and
+the separate overall aggregate across all 100 rows. Inspect
+`snapshot.class_table_capabilities` and
+`snapshot.overall_capabilities` for source-specific guarantees. The
+overall-only `"aggregate_performance"` token
+authorizes `total_wins`, `total_draws`, `total_losses`, and derived
+`total_matches`; it is intentionally absent from the class-table set.
+`snapshot.capabilities` is their intersection: it contains only capabilities
+independently established for both tables. `"raw_extensions"` additionally
+requires acquisition-time opt-in.
 
 Each occupied class slot can expose matches, wins, draws, losses, raw recent
 result codes, and, when retained explicitly, exact opaque gear/addon sections.
@@ -224,6 +304,10 @@ Python, `gear_loadout_raw.data` and `skill_addons_raw.data` are literal `bytes`
 pass `include_raw=True` to serialize them as hex. Serialization cannot recover
 raw bytes that were not retained during capture or replay; replay the saved
 PCAP again with retention enabled if needed.
+
+This is separate from item-event calibration. Do not run
+`bdo-toolkit calibrate` for Solare or pass a calibration profile to the Solare
+APIs; save the live PCAP and replay it through the same structural path.
 
 Command-line equivalents keep progress on stderr and result JSON on stdout:
 
@@ -239,9 +323,9 @@ bdo-toolkit solare live --wait-forever
 
 See [`solare_live_snapshot.py`](examples/solare_live_snapshot.py) and
 [`solare_replay_snapshot.py`](examples/solare_replay_snapshot.py). Raw pcaps,
-player UIDs, names, loadouts, and addons are sensitive account/gameplay data;
-keep captures out of source control and obtain any consent appropriate to your
-application.
+player names, opaque identifier-like bytes, loadouts, and addons are sensitive
+account/gameplay data; keep captures out of source control and obtain any
+consent appropriate to your application.
 
 Storage events expose their destination separately from their cause:
 
@@ -288,12 +372,13 @@ the geometry divides exactly and every declared record validates. Older
 wrappers retain a strict marker-based fallback; a saved `repeat_stride` is only
 the final compatibility path.
 
-Only the single-record base `B` and ordinary item/context offsets come from the
-opcode profile. The current wrapper's relative record-count field and its
-mode/token signatures are built-in observations from this protocol generation;
-calibration does **not** rediscover those wrapper relationships yet. Making
-count and operation metadata calibration-derived is a separate future
-enhancement.
+Only the single-record base `B` and ordinary record offsets come from the
+opcode profile. The storage count position is searched structurally in the
+framed prefix and accepted only when one count/base/length geometry validates
+every declared record. Storage destination, mode, and token positions still
+come from explicit decoder-owned wrapper layouts; the decoder currently
+recognizes both the July 17 and August 7 generations. Calibration does **not**
+rediscover or persist those operation-metadata relationships yet.
 
 Character-load inventory hydration is exposed separately as
 `inventory_snapshot`. Its wrapper count is discovered in the framed header,
@@ -312,8 +397,11 @@ richer live/offline tool is documented in
 [`tools/character_load/README.md`](tools/character_load/README.md). The summary
 reports occupied item stacks and explicitly leaves storage capacity and stable
 inventory tab names provisional. Its experimental model exposes each validated
-raw container code, slot, provisional label/confidence, and known currency
-balance separately from ordinary item stacks. The live tool can also preserve
+raw container code, optional slot, provisional label/confidence, and known
+currency balance separately from ordinary item stacks. Container metadata may
+be discovered from a record tail or a common wrapper-header byte; the August 7
+wrapper exposes no validated per-record slot, so `inventory_slot` is `None`.
+The live tool can also preserve
 its filtered packet evidence with `--save-pcap`; raw captures are sensitive and
 should remain in the git-ignored fixture tree.
 
@@ -384,14 +472,15 @@ After an opcode patch, the ordinary guided transfer calibration is still the
 first recovery step: it genuinely relearns the receipt/storage opcodes,
 first-item positions, and normalized single-record base lengths shared by live
 transfers and hydration. It does **not** generically rediscover every field:
-quantity and instance still assume `item+4` / `item+35`, inventory context
-search relies on known values, and current storage destination recovery expects
-`item-9`. Inventory snapshot count, repeat stride, and record-tail
-slot/container positions are then discovered structurally at runtime. Storage
-snapshot/live/empty classification is not fully calibration-derived yet: it
-also depends on the observed item-relative mode/token/count/destination wrapper
-relationships. If any of those assumptions move, recalibration alone will not
-restore classification and the decoder or a future snapshot-specific
+quantity and instance still assume `item+4` / `item+35`, and inventory context
+search relies on known values. Inventory snapshot count and repeat stride are
+discovered structurally at runtime; container metadata can come from a
+validated record tail or wrapper-header column. Storage count and stride are
+also discovered structurally, while snapshot/live/empty classification and
+town recovery still depend on one recognized destination/mode/token wrapper
+layout. The decoder now includes the observed July 17 and August 7 layouts. If
+a later patch redesigns those remaining relationships, recalibration alone
+will not restore classification and the decoder or a future snapshot-specific
 calibration phase must be enhanced.
 
 ## Installation
@@ -697,8 +786,12 @@ The test suite has two tiers:
   personal game-session recordings and are **not part of the public
   repository** — these tests skip automatically when the files are absent.
 
-If you have local fixtures in `tests/fixtures/`, regenerate the baselines
-after an intentional decoding change and review the diff:
+If you have local fixtures in `tests/fixtures/`, an older fixture without extra
+metadata replays against the historical July 6 profile. For a fixture from a
+newer patch, place the exact profile beside it using the same stem and the
+suffix `.profile.json` (for example, `capture.pcapng` plus
+`capture.profile.json`). Then regenerate the baselines after an intentional
+decoding change and review the diff:
 
 ```powershell
 python scripts/regenerate_baselines.py

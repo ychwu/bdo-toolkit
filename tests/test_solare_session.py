@@ -104,7 +104,7 @@ def _install_live_fakes(
     runtime_error: Optional[BaseException] = None,
     confirmation_stats: Optional[CaptureStats] = None,
     final_stats: Optional[CaptureStats] = None,
-    complete_on_refresh: bool = False,
+    complete_on_candidate_idle: bool = False,
 ) -> dict[str, Any]:
     state: dict[str, Any] = {
         "captures": [],
@@ -189,17 +189,26 @@ def _install_live_fakes(
             if (
                 complete_after is not None
                 and self.observed >= complete_after
-                and not complete_on_refresh
+                and not complete_on_candidate_idle
             ):
                 self._confirm()
 
         def refresh(self) -> None:
             if (
-                complete_on_refresh
+                complete_on_candidate_idle
                 and complete_after is not None
                 and self.observed >= complete_after
             ):
                 self._confirm()
+
+        def service_candidate_idle(self, _now: float) -> bool:
+            if (
+                complete_on_candidate_idle
+                and complete_after is not None
+                and self.observed >= complete_after
+            ):
+                self._confirm()
+            return self.complete
 
     def fake_packet_handler(collector: Any):
         sequence = 10_000
@@ -496,6 +505,23 @@ def test_live_session_manual_stop_returns_best_result(
     assert session.poll(timeout=0) is None
 
 
+def test_preconfirmation_tcp_gap_emits_one_fail_closed_warning() -> None:
+    session = LiveSolareSession()
+    collector = session_module.SolareFrameCollector((8889,))
+    collector.tcp_gap_resets = 2
+    session._collector = collector
+
+    session._announce_tcp_gap_loss()
+    session._announce_tcp_gap_loss()
+
+    update = session._update_queue.get_nowait()
+    assert update.kind is SolareUpdateKind.WARNING
+    assert "TCP reassembly reset 2 times" in update.message
+    assert "remain fail-closed" in update.message
+    assert "fresh capture" in update.message
+    assert session._update_queue.empty()
+
+
 def test_keep_listening_preserves_health_latched_at_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -576,14 +602,14 @@ def test_confirmation_health_is_latched_before_snapshot_callback(
     assert "already-confirmed snapshot remains valid" in (result.message or "")
 
 
-def test_live_session_auto_stops_when_idle_refresh_confirms_final_window(
+def test_live_session_auto_stops_when_candidate_idle_confirms_final_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_live_fakes(
         monkeypatch,
         packets=(_generic_stream(0x1100),),
         complete_after=1,
-        complete_on_refresh=True,
+        complete_on_candidate_idle=True,
     )
     session = LiveSolareSession()
 
@@ -593,6 +619,81 @@ def test_live_session_auto_stops_when_idle_refresh_confirms_final_window(
     assert result is not None and result.complete
     assert session.stopped
     assert session.stop_reason == "complete-snapshot"
+
+
+def test_drained_clock_service_waits_for_decoder_backlog() -> None:
+    class RecordingCollector:
+        def __init__(self) -> None:
+            self.service_calls = 0
+            self.tcp_gap_resets = 0
+
+        def service_gaps(self, _now: float) -> int:
+            self.service_calls += 1
+            return 0
+
+    class RecordingTracker:
+        complete = False
+
+        def __init__(self) -> None:
+            self.service_calls = 0
+
+        def service_candidate_idle(self, _now: float) -> bool:
+            self.service_calls += 1
+            return False
+
+    session = LiveSolareSession()
+    collector = RecordingCollector()
+    tracker = RecordingTracker()
+    session._collector = collector  # type: ignore[assignment]
+    session._tracker = tracker  # type: ignore[assignment]
+    session._packet_queue.put_nowait(object())
+
+    session._service_drained_clocks()
+
+    assert collector.service_calls == 0
+    assert tracker.service_calls == 0
+
+    session._packet_queue.get_nowait()
+    session._service_drained_clocks()
+
+    assert collector.service_calls == 1
+    assert tracker.service_calls == 1
+
+
+def test_drained_clock_services_quiet_tcp_gap_and_warns_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = LiveSolareSession()
+    collector = session_module.SolareFrameCollector((8889,))
+    session._collector = collector
+
+    collector.process_tcp_segment(
+        source_ip="198.51.100.10",
+        source_port=8889,
+        destination_ip="192.0.2.50",
+        destination_port=51000,
+        sequence=99,
+        payload=b"",
+        timestamp=100.0,
+        syn=True,
+    )
+    collector.process_tcp_segment(
+        source_ip="198.51.100.10",
+        source_port=8889,
+        destination_ip="192.0.2.50",
+        destination_port=51000,
+        sequence=101,
+        payload=b"x",
+        timestamp=100.1,
+    )
+    monkeypatch.setattr(session_module.time, "time", lambda: 102.0)
+
+    session._service_drained_clocks()
+
+    assert collector.tcp_gap_resets == 1
+    warning = session._update_queue.get_nowait()
+    assert warning.kind is SolareUpdateKind.WARNING
+    assert "remain fail-closed" in warning.message
 
 
 def test_live_session_refuses_to_overwrite_existing_capture(
@@ -1808,25 +1909,42 @@ def test_async_live_wait_timeout_keeps_session_reusable(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("operation", ["wait", "poll"])
 @pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
-def test_async_solare_stopped_fast_paths_validate_timeout(
+def test_async_solare_stopped_wait_ignores_timeout(
     monkeypatch: pytest.MonkeyPatch,
-    operation: str,
-    invalid_timeout: object,
+    invalid_timeout: Any,
 ) -> None:
     _install_live_fakes(monkeypatch)
 
     async def scenario() -> None:
         session = AsyncLiveSolareSession(stop_on_complete=False)
         await session.start()
+        result = await session.stop()
+
+        assert await session.wait(timeout=invalid_timeout) is result
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
+def test_async_solare_stopped_poll_ignores_timeout_while_draining(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_timeout: Any,
+) -> None:
+    _install_live_fakes(monkeypatch)
+
+    async def scenario() -> None:
+        session = AsyncLiveSolareSession(stop_on_complete=False)
+        await session.start()
+        ready = await session.poll(timeout=0.5)
+        assert ready is not None
+        assert ready.kind is SolareUpdateKind.CAPTURE_READY
         await session.stop()
 
-        with pytest.raises(ValueError):
-            if operation == "wait":
-                await session.wait(timeout=invalid_timeout)  # type: ignore[arg-type]
-            else:
-                await session.poll(timeout=invalid_timeout)  # type: ignore[arg-type]
+        finished = await session.poll(timeout=invalid_timeout)
+        assert finished is not None
+        assert finished.kind is SolareUpdateKind.FINISHED
+        assert await session.poll(timeout=invalid_timeout) is None
 
     asyncio.run(scenario())
 
@@ -1870,6 +1988,17 @@ def test_async_wait_background_failure_closes_executor(
 
         assert session.stopped
         assert session._closed
+        with pytest.raises(RuntimeError, match="capture thread failed"):
+            await session.wait(timeout=-1)
+
+        drained = []
+        with pytest.raises(RuntimeError, match="capture thread failed"):
+            while (update := await session.poll(timeout=-1)) is not None:
+                drained.append(update.kind)
+        assert drained == [
+            SolareUpdateKind.CAPTURE_READY,
+            SolareUpdateKind.FINISHED,
+        ]
 
     asyncio.run(scenario())
 
@@ -1890,10 +2019,10 @@ def test_cancelling_async_poll_stops_and_settles_capture(
                 await polling
             assert session.stopped
             assert session.stop_reason == "requested"
-            finished = await session.poll(timeout=0)
+            finished = await session.poll(timeout=-1)
             assert finished is not None
             assert finished.kind is SolareUpdateKind.FINISHED
-            assert await session.poll(timeout=0) is None
+            assert await session.poll(timeout=True) is None
 
     asyncio.run(scenario())
 

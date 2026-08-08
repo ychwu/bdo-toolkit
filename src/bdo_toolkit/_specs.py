@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from ._protocol import EventSpec
+from ._protocol import MAX_TARGET_MESSAGE_LENGTH, EventSpec
 from .profiles import OpcodeProfile, ProfileError
 
 
@@ -40,10 +40,92 @@ def event_specs_from_profile(profile: OpcodeProfile) -> LoadedSpecProfile:
                     "missing or invalid required fields"
                 )
 
+    normalized = tuple(_dedupe_event_specs(specs))
+    _validate_unambiguous_loot_specs(normalized, source=profile.path)
     return LoadedSpecProfile(
         active=True,
-        specs=tuple(_dedupe_event_specs(specs)),
+        specs=normalized,
         source=str(profile.path),
+    )
+
+
+def _validate_loot_profile_entries(
+    entries: Iterable[Mapping[str, object]],
+    *,
+    source: object,
+) -> None:
+    """Validate only the runtime ambiguity introduced by raw LOOT entries."""
+
+    specs: list[EventSpec] = []
+    for entry in entries:
+        try:
+            spec = _event_spec_from_entry("LOOT_PREVIEW", entry)
+        except ValueError as exc:
+            raise ProfileError(
+                f"Invalid LOOT_PREVIEW spec in {source}: {exc}"
+            ) from exc
+        if spec is None:
+            raise ProfileError(
+                f"Invalid LOOT_PREVIEW spec in {source}: "
+                "missing or invalid required fields"
+            )
+        specs.append(spec)
+
+    _validate_unambiguous_loot_specs(
+        _dedupe_event_specs(specs),
+        source=source,
+    )
+
+
+def _validate_unambiguous_loot_specs(
+    specs: Iterable[EventSpec],
+    *,
+    source: object,
+) -> None:
+    """Require one non-overlapping runtime length domain per LOOT opcode."""
+
+    grouped: dict[int, list[EventSpec]] = {}
+    for spec in specs:
+        if spec.label != "LOOT_PREVIEW":
+            continue
+        grouped.setdefault(spec.opcode, []).append(spec)
+
+    for opcode, candidates in grouped.items():
+        for index, first in enumerate(candidates):
+            first_low, first_high = _loot_message_length_domain(first)
+            for second in candidates[index + 1 :]:
+                second_low, second_high = _loot_message_length_domain(second)
+                if max(first_low, second_low) > min(first_high, second_high):
+                    continue
+                raise ProfileError(
+                    f"Ambiguous LOOT_PREVIEW specs in {source}: opcode "
+                    f"0x{opcode:04X} has distinct layouts with overlapping "
+                    "runtime message-length domains: "
+                    f"{_loot_layout_description(first)} and "
+                    f"{_loot_layout_description(second)}. Keep only the layout for "
+                    "the captured game patch, or recalibrate and replace the "
+                    "LOOT_PREVIEW family instead of merging it."
+                )
+
+
+def _loot_message_length_domain(spec: EventSpec) -> tuple[int, int]:
+    exact_length = spec.single_record_message_length
+    if exact_length is not None:
+        return exact_length, exact_length
+    return spec.min_message_length, MAX_TARGET_MESSAGE_LENGTH
+
+
+def _loot_layout_description(spec: EventSpec) -> str:
+    exact_length = spec.single_record_message_length
+    length = (
+        str(exact_length)
+        if exact_length is not None
+        else f"{spec.min_message_length}..{MAX_TARGET_MESSAGE_LENGTH}"
+    )
+    return (
+        f"(length={length}, item_id_offset={spec.item_offset}, "
+        f"quantity_offset={spec.quantity_offset}, "
+        f"item_instance_offset={spec.item_instance_offset!r})"
     )
 
 

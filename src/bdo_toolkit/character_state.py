@@ -937,7 +937,7 @@ def _frame_key(frame: BDOFrame) -> _FrameKey:
 
 @dataclass(frozen=True)
 class _InventoryRecordMetadata:
-    slot: int
+    slot: Optional[int]
     container_code: int
 
 
@@ -1156,6 +1156,52 @@ def _discover_inventory_tail_layout(
     if len(candidates) != 1:
         return None
     return candidates[0]
+
+
+def _discover_inventory_header_container_offset(
+    frame_groups: list[tuple[BDOFrame, list[BDOEvent], EventSpec, int]],
+) -> Optional[int]:
+    """Discover a wrapper-level container byte shared by every sibling record.
+
+    The August wrapper moved the known 00/10/18/0B container identity out of
+    each repeated-record tail and into the prefix immediately before item one.
+    Search the framed prefix instead of pinning that new position, and accept
+    it only when one unique byte column explains at least two container groups.
+    """
+    if len(frame_groups) < 2:
+        return None
+    search_end = min(spec.item_offset for _, _, spec, _ in frame_groups)
+    candidates: list[int] = []
+    for offset in range(5, search_end):
+        codes = []
+        for frame, _, _, _ in frame_groups:
+            if offset >= len(frame.message):
+                break
+            code = frame.message[offset]
+            if code not in _INVENTORY_CONTAINER_LABELS:
+                break
+            codes.append(code)
+        else:
+            if len(set(codes)) >= 2:
+                candidates.append(offset)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _inventory_header_metadata(
+    frame: BDOFrame,
+    group: list[BDOEvent],
+    container_offset: int,
+) -> Optional[dict[int, _InventoryRecordMetadata]]:
+    if container_offset >= len(frame.message):
+        return None
+    code = frame.message[container_offset]
+    if code not in _INVENTORY_CONTAINER_LABELS:
+        return None
+    return {
+        event.record_offset: _InventoryRecordMetadata(None, code)
+        for event in group
+        if event.record_offset is not None
+    }
 
 
 def _inventory_record_metadata(
@@ -1475,9 +1521,14 @@ class _CharacterStateAccumulator:
                 (frame, group, spec, stride)
             )
 
-        layouts = {
+        tail_layouts = {
             spec: _discover_inventory_tail_layout(frame_groups)
             for spec, frame_groups in multi_groups_by_spec.items()
+        }
+        header_container_offsets = {
+            spec: _discover_inventory_header_container_offset(frame_groups)
+            for spec, frame_groups in multi_groups_by_spec.items()
+            if tail_layouts.get(spec) is None
         }
         metadata_by_record: dict[tuple[_FrameKey, int], _InventoryRecordMetadata] = {}
         for key, group in groups.items():
@@ -1499,16 +1550,24 @@ class _CharacterStateAccumulator:
                     strides_by_key[key] = stride_for_group
             if spec_for_group is None or stride_for_group is None:
                 continue
-            layout = layouts.get(spec_for_group)
-            if layout is None:
-                continue
-            extracted = _inventory_record_metadata(
-                frame,
-                group,
-                spec_for_group,
-                stride_for_group,
-                layout,
-            )
+            tail_layout = tail_layouts.get(spec_for_group)
+            if tail_layout is not None:
+                extracted = _inventory_record_metadata(
+                    frame,
+                    group,
+                    spec_for_group,
+                    stride_for_group,
+                    tail_layout,
+                )
+            else:
+                header_offset = header_container_offsets.get(spec_for_group)
+                if header_offset is None:
+                    continue
+                extracted = _inventory_header_metadata(
+                    frame,
+                    group,
+                    header_offset,
+                )
             if extracted is None:
                 continue
             metadata_by_record.update(

@@ -61,6 +61,7 @@ from ._protocol import (
     storage_location,
 )
 from ._reassembly import FlowManager
+from ._specs import _validate_loot_profile_entries
 from .profiles import ProfileError, _validate_profile_entry, load_opcode_profile
 
 __all__ = [
@@ -97,7 +98,6 @@ CALIBRATION_ACTIONS = (
 DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES = 50_000
 DEFAULT_CALIBRATION_MAX_RETAINED_BYTES = 64 * 1024 * 1024
 _CALIBRATION_MAX_ACTIVE_FLOWS = 64
-_CALIBRATION_FLOW_IDLE_SECONDS = 300.0
 
 OPCODE_PROFILE_EVENTS = (
     "LOOT_PREVIEW",
@@ -826,9 +826,10 @@ class CalibrationSession:
     ``frames_retained``, ``frames_discarded``, or ``retention`` to surface
     eviction. A truncated result calibrates only the retained tail.
 
-    TCP reassembly is also bounded to 64 active flows. The least-recently used
-    flow is finalized on overflow, and flows idle for 300 seconds are eligible
-    for finalization when the manager is serviced.
+    TCP reassembly is also bounded to 64 active flows. Admitting another flow
+    finalizes the least-recently active state. FIN/RST or session finalization
+    releases remaining flow state; live calibration does not configure
+    time-based idle eviction.
 
     Used as a context manager, the capture is stopped on exit even if the
     block raises; call ``stop()`` inside the block to get the result.
@@ -978,7 +979,6 @@ class CalibrationSession:
                     self._retain_frame
                 ),
                 max_flows=_CALIBRATION_MAX_ACTIVE_FLOWS,
-                idle_timeout=_CALIBRATION_FLOW_IDLE_SECONDS,
                 track_flow_generations=True,
             )
             capture = LivePacketCapture(
@@ -1326,6 +1326,15 @@ def update_profile(
             backup_path=None,
             written=False,
         )
+
+    # Reject a LOOT merge that would make runtime layout selection impossible
+    # before creating a backup or replacing the destination file. Other
+    # calibration families may intentionally persist partial evidence that is
+    # not yet a runtime-decodable spec.
+    _validate_loot_profile_entries(
+        data["specs"].get("LOOT_PREVIEW", ()),
+        source=profile_path,
+    )
 
     data["profile_active"] = True
     data["updated_at"] = _utc_now_text()

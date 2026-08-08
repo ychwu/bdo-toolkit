@@ -21,6 +21,12 @@ from bdo_toolkit import replay_pcap  # noqa: E402
 
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures"
 BASELINE_DIR = REPO_ROOT / "tests" / "baselines"
+JULY6_OPCODE_PROFILE = REPO_ROOT / "tests" / "profiles" / "opcodes-2026-07-06.json"
+
+
+def opcode_profile_for_fixture(pcap: Path) -> Path:
+    sidecar = pcap.with_suffix(".profile.json")
+    return sidecar if sidecar.is_file() else JULY6_OPCODE_PROFILE
 
 
 def main() -> int:
@@ -28,7 +34,12 @@ def main() -> int:
     total = 0
     fixtures = sorted(FIXTURE_DIR.rglob("*.pcapng"))
     for pcap in fixtures:
-        events = list(replay_pcap(pcap))
+        events = list(
+            replay_pcap(
+                pcap,
+                opcode_profile=opcode_profile_for_fixture(pcap),
+            )
+        )
         out = (BASELINE_DIR / pcap.relative_to(FIXTURE_DIR)).with_suffix(".jsonl")
         out.parent.mkdir(parents=True, exist_ok=True)
         with out.open("w", encoding="utf-8", newline="\n") as fh:

@@ -4,6 +4,7 @@ from collections import Counter
 import pytest
 
 from bdo_toolkit import EventFilter, replay_pcap
+from bdo_toolkit.item_state import analyze_item_state_pcap
 from fixture_paths import fixture_path, has_fixture_pcaps
 
 
@@ -81,3 +82,109 @@ def test_initial_game_load_is_separated_from_live_storage_activity(tmp_path):
     live_filter = EventFilter(event_types={"item_received", "storage_delta"})
     assert sum(live_filter.allows(event) for event in events) == 245
 
+
+def _august7_profile(tmp_path):
+    profile = tmp_path / "opcodes-2026-08-07.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profile_active": True,
+                "specs": {
+                    "INVENTORY_TRANSFER": [
+                        {
+                            "event": "INVENTORY_TRANSFER",
+                            "opcode": "0x1424",
+                            "length": 255,
+                            "item_id_offset": 34,
+                            "quantity_offset": 38,
+                            "item_instance_offset": 69,
+                            "context_offset": 21,
+                        }
+                    ],
+                    "STORAGE_ITEM_DELTA": [
+                        {
+                            "event": "STORAGE_ITEM_DELTA",
+                            "opcode": "0x1C51",
+                            "length": 270,
+                            "item_id_offset": 44,
+                            "quantity_added_offset": 48,
+                            "destination_instance_offset": 79,
+                        }
+                    ],
+                    "SOURCE_STACK_DECREMENT": [
+                        {
+                            "event": "SOURCE_STACK_DECREMENT",
+                            "opcode": "0x1505",
+                            "length": 47,
+                            "quantity_removed_offset": 26,
+                            "source_instance_offset": 39,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return profile
+
+
+@requires_fixtures
+def test_august_character_switch_hydration_is_not_live_activity(tmp_path):
+    try:
+        capture = fixture_path("character-switch-2026-08-07.pcapng")
+    except FileNotFoundError:
+        pytest.skip("August 7 private character-switch fixture not present")
+    profile = _august7_profile(tmp_path)
+
+    events = list(replay_pcap(capture, opcode_profile=profile))
+    counts = Counter(event.event_type for event in events)
+
+    assert counts == {"inventory_snapshot": 78, "storage_snapshot": 2452}
+    assert not any(EventFilter.activity().allows(event) for event in events)
+    assert {event.storage_id for event in events if event.event_type == "storage_snapshot"} >= {
+        0x0005,
+        0x0020,
+        0x02B5,
+    }
+
+    state = analyze_item_state_pcap(capture, opcode_profile=profile)
+    assert state.inventory.serialized_records == 78
+    assert state.inventory.currency_balance_records == 4
+    assert state.inventory.unclassified_records == 0
+    assert state.storage_snapshot_records == 2452
+    assert len(state.storages) == 29
+    assert state.storage_named("Arehaza").occupied_stacks == 25
+
+
+@requires_fixtures
+def test_august_controlled_deposit_keeps_town_and_opcode_free_worker_origin(tmp_path):
+    try:
+        capture = fixture_path("velia_7003_qty5.pcapng")
+    except FileNotFoundError:
+        pytest.skip("August 7 private controlled-deposit fixture not present")
+    profile = _august7_profile(tmp_path)
+
+    events = list(replay_pcap(capture, opcode_profile=profile))
+
+    assert [
+        (event.item_id, event.quantity, event.source, event.deposit_origin)
+        for event in events
+    ] == [
+        (7003, 5, "Velia", "manual"),
+        (4003, 20, "Heidel", "worker"),
+        (7702, 31, "Velia", "worker"),
+    ]
+    workers = [event for event in events if event.deposit_origin == "worker"]
+    assert all(
+        event.extra["deposit_origin_evidence"]["companion_chain"]["known_family"]
+        is False
+        for event in workers
+    )
+    assert all(
+        event.extra["deposit_origin_evidence"]["companion_chain"][
+            "confirmed_family"
+        ]
+        is True
+        for event in workers
+    )

@@ -24,6 +24,7 @@ from bdo_toolkit._protocol import (
     PacketContext,
 )
 from bdo_toolkit.events import BDOEvent, Flow
+from bdo_toolkit.profiles import default_profile_path
 from fixture_paths import fixture_path, has_fixture_pcaps
 
 requires_fixtures = pytest.mark.skipif(
@@ -37,7 +38,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
         capture = fixture_path("fullcapture.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
-    profile = Path(__file__).resolve().parents[1] / "opcodes.local"
+    profile = default_profile_path()
 
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
 
@@ -106,7 +107,7 @@ def test_character_state_formatter_separates_items_currencies_and_capacity():
         capture = fixture_path("fullcapture.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
-    profile = Path(__file__).resolve().parents[1] / "opcodes.local"
+    profile = default_profile_path()
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
 
     output = format_character_state(state)
@@ -137,7 +138,7 @@ def test_july17_character_switch_classifies_exact_inventory_state():
         capture = fixture_path("character-switch-2026-07-17-01.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private character-switch fixture not present")
-    profile = Path(__file__).resolve().parents[1] / "opcodes.local"
+    profile = default_profile_path()
 
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
     inventory = state.inventory
@@ -360,6 +361,96 @@ def test_inventory_tail_layout_fails_closed_for_an_unknown_container_code():
     ]
 
     assert character_state_module._discover_inventory_tail_layout(groups) is None
+
+
+def _synthetic_inventory_header_group(
+    *,
+    sequence: int,
+    container_code: int,
+) -> tuple[BDOFrame, list[BDOEvent], EventSpec, int]:
+    item_offset = 34
+    stride = 230
+    count = 3
+    base_length = 255
+    message_length = base_length + (count - 1) * stride
+    message = bytearray(message_length)
+    message[:2] = message_length.to_bytes(2, "little")
+    message[3:5] = (0x1424).to_bytes(2, "little")
+    message[21:25] = CHARACTER_LOAD_CONTEXT
+    message[33] = container_code
+    flow_key = FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000)
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    records: list[BDOEvent] = []
+    for index in range(count):
+        record_offset = item_offset + index * stride
+        records.append(
+            BDOEvent(
+                event_type="inventory_snapshot",
+                timestamp=float(sequence),
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=0x1424,
+                message_length=message_length,
+                item_instance=f"header-instance-{sequence}-{index}",
+                record_index=index + 1,
+                record_count=count,
+                record_offset=record_offset,
+                extra={"stream_sequence": sequence},
+            )
+        )
+    frame = BDOFrame(
+        index=sequence,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=float(sequence),
+            flow=flow_key,
+            stream_start=sequence,
+        ),
+        stream_sequence=sequence,
+    )
+    spec = EventSpec(
+        label="INVENTORY_TRANSFER",
+        opcode=0x1424,
+        item_offset=item_offset,
+        quantity_offset=item_offset + 4,
+        min_message_length=base_length,
+        source_context_offset=21,
+        item_instance_offset=69,
+        single_record_message_length=base_length,
+    )
+    return frame, records, spec, stride
+
+
+def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
+    groups = [
+        _synthetic_inventory_header_group(
+            sequence=400 + code,
+            container_code=code,
+        )
+        for code in (0x00, 0x0B)
+    ]
+
+    assert character_state_module._discover_inventory_tail_layout(groups) is None
+    offset = character_state_module._discover_inventory_header_container_offset(
+        groups
+    )
+    assert offset == 33
+
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(groups[0][2],),
+    )
+    summary = accumulator._inventory_summary(
+        tuple(frame for frame, _, _, _ in groups),
+        tuple(event for _, records, _, _ in groups for event in records),
+    )
+
+    assert summary.inferred_strides == (230,)
+    assert summary.unclassified_records == 0
+    assert summary.container(0x00).occupied_stacks == 3
+    assert summary.container(0x0B).occupied_stacks == 3
+    assert all(item.inventory_slot is None for item in summary.items)
 
 
 def test_inventory_summary_selects_unique_geometry_from_same_opcode_layouts():

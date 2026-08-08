@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import replace
@@ -16,6 +17,7 @@ from ._constants import (
     DISCOVERY_MIN_RICH_RECORDS,
     DISCOVERY_RETENTION_MAX_BYTES,
     DISCOVERY_RETENTION_MAX_FRAMES,
+    LIVE_CANDIDATE_IDLE_SECONDS,
 )
 from ._discovery import (
     _DiscoveryAnalysisCache,
@@ -101,6 +103,7 @@ class LiveSolareDiscoveryTracker:
         self._confirmed_frames: Optional[tuple[BDOFrame, ...]] = None
         self._dirty = False
         self._tail_finalized = False
+        self._last_candidate_activity_at: Optional[float] = None
         self.result = SolareDiscoveryResult(0, ())
         self._best_result = self.result
 
@@ -115,6 +118,7 @@ class LiveSolareDiscoveryTracker:
         ):
             return
 
+        self._last_candidate_activity_at = time.monotonic()
         rolled_over = self._make_room_for(frame)
         if self.complete:
             return
@@ -278,6 +282,25 @@ class LiveSolareDiscoveryTracker:
             )
         self._announce_progress()
         return self.result
+
+    def service_candidate_idle(self, now: float) -> bool:
+        """Finalize a quiet candidate tail despite unrelated game traffic.
+
+        Returns whether this call changed the tracker from provisional to
+        structurally complete. The ordinary discovery checks—including rich-
+        prefix rejection—remain authoritative at this boundary.
+        """
+
+        if (
+            self.complete
+            or self._tail_finalized
+            or self._last_candidate_activity_at is None
+            or now - self._last_candidate_activity_at
+            < LIVE_CANDIDATE_IDLE_SECONDS
+        ):
+            return False
+        self.refresh()
+        return self.complete
 
     def _make_room_for(self, frame: BDOFrame) -> bool:
         if (

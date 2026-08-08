@@ -276,7 +276,11 @@ class AsyncLiveSolareSession:
     async def wait(
         self, timeout: Optional[float] = None
     ) -> Optional[SolareCaptureResult]:
-        """Await automatic completion or a timeout."""
+        """Await automatic completion or a timeout.
+
+        After completed stop, ``timeout`` is ignored and terminal state is
+        returned immediately.
+        """
 
         if self._inside_update_callback():
             raise RuntimeError(
@@ -291,7 +295,7 @@ class AsyncLiveSolareSession:
         try:
             if self._session.stopped:
                 self._shutdown()
-                return self._session.wait(timeout=timeout)
+                return self._session.wait(timeout=0)
             future = self._submit(partial(self._session.wait, timeout))
             try:
                 result = await _await_preserving_future(future)
@@ -329,7 +333,10 @@ class AsyncLiveSolareSession:
             self._wait_active = False
 
     async def poll(self, timeout: Optional[float] = None) -> Optional[SolareUpdate]:
-        """Await one structured progress update."""
+        """Await one structured progress update.
+
+        After completed stop, ``timeout`` is ignored while progress drains.
+        """
 
         if self._inside_update_callback():
             raise RuntimeError(
@@ -340,7 +347,9 @@ class AsyncLiveSolareSession:
             raise RuntimeError("live Solare session was not started")
         if self._poll_active:
             raise RuntimeError("async live Solare session supports one consumer")
-        _validate_timeout(timeout, name="timeout")
+        stopped_at_entry = self._session.stopped
+        if not stopped_at_entry:
+            _validate_timeout(timeout, name="timeout")
         self._poll_active = True
         try:
             if self._pending_updates:
@@ -349,7 +358,7 @@ class AsyncLiveSolareSession:
                 )
             if self._session.stopped:
                 self._shutdown()
-                return self._session.poll(timeout=timeout)
+                return self._session.poll(timeout=0)
             future = self._submit(partial(self._session.poll, timeout))
             try:
                 update = await _await_preserving_future(future)
