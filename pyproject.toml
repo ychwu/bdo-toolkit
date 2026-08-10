@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdo-toolkit"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Passive, read-only BDO packet parsing toolkit for app developers."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,3 +49,6 @@ testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 bdo_toolkit = ["py.typed", "data/*.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "bdo_toolkit._version.__version__" }

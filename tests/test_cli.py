@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from bdo_toolkit import cli
+from bdo_toolkit import __version__, cli
 from bdo_toolkit._protocol import FlowKey
 from bdo_toolkit.calibration import CalibrationResult, MessageSpec
 from bdo_toolkit.origin_learning import CompanionObservation
@@ -153,7 +153,7 @@ def test_cli_version(capsys):
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["--version"])
     assert exc_info.value.code == 0
-    assert "bdo-toolkit 0.1.0" in capsys.readouterr().out
+    assert f"bdo-toolkit {__version__}" in capsys.readouterr().out
 
 
 def _complete_solare_result() -> SolareCaptureResult:

@@ -1,7 +1,5 @@
 """Public API for the passive BDO Toolkit."""
 
-from importlib.metadata import PackageNotFoundError, version
-
 from ._async_sessions import AsyncCalibrationSession, AsyncLiveCaptureSession
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from ._capture_runtime import CaptureEndpoint
@@ -35,11 +33,7 @@ from .origin_learning import (
 )
 from .writers import ConsoleEventWriter, JsonlEventWriter
 from . import solare
-
-try:
-    __version__ = version("bdo-toolkit")
-except PackageNotFoundError:  # source tree without installed metadata
-    __version__ = "0.1.0"
+from ._version import __version__
 
 __all__ = [
     "AsyncCalibrationSession",

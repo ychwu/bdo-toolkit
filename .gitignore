@@ -1,6 +1,13 @@
 # Project docs
 docs/
 
+# Local agent and release workflow
+AGENTS.md
+RELEASING.md
+.changesets/
+.agents/
+.codex/
+
 # Personal packet captures and their decoded baselines (local-only; tests
 # that need them skip automatically when absent)
 tests/fixtures/
