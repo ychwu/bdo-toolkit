@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable, NamedTuple, Optional
-
-from typing import Callable
+from typing import Callable, Iterable, Optional
 
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
@@ -15,30 +13,15 @@ from ._protocol import (
     EventSpec,
     LootEvent,
     PacketContext,
-    storage_location,
 )
 
 _TRANSFER_RECORD_MARKER = b"\x00" * 4 + b"\xff" * 8
 _TRANSFER_RECORD_MARKER_DELTA = 8
 
-
-class _StorageWrapperLayout(NamedTuple):
-    """Observed item-relative metadata positions for one storage wrapper."""
-
-    count_delta: int
-    destination_delta: int
-    mode_delta: int
-    token_start_delta: int
-    token_end_delta: int
-
-
-# July 17 and August 7 use the same item records but substantially different
-# wrapper headers.  Keep both generations explicit while count geometry below
-# is discovered structurally rather than selected by one pinned count offset.
-_STORAGE_WRAPPER_LAYOUTS = (
-    _StorageWrapperLayout(20, 9, 30, 29, 21),
-    _StorageWrapperLayout(39, 36, 5, 13, 5),
-)
+MessageObserver = Callable[
+    [int, int, str, int, PacketContext, Optional[int]],
+    object,
+]
 
 
 def _structural_instance_offset(spec: EventSpec) -> Optional[int]:
@@ -190,208 +173,80 @@ def _declared_inventory_snapshot_record_deltas(
     return next(iter(geometries.values()))
 
 
-def _storage_layout_fields(
-    spec: EventSpec,
-    message: bytes,
-    layout: _StorageWrapperLayout,
-) -> Optional[tuple[int, int, bytes, int, bytes]]:
-    """Return positioned count/destination/mode/token fields for one layout."""
-    if spec.label != "INVENTORY_TO_STORAGE" or spec.source_context_length != 4:
-        return None
-
-    count_offset = spec.item_offset - layout.count_delta
-    destination_offset = spec.item_offset - layout.destination_delta
-    mode_offset = spec.item_offset - layout.mode_delta
-    token_start = spec.item_offset - layout.token_start_delta
-    token_end = spec.item_offset - layout.token_end_delta
-    if spec.source_context_offset not in (None, destination_offset):
-        return None
-    if (
-        min(count_offset, destination_offset, mode_offset, token_start) < 5
-        or count_offset + 2 > len(message)
-        or destination_offset + 4 > len(message)
-        or mode_offset >= len(message)
-        or token_end > len(message)
-        or token_start >= token_end
-    ):
-        return None
-    return (
-        count_offset,
-        int.from_bytes(message[count_offset : count_offset + 2], "little"),
-        bytes(message[destination_offset : destination_offset + 4]),
-        message[mode_offset],
-        bytes(message[token_start:token_end]),
-    )
-
-
-def _storage_operation(mode: int, token: bytes) -> str:
-    if mode == 2 and token == b"\x00" * 8:
-        return "snapshot"
-    if mode == 1 and token != b"\x00" * 8:
-        return "live"
-    return "unknown"
-
-
-def _known_storage_operation_count_offsets(
-    spec: EventSpec,
-    message: bytes,
-) -> tuple[int, ...]:
-    offsets: set[int] = set()
-    for layout in _STORAGE_WRAPPER_LAYOUTS:
-        fields = _storage_layout_fields(spec, message, layout)
-        if fields is None:
-            continue
-        count_offset, _, _, mode, token = fields
-        if _storage_operation(mode, token) != "unknown":
-            offsets.add(count_offset)
-    return tuple(sorted(offsets))
-
-
 def _declared_storage_record_deltas(
     spec: EventSpec,
     message: bytes,
 ) -> Optional[list[int]]:
-    """Use a storage wrapper's declared count to prove its record geometry.
+    """Validate storage records against the calibration-learned count field.
 
-    Storage count positions moved between the July and August wrappers. Search
-    the framed prefix for a declaration whose count, calibrated single-record
-    base, and full record validation imply one unambiguous geometry. This is
-    the same fail-closed principle used by inventory hydration and avoids
-    pinning a newly observed count offset after every patch.
-
-    ``None`` means this is not demonstrably the declared-count layout and the
-    older marker-based validator may still inspect it.  An empty list means
-    the layout was proven but at least one declared record was invalid, so the
-    whole message must fail closed rather than emitting a partial batch.
+    The count position is profile data discovered from record geometry; it is
+    not a decoder layout constant.  A different header byte can coincidentally
+    equal the right count, so production decoding must never select a count
+    column independently for each message.  Missing authority or any
+    contradiction returns an empty list and therefore cannot fall back to
+    marker-only partial decoding.
     """
     if spec.label != "INVENTORY_TO_STORAGE":
         return None
-    known_count_offsets = _known_storage_operation_count_offsets(spec, message)
-    strict_declared_layout = bool(known_count_offsets)
-
-    def invalid_geometry() -> Optional[list[int]]:
-        # Once the current wrapper layout is identified, a contradictory
-        # declaration is malformed rather than an invitation to reinterpret
-        # the same bytes through the legacy marker fallback.
-        return [] if strict_declared_layout else None
-
     instance_offset = _structural_instance_offset(spec)
     base_length = spec.single_record_message_length
-    if instance_offset is None or base_length is None:
-        return None
+    count_offset = spec.record_count_offset
+    if instance_offset is None or base_length is None or count_offset is None:
+        return []
+    if count_offset < 5 or count_offset + 2 > min(spec.item_offset, len(message)):
+        return []
 
-    search_end = min(spec.item_offset, len(message))
-    count_offsets: Iterable[int] = (
-        known_count_offsets
-        if known_count_offsets
-        else range(5, max(5, search_end - 1))
+    declared_count = int.from_bytes(
+        message[count_offset : count_offset + 2],
+        "little",
     )
-    geometries: dict[tuple[int, Optional[int]], list[int]] = {}
-    for count_offset in count_offsets:
-        declared_count = int.from_bytes(
-            message[count_offset : count_offset + 2], "little"
-        )
-        if declared_count <= 0:
-            continue
-
-        if declared_count == 1:
-            if len(message) != base_length:
-                continue
-            stride: Optional[int] = None
-            deltas = [0]
-        else:
-            extra_length = len(message) - base_length
-            divisor = declared_count - 1
-            if extra_length <= 0 or extra_length % divisor:
-                continue
-
-            stride = extra_length // divisor
-            prefix_length = base_length - stride
-            if prefix_length < 5 or count_offset + 2 > prefix_length:
-                continue
-            if len(message) - prefix_length != declared_count * stride:
-                continue
-
-            # All calibrated fields must fit wholly inside one inferred record.
-            # This rejects coincidental integers in an older wrapper's header.
-            relative_offsets = (
-                spec.item_offset - prefix_length,
-                spec.quantity_offset - prefix_length,
-                instance_offset - prefix_length,
-            )
-            if min(relative_offsets) < 0:
-                continue
-            required_record_end = max(
-                relative_offsets[0] + 4,
-                relative_offsets[1] + 4,
-                relative_offsets[2] + 8,
-            )
-            if required_record_end > stride:
-                continue
-            deltas = [stride * index for index in range(declared_count)]
-
-        if not all(
-            _has_plausible_transfer_record_values(
-                message,
-                item_offset=spec.item_offset + delta,
-                quantity_offset=spec.quantity_offset + delta,
-                instance_offset=instance_offset + delta,
-            )
-            for delta in deltas
+    if declared_count <= 0:
+        return []
+    if declared_count == 1:
+        if len(message) != base_length:
+            return []
+        deltas = [0]
+    else:
+        extra_length = len(message) - base_length
+        divisor = declared_count - 1
+        if extra_length <= 0 or extra_length % divisor:
+            return []
+        stride = extra_length // divisor
+        prefix_length = base_length - stride
+        if (
+            prefix_length < 5
+            or count_offset + 2 > prefix_length
+            or len(message) - prefix_length != declared_count * stride
         ):
-            continue
-        geometries[(declared_count, stride)] = deltas
+            return []
 
-    if len(geometries) == 1:
-        return next(iter(geometries.values()))
-    return invalid_geometry()
-
-
-def _storage_wrapper_metadata(
-    spec: EventSpec,
-    message: bytes,
-    source_context_candidate: Optional[bytes],
-    declared_deltas: Optional[list[int]],
-) -> tuple[Optional[int], Optional[str], Optional[bytes]]:
-    """Decode metadata from one unambiguous observed storage-wrapper layout."""
-    if not declared_deltas:
-        return None, None, None
-
-    candidates: dict[
-        tuple[int, str, bytes], tuple[int, str, bytes]
-    ] = {}
-    unpublished_unknown_layout = False
-    expected_count = len(declared_deltas)
-    for layout in _STORAGE_WRAPPER_LAYOUTS:
-        fields = _storage_layout_fields(spec, message, layout)
-        if fields is None:
-            continue
-        _, declared_count, positioned_context, mode, token = fields
-        if declared_count != expected_count:
-            continue
-        context_candidate = (
-            source_context_candidate
-            if source_context_candidate is not None
-            else positioned_context
+        relative_offsets = (
+            spec.item_offset - prefix_length,
+            spec.quantity_offset - prefix_length,
+            instance_offset - prefix_length,
         )
-        if len(context_candidate) != 4:
-            continue
-        storage_id = int.from_bytes(context_candidate, "little")
-        operation = _storage_operation(mode, token)
-        if operation == "unknown" and storage_location(storage_id) is None:
-            # An unfamiliar discriminator cannot authenticate an arbitrary
-            # uint32 as a destination. Keep the record neutral without
-            # publishing the candidate key.
-            unpublished_unknown_layout = True
-            continue
-        candidate = (storage_id, operation, bytes(context_candidate))
-        candidates[candidate] = candidate
+        if min(relative_offsets) < 0:
+            return []
+        required_record_end = max(
+            relative_offsets[0] + 4,
+            relative_offsets[1] + 4,
+            relative_offsets[2] + 8,
+        )
+        if required_record_end > stride:
+            return []
+        deltas = [stride * index for index in range(declared_count)]
 
-    if len(candidates) == 1:
-        return next(iter(candidates.values()))
-    if not candidates and unpublished_unknown_layout:
-        return None, "unknown", None
-    return None, None, None
+    if not all(
+        _has_plausible_transfer_record_values(
+            message,
+            item_offset=spec.item_offset + delta,
+            quantity_offset=spec.quantity_offset + delta,
+            instance_offset=instance_offset + delta,
+        )
+        for delta in deltas
+    ):
+        return []
+    return deltas
 
 
 def _structural_record_deltas(
@@ -403,10 +258,10 @@ def _structural_record_deltas(
 
     Profiles calibrated from a single action know the first-record offsets and
     base message length but cannot know the distance to a record that was never
-    observed. Prefer a wrapper-declared count when its full geometry and every
-    record validate. Older wrappers fall back to the item-record marker and
-    relative instance offset. The base-length equation guards against
-    marker-like bytes elsewhere in the same message.
+    observed. Storage wrappers use their calibration-owned count field above;
+    other transfer families may use their item-record marker and relative
+    instance offset. The base-length equation guards against marker-like bytes
+    elsewhere in the same message.
     """
     if declared_storage_deltas is not None:
         return declared_storage_deltas
@@ -636,10 +491,12 @@ class TargetMessageScanner:
         self,
         callback: EventCallback,
         event_specs: Iterable[EventSpec],
+        message_observer: Optional[MessageObserver] = None,
     ) -> None:
         self._buffer = bytearray()
         self._buffer_start_sequence: Optional[int] = None
         self._callback = callback
+        self._message_observer = message_observer
         signature_groups: dict[bytes, list[EventSpec]] = {}
         for spec in event_specs:
             signature_groups.setdefault(spec.signature, []).append(spec)
@@ -789,7 +646,7 @@ class TargetMessageScanner:
                 else None
             )
 
-            valid_decodes: list[list[LootEvent]] = []
+            valid_decodes: list[tuple[EventSpec, list[LootEvent]]] = []
             for _, candidate_length, spec in complete_candidates:
                 source_context_candidate = None
                 if spec.source_context_offset is not None:
@@ -809,7 +666,38 @@ class TargetMessageScanner:
                     stream_sequence=stream_sequence,
                 )
                 if decoded_events is not None:
-                    valid_decodes.append(decoded_events)
+                    valid_decodes.append((spec, decoded_events))
+
+            storage_candidate = next(
+                (
+                    spec
+                    for _, _, spec in complete_candidates
+                    if spec.label == "INVENTORY_TO_STORAGE"
+                ),
+                None,
+            )
+            if storage_candidate is not None and self._message_observer is not None:
+                storage_decodes = tuple(
+                    decoded
+                    for decoded in valid_decodes
+                    if decoded[0].label == "INVENTORY_TO_STORAGE" and decoded[1]
+                )
+                # A different same-opcode layout that validates uniquely is not
+                # a rejected storage wrapper. It belongs to that other family.
+                if not (valid_decodes and not storage_decodes):
+                    decoded_storage = (
+                        storage_decodes[0]
+                        if len(valid_decodes) == 1 and len(storage_decodes) == 1
+                        else None
+                    )
+                    self._message_observer(
+                    storage_candidate.opcode,
+                    message_length,
+                    "decoded" if decoded_storage is not None else "rejected",
+                    len(decoded_storage[1]) if decoded_storage is not None else 0,
+                    context,
+                    stream_sequence,
+                )
 
             # Same-opcode layouts are alternatives, not an order-dependent
             # fallback list.  Decode only when exactly one layout proves its
@@ -818,7 +706,7 @@ class TargetMessageScanner:
                 self._discard_prefix(message_start + 1)
                 continue
 
-            for event in valid_decodes[0]:
+            for event in valid_decodes[0][1]:
                 self._callback(event, message)
 
             # Consume through the end of the decoded message and continue in
@@ -929,14 +817,25 @@ class TargetMessageScanner:
                 continue
             records.append((offset_delta, item_offset))
 
-        storage_id, storage_operation, inferred_context = _storage_wrapper_metadata(
-            spec,
-            message,
-            source_context_candidate,
-            declared_storage_deltas,
-        )
-        if source_context_candidate is None and inferred_context is not None:
-            source_context_candidate = inferred_context
+        storage_id: Optional[int] = None
+        storage_operation: Optional[str] = None
+        if spec.label == "INVENTORY_TO_STORAGE" and records:
+            if (
+                spec.source_context_offset is not None
+                and source_context_candidate is not None
+                and len(source_context_candidate) == 4
+            ):
+                # Calibration owns this column. Runtime never scans for a
+                # known-looking town key: an incomplete profile stays
+                # unresolved, and a new numeric ID stays attached to its true
+                # field for an explicit registry diagnostic.
+                storage_id = int.from_bytes(source_context_candidate, "little")
+            # Framing proves records and destination only.  Operation semantics
+            # are stateful: decrement evidence proves manual live activity,
+            # the shared-token companion chain proves worker live activity,
+            # and a hydration cohort proves snapshot state.  No patch-specific
+            # mode or token byte is consulted here.
+            storage_operation = "unknown"
 
         events: list[LootEvent] = []
         for record_index, (offset_delta, item_offset) in enumerate(records, 1):

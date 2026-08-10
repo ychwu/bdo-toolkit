@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import OrderedDict, deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 import math
@@ -27,11 +27,18 @@ from ._capture_runtime import (
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
+    BDOFrame,
+    CHARACTER_LOAD_CONTEXT,
     DEFAULT_SERVER_PORTS,
+    FlowKey,
     LootEvent,
+    PacketContext,
 )
-from ._specs import _parse_opcode, event_specs_from_profile
-from .events import BDOEvent
+from ._storage_destination_validation import StorageDestinationValidator
+from ._storage_hydration import StorageHydrationTracker
+from .diagnostics import DecoderDiagnostic, DecoderHealth
+from ._specs import LoadedSpecProfile, _parse_opcode, event_specs_from_profile
+from .events import BDOEvent, Flow
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
 from .profiles import (
@@ -44,6 +51,23 @@ from .profiles import (
 
 
 _PACKET_WORKER_STOP = object()
+_TARGET_FRAME_HISTORY_LIMIT = 4096
+_TargetFrameKey = tuple[FlowKey, int, Optional[int], float, int, int]
+_INVENTORY_BOUNDARY_COHORT_LIMIT = 64
+_InventoryBoundaryKey = tuple[FlowKey, int, int]
+
+
+@dataclass
+class _InventoryBoundaryState:
+    """One fully decoded inventory wrapper awaiting boundary evidence."""
+
+    frame_key: _TargetFrameKey
+    stream_end: int
+    raw_message: bytes
+    records: list[LootEvent]
+    accepted: bool
+
+
 _ACTIVE_ORIGIN_SESSIONS: ContextVar[tuple[object, ...]] = ContextVar(
     "bdo_toolkit_active_origin_session",
     default=(),
@@ -112,7 +136,15 @@ class LiveCaptureHealth:
         return result
 
 
-def _load_selected_profile(path: Path) -> OpcodeProfile:
+@dataclass(frozen=True)
+class _ProfileAuthority:
+    """One profile revision and its derived runtime decoder specifications."""
+
+    profile: OpcodeProfile
+    loaded_specs: LoadedSpecProfile
+
+
+def _load_profile_authority(path: Path) -> _ProfileAuthority:
     if not path.is_file():
         raise FileNotFoundError(f"Opcode profile does not exist: {path}")
     profile = load_opcode_profile(path)
@@ -121,7 +153,10 @@ def _load_selected_profile(path: Path) -> OpcodeProfile:
             f"Opcode profile is inactive: {path}. Activate or recalibrate it "
             "instead of silently falling back to another opcode authority."
         )
-    return profile
+    return _ProfileAuthority(
+        profile=profile,
+        loaded_specs=event_specs_from_profile(profile),
+    )
 
 
 def _decrement_specs(
@@ -199,7 +234,8 @@ def _needs_origin_tracking(
     if origin_observer is not None or event_filter is None:
         return True
     return event_filter.event_types is None or bool(
-        event_filter.event_types & {"storage_delta", "storage_record"}
+        event_filter.event_types
+        & {"storage_delta", "storage_record", "storage_snapshot"}
     )
 
 
@@ -223,23 +259,68 @@ class _EventCollector:
         on_event: Optional[Callable[[BDOEvent], None]] = None,
         opcode_profile: str | Path | None = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+        frame_observer: Optional[Callable[[BDOFrame], object]] = None,
+        on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
+        preflight: bool = True,
+        _profile_authority: Optional[_ProfileAuthority] = None,
     ) -> None:
-        profile_path = (
-            Path(opcode_profile)
-            if opcode_profile is not None
-            else default_profile_path()
-        )
-        profile = _load_selected_profile(profile_path)
-        loaded_specs = event_specs_from_profile(profile)
+        if _profile_authority is None:
+            profile_path = (
+                Path(opcode_profile)
+                if opcode_profile is not None
+                else default_profile_path()
+            )
+            authority = _load_profile_authority(profile_path)
+        else:
+            authority = _profile_authority
+        profile = authority.profile
+        loaded_specs = authority.loaded_specs
         self._events: deque[BDOEvent] = deque()
         self.event_filter = event_filter
         self.on_event = on_event
+        self.on_diagnostic = on_diagnostic
         self.profile_source = f"{loaded_specs.source} active profile"
+        self.event_specs = loaded_specs.specs
+        self._diagnostic_lock = Lock()
+        self._diagnostic_keys: set[tuple[str, Optional[int]]] = set()
+        self._storage_messages_observed = 0
+        self._storage_messages_decoded = 0
+        self._storage_records_decoded = 0
+        self._storage_destination_failures = 0
+        self._storage_geometry_failures = 0
+        self._diagnostics_emitted = 0
+        self._storage_incompatible = False
+        self._storage_destination_validator = StorageDestinationValidator()
+        self._generic_storage_frames: set[_TargetFrameKey] = set()
+        self._generic_storage_frame_order: deque[_TargetFrameKey] = deque()
+        self._accepted_storage_frames: set[_TargetFrameKey] = set()
+        self._accepted_storage_frame_order: deque[_TargetFrameKey] = deque()
+        self._generic_inventory_frames: set[_TargetFrameKey] = set()
+        self._generic_inventory_frame_order: deque[_TargetFrameKey] = deque()
+        self._inventory_boundary_states: OrderedDict[
+            _InventoryBoundaryKey, _InventoryBoundaryState
+        ] = OrderedDict()
+        self._storage_opcodes = frozenset(
+            spec.opcode
+            for spec in self.event_specs
+            if spec.label == "INVENTORY_TO_STORAGE"
+        )
+        self._inventory_transfer_opcodes = frozenset(
+            spec.opcode
+            for spec in self.event_specs
+            if spec.label == "INVENTORY_TRANSFER"
+        )
+        self._requested_sources = tuple(
+            sorted(event_filter.sources)
+            if event_filter is not None and event_filter.sources is not None
+            else ()
+        )
+        self._hydration = StorageHydrationTracker(self._deliver)
         self._tracker: Optional[DepositOriginTracker] = None
         if _needs_origin_tracking(event_filter, origin_observer):
             self._tracker = DepositOriginTracker(
                 decrement_specs=_decrement_specs(profile),
-                emit=self._deliver,
+                emit=self._after_origin,
                 origin_observer=origin_observer,
                 known_companion_families=_origin_companion_families(profile),
                 storage_delta_opcodes=(
@@ -249,18 +330,115 @@ class _EventCollector:
                 ),
             )
         tracker = self._tracker
+        observe_storage_messages = self._storage_is_requested() or tracker is not None
+
+        def observe_frame(frame: BDOFrame) -> None:
+            self._remember_generic_target_frame(frame)
+            if tracker is not None:
+                tracker.observe_frame(frame)
+            if frame_observer is not None:
+                frame_observer(frame)
+
         self.engine = PacketEngine(
             server_ports=server_ports,
             event_specs=loaded_specs.specs,
             on_event=self._handle_record,
-            frame_observer=(tracker.observe_frame if tracker is not None else None),
+            frame_observer=(
+                observe_frame
+                if tracker is not None
+                or frame_observer is not None
+                or self._storage_is_requested()
+                or self._inventory_snapshot_is_requested()
+                else None
+            ),
             stream_observer=(tracker.observe_stream if tracker is not None else None),
-            flow_close_observer=(tracker.close_flow if tracker is not None else None),
+            flow_close_observer=self._close_flow,
+            message_observer=(
+                self._observe_storage_message if observe_storage_messages else None
+            ),
         )
+        self._preflight_done = False
+        if preflight:
+            self.preflight()
 
     def _handle_record(self, record: LootEvent, raw_message: bytes) -> None:
+        is_storage = record.label == "INVENTORY_TO_STORAGE"
+        is_inventory_snapshot = (
+            record.label == "INVENTORY_TRANSFER"
+            and record.source_context_candidate == CHARACTER_LOAD_CONTEXT
+        )
+        if is_storage:
+            frame_key = (
+                record.context.flow,
+                record.context.flow_generation,
+                record.stream_sequence,
+                record.context.timestamp,
+                record.opcode,
+                record.message_length,
+            )
+            with self._diagnostic_lock:
+                if frame_key not in self._accepted_storage_frames:
+                    # Target-signature recovery may find a valid-looking
+                    # storage wrapper inside another BDO frame. Only a
+                    # decoder candidate that also matched the generic
+                    # top-level boundary may enter origin/hydration/event state.
+                    return
+        if is_inventory_snapshot:
+            for accepted_record, accepted_message in self._inventory_records_ready(
+                record,
+                raw_message,
+            ):
+                self._handle_accepted_record(accepted_record, accepted_message)
+            return
+        self._handle_accepted_record(record, raw_message)
+
+    def _handle_accepted_record(
+        self,
+        record: LootEvent,
+        raw_message: bytes,
+    ) -> None:
+        """Normalize and classify one record with proven message boundaries."""
+
+        is_storage = record.label == "INVENTORY_TO_STORAGE"
+        if is_storage:
+            self._revalidate_storage_destination(record, raw_message)
         event = toolkit_event_from_record(record)
-        if (
+        if is_storage:
+            with self._diagnostic_lock:
+                self._storage_records_decoded += 1
+                missing_destination = event.storage_id is None
+                unrecognized_destination = (
+                    event.storage_id is not None and event.storage_name is None
+                )
+                if missing_destination or unrecognized_destination:
+                    self._storage_destination_failures += 1
+                    self._storage_incompatible = True
+            if missing_destination:
+                self._emit_diagnostic(
+                    code="storage_destination_unavailable",
+                    opcode=event.opcode,
+                    message=(
+                        "A storage wrapper decoded, but its destination field "
+                        "did not resolve to a registered town. Recalibrate the "
+                        "inventory-to-storage action; source-filtered events "
+                        "may otherwise be omitted."
+                    ),
+                )
+            elif unrecognized_destination:
+                self._emit_diagnostic(
+                    code="storage_destination_unrecognized",
+                    opcode=event.opcode,
+                    message=(
+                        f"The calibrated storage destination field decoded ID "
+                        f"0x{event.storage_id:08X}, but that key is not in the "
+                        "town registry. Its numeric identity was preserved and "
+                        "its source was named UNKNOWN_STORAGE; update the "
+                        "registry or recalibrate before relying on source filters."
+                    ),
+                )
+        if event.event_type == "inventory_snapshot":
+            self._hydration.observe_inventory(event)
+        elif (
             self._tracker is not None
             and event.event_type in {"storage_delta", "storage_record"}
         ):
@@ -268,8 +446,161 @@ class _EventCollector:
             # on event_type/deposit_origin see any evidence-based promotion and
             # the final origin verdict.
             self._tracker.register(event, raw_message=raw_message)
+        elif event.event_type in {"storage_delta", "storage_record"}:
+            self._hydration.observe_storage(event)
         else:
             self._deliver(event)
+
+    def _inventory_records_ready(
+        self,
+        record: LootEvent,
+        raw_message: bytes,
+    ) -> tuple[tuple[LootEvent, bytes], ...]:
+        """Require a top-level frame or an exact adjacent target-wrapper pair.
+
+        The generic scanner can remain synchronized to a false outer-frame
+        chain after capture begins midstream. Two fully decoded inventory
+        wrappers that are exactly adjacent in one TCP generation recover that
+        historical case without restoring the unsafe "any nested signature"
+        rule. A lone unframed wrapper is retained only until another wrapper
+        proves adjacency; flow close/finalization discard it.
+        """
+
+        stream_sequence = record.stream_sequence
+        frame_key: _TargetFrameKey = (
+            record.context.flow,
+            record.context.flow_generation,
+            stream_sequence,
+            record.context.timestamp,
+            record.opcode,
+            record.message_length,
+        )
+        with self._diagnostic_lock:
+            top_level = frame_key in self._generic_inventory_frames
+            if stream_sequence is None:
+                return ((record, raw_message),) if top_level else ()
+
+            boundary_key: _InventoryBoundaryKey = (
+                record.context.flow,
+                record.context.flow_generation,
+                record.opcode,
+            )
+            state = self._inventory_boundary_states.pop(boundary_key, None)
+            ready: tuple[tuple[LootEvent, bytes], ...]
+
+            if state is not None and state.frame_key == frame_key:
+                if state.accepted:
+                    ready = ((record, raw_message),)
+                elif top_level:
+                    ready = tuple(
+                        (pending, state.raw_message) for pending in state.records
+                    ) + ((record, raw_message),)
+                    state.records.clear()
+                    state.accepted = True
+                else:
+                    state.records.append(record)
+                    ready = ()
+                self._inventory_boundary_states[boundary_key] = state
+                return ready
+
+            if state is not None and state.stream_end == stream_sequence:
+                ready = (
+                    tuple((pending, state.raw_message) for pending in state.records)
+                    + ((record, raw_message),)
+                )
+                accepted = True
+            elif top_level:
+                ready = ((record, raw_message),)
+                accepted = True
+            else:
+                ready = ()
+                accepted = False
+
+            self._inventory_boundary_states[boundary_key] = _InventoryBoundaryState(
+                frame_key=frame_key,
+                stream_end=(stream_sequence + record.message_length) & 0xFFFFFFFF,
+                raw_message=raw_message,
+                records=[] if accepted else [record],
+                accepted=accepted,
+            )
+            while (
+                len(self._inventory_boundary_states)
+                > _INVENTORY_BOUNDARY_COHORT_LIMIT
+            ):
+                self._inventory_boundary_states.popitem(last=False)
+            return ready
+
+    def _after_origin(self, event: BDOEvent) -> None:
+        """Give independent live evidence precedence over hydration inference."""
+
+        self._hydration.observe_storage(event)
+
+    def _revalidate_storage_destination(
+        self,
+        record: LootEvent,
+        raw_message: bytes,
+    ) -> None:
+        """Warn when cross-wrapper evidence disproves the profile's column."""
+
+        first_item_offset = record.record_offset
+        if first_item_offset is None:
+            return
+        matching_specs = tuple(
+            spec
+            for spec in self.event_specs
+            if spec.label == "INVENTORY_TO_STORAGE"
+            and spec.opcode == record.opcode
+            and spec.item_offset == first_item_offset
+        )
+        # Only record one lands at the configured item offset.  Multiple
+        # matching layouts would not identify which spec the scanner selected,
+        # so ambiguous profile state remains fail-neutral here.
+        if len(matching_specs) != 1:
+            return
+        spec = matching_specs[0]
+        mismatch = self._storage_destination_validator.observe(
+            flow=record.context.flow,
+            flow_generation=record.context.flow_generation,
+            opcode=record.opcode,
+            message=raw_message,
+            first_item_offset=first_item_offset,
+            configured_offset=spec.source_context_offset,
+        )
+        if mismatch is None:
+            return
+        with self._diagnostic_lock:
+            self._storage_incompatible = True
+        self._emit_diagnostic(
+            code="storage_destination_schema_mismatch",
+            opcode=record.opcode,
+            message=(
+                f"Cross-wrapper evidence from {mismatch.wrapper_count} storage "
+                f"wrappers and {mismatch.distinct_destinations} registered "
+                f"destinations uniquely proves the destination field at byte "
+                f"{mismatch.observed_offset}, but the active profile uses byte "
+                f"{mismatch.configured_offset}. Events were not relabeled; "
+                "recalibrate before relying on town names or source filters."
+            ),
+        )
+
+    def _close_flow(self, flow: FlowKey) -> None:
+        # Origin finalization may emit neutral records into the hydration
+        # tracker. Close that tracker only after those records arrive.
+        if self._tracker is not None:
+            self._tracker.close_flow(flow)
+        self._storage_destination_validator.close_flow(flow)
+        with self._diagnostic_lock:
+            for key in tuple(self._inventory_boundary_states):
+                if key[0] == flow:
+                    del self._inventory_boundary_states[key]
+        self._hydration.close_flow(
+            Flow(
+                source_ip=flow.source_ip,
+                source_port=flow.source_port,
+                destination_ip=flow.destination_ip,
+                destination_port=flow.destination_port,
+            )
+        )
 
     def _deliver(self, event: BDOEvent) -> None:
         if self.event_filter is not None and not self.event_filter.allows(event):
@@ -279,6 +610,210 @@ class _EventCollector:
         else:
             self._events.append(event)
 
+    @property
+    def decoder_health(self) -> DecoderHealth:
+        with self._diagnostic_lock:
+            status = (
+                "incompatible"
+                if self._storage_incompatible
+                else "compatible"
+                if self._storage_messages_decoded
+                else "not_observed"
+            )
+            return DecoderHealth(
+                storage_status=status,
+                storage_messages_observed=self._storage_messages_observed,
+                storage_messages_decoded=self._storage_messages_decoded,
+                storage_records_decoded=self._storage_records_decoded,
+                storage_destination_failures=self._storage_destination_failures,
+                storage_geometry_failures=self._storage_geometry_failures,
+                diagnostics_emitted=self._diagnostics_emitted,
+            )
+
+    def _storage_is_requested(self) -> bool:
+        if self.event_filter is None or self.event_filter.event_types is None:
+            return True
+        return bool(
+            self.event_filter.event_types
+            & {"storage_delta", "storage_record", "storage_snapshot"}
+        )
+
+    def _inventory_snapshot_is_requested(self) -> bool:
+        if self.event_filter is None or self.event_filter.event_types is None:
+            return True
+        return "inventory_snapshot" in self.event_filter.event_types
+
+    def preflight(self) -> None:
+        """Emit profile-level compatibility diagnostics exactly once."""
+
+        with self._diagnostic_lock:
+            if self._preflight_done:
+                return
+            self._preflight_done = True
+        self._preflight_storage_profile()
+
+    def _preflight_storage_profile(self) -> None:
+        if not self._storage_is_requested():
+            return
+        storage_specs = tuple(
+            spec
+            for spec in self.event_specs
+            if spec.label == "INVENTORY_TO_STORAGE"
+        )
+        if not storage_specs:
+            with self._diagnostic_lock:
+                self._storage_incompatible = True
+            self._emit_diagnostic(
+                code="storage_decoder_incompatible",
+                opcode=None,
+                message=(
+                    "The active opcode profile has no storage decoder. "
+                    "Run inventory-to-storage calibration before relying on "
+                    "storage events or town filters."
+                ),
+            )
+            return
+        for spec in storage_specs:
+            missing = []
+            if (
+                spec.source_context_offset is None
+                or spec.source_context_length != 4
+            ):
+                missing.append("destination field")
+            if spec.record_count_offset is None:
+                missing.append("record-count field")
+            if spec.storage_instance_offset is None:
+                missing.append("storage-instance field")
+            if spec.single_record_message_length is None:
+                missing.append("single-record length")
+            if not missing:
+                continue
+            with self._diagnostic_lock:
+                self._storage_incompatible = True
+            self._emit_diagnostic(
+                code="storage_decoder_incompatible",
+                opcode=spec.opcode,
+                message=(
+                    "The active storage profile is missing its calibrated "
+                    f"{' and '.join(missing)}. Recalibrate with two validated "
+                    "record counts (for example a single and an unstackable "
+                    "multi-record deposit) before relying on storage events "
+                    "or town filters."
+                ),
+            )
+
+    def _observe_storage_message(
+        self,
+        opcode: int,
+        message_length: int,
+        status: str,
+        record_count: int,
+        context: PacketContext,
+        stream_sequence: Optional[int],
+    ) -> None:
+        del record_count
+        frame_key = (
+            context.flow,
+            context.flow_generation,
+            stream_sequence,
+            context.timestamp,
+            opcode,
+            message_length,
+        )
+        rejected = status != "decoded"
+        with self._diagnostic_lock:
+            if frame_key not in self._generic_storage_frames:
+                return
+            self._storage_messages_observed += 1
+            if rejected:
+                self._storage_geometry_failures += 1
+                # The target scanner reports only a complete candidate that
+                # exactly matches a generic top-level frame boundary; nested
+                # signatures and uniquely valid same-opcode families are
+                # excluded before this callback. One rejected storage wrapper
+                # is therefore enough to tell a production app that its active
+                # profile is incompatible with observed traffic.
+                self._storage_incompatible = True
+            else:
+                self._storage_messages_decoded += 1
+                if frame_key not in self._accepted_storage_frames:
+                    self._accepted_storage_frames.add(frame_key)
+                    self._accepted_storage_frame_order.append(frame_key)
+                    while (
+                        len(self._accepted_storage_frame_order)
+                        > _TARGET_FRAME_HISTORY_LIMIT
+                    ):
+                        expired = self._accepted_storage_frame_order.popleft()
+                        self._accepted_storage_frames.discard(expired)
+        if rejected:
+            self._emit_diagnostic(
+                code="storage_decoder_incompatible",
+                opcode=opcode,
+                message=(
+                    f"Observed storage opcode 0x{opcode:04X} with length "
+                    f"{message_length}, but its calibrated count and record "
+                    "geometry did not validate. Recalibrate; if the warning "
+                    "persists, retain a diagnostic PCAP for decoder review."
+                ),
+            )
+
+    def _remember_generic_target_frame(self, frame: BDOFrame) -> None:
+        is_storage = frame.opcode in self._storage_opcodes
+        is_inventory = frame.opcode in self._inventory_transfer_opcodes
+        if not is_storage and not is_inventory:
+            return
+        key = (
+            frame.context.flow,
+            frame.context.flow_generation,
+            frame.stream_sequence,
+            frame.context.timestamp,
+            frame.opcode,
+            frame.length,
+        )
+        with self._diagnostic_lock:
+            if is_storage and key not in self._generic_storage_frames:
+                self._generic_storage_frames.add(key)
+                self._generic_storage_frame_order.append(key)
+                while (
+                    len(self._generic_storage_frame_order)
+                    > _TARGET_FRAME_HISTORY_LIMIT
+                ):
+                    expired = self._generic_storage_frame_order.popleft()
+                    self._generic_storage_frames.discard(expired)
+            if is_inventory and key not in self._generic_inventory_frames:
+                self._generic_inventory_frames.add(key)
+                self._generic_inventory_frame_order.append(key)
+                while (
+                    len(self._generic_inventory_frame_order)
+                    > _TARGET_FRAME_HISTORY_LIMIT
+                ):
+                    expired = self._generic_inventory_frame_order.popleft()
+                    self._generic_inventory_frames.discard(expired)
+
+    def _emit_diagnostic(
+        self,
+        *,
+        code: str,
+        opcode: Optional[int],
+        message: str,
+    ) -> None:
+        key = (code, opcode)
+        with self._diagnostic_lock:
+            if key in self._diagnostic_keys:
+                return
+            self._diagnostic_keys.add(key)
+            self._diagnostics_emitted += 1
+        callback = self.on_diagnostic
+        if callback is not None:
+            callback(
+                DecoderDiagnostic(
+                    code=code,
+                    message=message,
+                    opcode=opcode,
+                    requested_sources=self._requested_sources,
+                )
+            )
+
     def drain_events(self) -> Iterator[BDOEvent]:
         """Yield and remove all currently delivered events."""
         while self._events:
@@ -287,10 +822,14 @@ class _EventCollector:
     def flush_stale(self, now: float) -> None:
         if self._tracker is not None:
             self._tracker.flush_stale(now)
+        self._hydration.flush_stale(now)
 
     def finalize(self) -> None:
+        with self._diagnostic_lock:
+            self._inventory_boundary_states.clear()
         if self._tracker is not None:
             self._tracker.finalize_all()
+        self._hydration.finalize_all()
 
 
 def replay_pcap(
@@ -300,6 +839,7 @@ def replay_pcap(
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
     event_filter: Optional[EventFilter] = None,
     origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+    on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
 ) -> Iterator[BDOEvent]:
     """Replay a pcap/pcapng file and yield structured events.
 
@@ -316,6 +856,7 @@ def replay_pcap(
         event_filter=event_filter,
         opcode_profile=opcode_profile,
         origin_observer=origin_observer,
+        on_diagnostic=on_diagnostic,
     )
     for _ in iter_pcap_file(Path(path), collector.engine):
         yield from collector.drain_events()
@@ -347,6 +888,7 @@ class LiveCaptureSession:
         live_options: Optional[LiveCaptureOptions] = None,
         event_filter: Optional[EventFilter] = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+        on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
     ) -> None:
         if live_options is not None and not isinstance(live_options, LiveCaptureOptions):
             raise TypeError("live_options must be a LiveCaptureOptions or None")
@@ -360,6 +902,7 @@ class LiveCaptureSession:
             event_filter if event_filter is not None else EventFilter.activity()
         )
         self._origin_observer = origin_observer
+        self._on_diagnostic = on_diagnostic
 
         self._queue: Queue[BDOEvent] = Queue(
             maxsize=resolved_live_options.event_queue_size
@@ -470,6 +1013,13 @@ class LiveCaptureSession:
                 ),
             )
 
+    @property
+    def decoder_health(self) -> DecoderHealth:
+        """Protocol compatibility, independent of packet-capture integrity."""
+
+        collector = self._collector
+        return collector.decoder_health if collector is not None else DecoderHealth()
+
     def start(self) -> None:
         """Open capture and hand packets to a bounded decoder worker."""
         with self._cleanup_lock:
@@ -485,6 +1035,12 @@ class LiveCaptureSession:
                     if self._origin_observer is not None
                     else None
                 ),
+                on_diagnostic=(
+                    self._notify_diagnostic
+                    if self._on_diagnostic is not None
+                    else None
+                ),
+                preflight=False,
             )
 
             packet_handler = make_packet_handler(collector.engine)
@@ -514,6 +1070,12 @@ class LiveCaptureSession:
                 worker.start()
                 live_capture.start()
                 capture_started = True
+                # The session is now fully addressable, so a startup diagnostic
+                # callback may safely call request_stop(). stop()/poll() remain
+                # rejected by the shared decoder-callback guard.
+                preflight = getattr(collector, "preflight", None)
+                if preflight is not None:
+                    preflight()
 
                 monitor = Thread(
                     target=self._monitor_stop_request,
@@ -1020,6 +1582,17 @@ class LiveCaptureSession:
         finally:
             _ACTIVE_ORIGIN_SESSIONS.reset(token)
 
+    def _notify_diagnostic(self, diagnostic: DecoderDiagnostic) -> object:
+        callback = self._on_diagnostic
+        if callback is None:
+            return None
+        active_sessions = _ACTIVE_ORIGIN_SESSIONS.get()
+        token = _ACTIVE_ORIGIN_SESSIONS.set(active_sessions + (self,))
+        try:
+            return callback(diagnostic)
+        finally:
+            _ACTIVE_ORIGIN_SESSIONS.reset(token)
+
     def _inside_origin_observer(self) -> bool:
         return self in _ACTIVE_ORIGIN_SESSIONS.get()
 
@@ -1063,6 +1636,7 @@ def capture_live(
     event_filter: Optional[EventFilter] = None,
     capture_seconds: Optional[float] = None,
     origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+    on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
 ) -> Iterator[BDOEvent]:
     """Start passive live capture and yield structured events.
 
@@ -1078,6 +1652,7 @@ def capture_live(
         live_options=live_options,
         event_filter=event_filter,
         origin_observer=origin_observer,
+        on_diagnostic=on_diagnostic,
     )
     session.start()
     started_at = time.monotonic()

@@ -1,14 +1,17 @@
 ﻿"""Unit tests for engine behaviors the pcap fixtures do not exercise."""
 
+import dataclasses
 import random
 
-from bdo_toolkit._engine import PacketEngine
+from bdo_toolkit import EventFilter
+from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit import _engine as engine_module
 from bdo_toolkit._framing import FrameCollectorScanner, TargetMessageScanner
 from bdo_toolkit._protocol import (
     BDOFrame,
     EventSpec,
     FlowKey,
+    LootEvent,
     PacketContext,
     STORAGE_DELTA_CONTEXTS,
     source_label,
@@ -30,6 +33,11 @@ def test_source_label_unknown_candidate_stays_visible():
     unknown = bytes.fromhex("deadbeef")
     assert source_label(unknown, "Storage") == "UNKNOWN(0xdeadbeef)"
     assert source_label(unknown, None) == "UNKNOWN(0xdeadbeef)"
+
+
+def test_source_label_promotes_observed_remote_item_contexts():
+    assert source_label(bytes.fromhex("60260000")) == "Event Adventures"
+    assert source_label(bytes.fromhex("3e010000")) == "Magnus Remote Inventory"
 
 
 def _loot_preview_frame(item_id: int, quantity: int) -> bytes:
@@ -88,6 +96,38 @@ def _frame_context(sequence: int = 100) -> PacketContext:
         flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
         stream_start=sequence,
     )
+
+
+def test_promoted_remote_item_sources_reach_events_and_exact_filters():
+    observed = (
+        (bytes.fromhex("60260000"), "Event Adventures"),
+        (bytes.fromhex("3e010000"), "Magnus Remote Inventory"),
+    )
+
+    for raw_context, expected_source in observed:
+        event = toolkit_event_from_record(
+            LootEvent(
+                label="INVENTORY_TRANSFER",
+                opcode=0x1234,
+                item_id=7003,
+                quantity=1,
+                inventory_slot=None,
+                source_context_candidate=raw_context,
+                item_instance=None,
+                storage_instance=None,
+                message_length=64,
+                default_context=None,
+                context=_frame_context(),
+            )
+        )
+
+        assert event.event_type == "item_received"
+        assert event.source == expected_source
+        assert event.raw_context == f"0x{raw_context.hex()}"
+        assert EventFilter(sources={expected_source}).allows(event)
+        assert not EventFilter(
+            sources={f"UNKNOWN(0x{raw_context.hex()})"}
+        ).allows(event)
 
 
 def _slow_can_anchor_at_start(specs, data: bytes) -> bool:
@@ -345,6 +385,58 @@ def test_finish_is_idempotent_and_safe_on_empty_flows():
     engine.finish()
     engine.finish()
     assert len(events) == 1
+
+
+def test_identical_reconnect_payload_is_not_deduplicated_across_flow_generations():
+    """A reused TCP four-tuple starts a new event identity at each SYN."""
+    events = []
+    engine = _make_engine(events)
+    frame = _loot_preview_frame(item_id=7003, quantity=3)
+
+    for timestamp in (1000.0, 1001.0):
+        engine.process_tcp_segment(
+            source_ip="10.0.0.1",
+            source_port=8889,
+            destination_ip="10.0.0.2",
+            destination_port=50000,
+            sequence=999,
+            payload=frame,
+            timestamp=timestamp,
+            syn=True,
+        )
+
+    assert [(event.item_id, event.quantity) for event in events] == [
+        (7003, 3),
+        (7003, 3),
+    ]
+    assert [event.stream_sequence for event in events] == [1000, 1000]
+    assert [event.context.flow_generation for event in events] == [1, 2]
+    normalized = [toolkit_event_from_record(event) for event in events]
+    assert [event._flow_generation for event in normalized] == [1, 2]
+
+    first = normalized[0]
+    another_generation = dataclasses.replace(first, _flow_generation=2)
+    assert first == another_generation
+    assert hash(first) == hash(another_generation)
+    assert first.to_dict() == another_generation.to_dict()
+
+    event = dataclasses.replace(
+        first,
+        _flow_generation=9,
+        extra={
+            **first.extra,
+            "_flow_generation": "user-owned",
+            "_vendor_extension": "preserved",
+        },
+    )
+    serialized_extra = event.to_dict()["extra"]
+    assert serialized_extra == {
+        "stream_sequence": 1000,
+        "_flow_generation": "user-owned",
+        "_vendor_extension": "preserved",
+    }
+    assert event._flow_generation == 9
+    assert "_flow_generation=9" not in repr(event)
 
 
 def test_item_engine_bounds_active_flows_and_reports_resource_eviction():

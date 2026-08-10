@@ -1,5 +1,7 @@
 """Calibration tests mirroring the legacy prototype's expected discoveries."""
 
+from dataclasses import replace
+import inspect
 import json
 
 import pytest
@@ -9,10 +11,13 @@ from bdo_toolkit import PacketCaptureOptions, load_opcode_profile
 from bdo_toolkit import _capture_backend as capture_backend
 from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit.calibration import (
+    CalibrationAuthorityError,
     CalibrationResult,
     CalibrationSession,
     MessageSpec,
+    calibrate_frames,
     calibrate_pcap,
+    collect_frames_pcap,
     reset_profile,
     update_profile,
 )
@@ -29,6 +34,90 @@ def _specs_by_event(result):
     for spec in result.specs:
         output.setdefault(spec.event, []).append(spec)
     return output
+
+
+def _calibrate_i2s_with_count_authority(
+    fixture_name: str,
+    *,
+    item_id: int,
+    quantity: int,
+):
+    """Add an independent count shape from the same 0x0E6A generation."""
+
+    frames = collect_frames_pcap(fixture_path(fixture_name))
+    authority = collect_frames_pcap(
+        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    )
+    return calibrate_frames(
+        frames + authority,
+        item_id=item_id,
+        quantity=quantity,
+        action="inventory-to-storage",
+    )
+
+
+def test_message_spec_count_offset_preserves_legacy_positional_api():
+    legacy = MessageSpec(
+        "INVENTORY_TRANSFER",
+        0x1234,
+        300,
+        5,
+        9,
+        20,
+        13,
+        25,
+        228,
+        30,
+        40,
+        44,
+        50,
+        "legacy-high",
+        "legacy-caller",
+        "2026-01-01T00:00:00Z",
+        0.9,
+    )
+
+    assert legacy.record_count_offset is None
+    assert (
+        legacy.inventory_slot_offset,
+        legacy.repeat_stride,
+        legacy.source_instance_offset,
+        legacy.quantity_removed_offset,
+        legacy.quantity_added_offset,
+        legacy.destination_instance_offset,
+        legacy.confidence,
+        legacy.source,
+        legacy.observed_at,
+        legacy.score,
+    ) == (
+        25,
+        228,
+        30,
+        40,
+        44,
+        50,
+        "legacy-high",
+        "legacy-caller",
+        "2026-01-01T00:00:00Z",
+        0.9,
+    )
+
+    signature = inspect.signature(MessageSpec)
+    assert (
+        signature.parameters["record_count_offset"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
+    storage = MessageSpec(
+        "STORAGE_ITEM_DELTA",
+        0x126D,
+        257,
+        item_id_offset=36,
+        context_offset=27,
+        record_count_offset=16,
+        quantity_added_offset=40,
+        destination_instance_offset=71,
+    )
+    assert storage.record_count_offset == 16
 
 
 @requires_fixtures
@@ -151,11 +240,10 @@ def test_storage_to_inventory_calibration_rejects_storage_delta_family():
 
 @requires_fixtures
 def test_calibration_discovers_current_inventory_to_storage():
-    result = calibrate_pcap(
-        fixture_path("new_potato_3_tostorage.pcapng"),
+    result = _calibrate_i2s_with_count_authority(
+        "new_potato_3_tostorage.pcapng",
         item_id=7003,
         quantity=3,
-        action="inventory-to-storage",
     )
 
     specs = _specs_by_event(result)
@@ -175,28 +263,14 @@ def test_calibration_discovers_current_inventory_to_storage():
 
 
 @requires_fixtures
-def test_calibration_still_discovers_old_inventory_to_storage():
-    result = calibrate_pcap(
-        fixture_path("potato_leaving_inventory_qty20.pcapng"),
-        item_id=7003,
-        quantity=20,
-        action="inventory-to-storage",
-    )
-
-    specs = _specs_by_event(result)
-    stack = specs["SOURCE_STACK_DECREMENT"][0]
-    assert (stack.opcode, stack.length) == (0x13ED, 45)
-    assert stack.source_instance_offset == 29
-    assert stack.quantity_removed_offset == 37
-
-    reference = specs["SOURCE_ITEM_REFERENCE"][0]
-    assert (reference.opcode, reference.length) == (0x1358, 28)
-    assert reference.item_id_offset == 24
-
-    delta = specs["STORAGE_ITEM_DELTA"][0]
-    assert (delta.opcode, delta.length) == (0x1B6A, 264)
-    assert (delta.item_id_offset, delta.quantity_added_offset) == (43, 47)
-    assert delta.destination_instance_offset == 78
+def test_single_shape_old_inventory_to_storage_capture_is_not_authoritative():
+    with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
+        calibrate_pcap(
+            fixture_path("potato_leaving_inventory_qty20.pcapng"),
+            item_id=7003,
+            quantity=20,
+            action="inventory-to-storage",
+        )
 
 
 @requires_fixtures
@@ -212,12 +286,9 @@ def test_calibration_still_discovers_old_inventory_to_storage():
     ),
     [
         ("new_potato_1_1_1.pcapng", 7003, 1, 0x1A32, 52, 34, 42),
-        ("potato_leaving_inventory_qty10.pcapng", 7003, 10, 0x13ED, 45, 29, 37),
-        ("potato_7_3_to_storage.pcapng", 7003, 7, 0x13ED, 45, 29, 37),
-        ("new_item_to_storage_13_42.pcapng", 44195, 42, 0x13ED, 45, 29, 37),
     ],
 )
-def test_calibration_preserves_legacy_stack_layout_when_instances_differ(
+def test_calibration_preserves_stack_layout_when_instances_differ(
     fixture_name,
     item_id,
     quantity,
@@ -226,11 +297,10 @@ def test_calibration_preserves_legacy_stack_layout_when_instances_differ(
     expected_instance_offset,
     expected_quantity_offset,
 ):
-    result = calibrate_pcap(
-        fixture_path(fixture_name),
+    result = _calibrate_i2s_with_count_authority(
+        fixture_name,
         item_id=item_id,
         quantity=quantity,
-        action="inventory-to-storage",
     )
 
     stack = _specs_by_event(result)["SOURCE_STACK_DECREMENT"][0]
@@ -241,11 +311,31 @@ def test_calibration_preserves_legacy_stack_layout_when_instances_differ(
 
 @requires_fixtures
 @pytest.mark.parametrize(
-    "fixture_name",
+    ("fixture_name", "item_id", "quantity"),
     [
-        "calibration_5_inven_0_storage.pcapng",
-        "calibration_to_different_inventory_through_remote.pcapng",
+        ("potato_leaving_inventory_qty10.pcapng", 7003, 10),
+        ("potato_7_3_to_storage.pcapng", 7003, 7),
+        ("new_item_to_storage_13_42.pcapng", 44195, 42),
     ],
+)
+def test_legacy_single_shape_captures_refuse_partial_storage_authority(
+    fixture_name,
+    item_id,
+    quantity,
+):
+    with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
+        calibrate_pcap(
+            fixture_path(fixture_name),
+            item_id=item_id,
+            quantity=quantity,
+            action="inventory-to-storage",
+        )
+
+
+@requires_fixtures
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["calibration_5_inven_0_storage.pcapng"],
 )
 def test_calibration_discovers_all_current_patch_transfer_specs(fixture_name):
     result = calibrate_pcap(
@@ -288,6 +378,16 @@ def test_calibration_discovers_all_current_patch_transfer_specs(fixture_name):
     assert (delta.opcode, delta.length) == (0x126D, 257)
     assert (delta.item_id_offset, delta.quantity_added_offset) == (36, 40)
     assert delta.destination_instance_offset == 71
+
+
+@requires_fixtures
+def test_auto_calibration_refuses_a_single_storage_count_shape():
+    with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
+        calibrate_pcap(
+            fixture_path("calibration_to_different_inventory_through_remote.pcapng"),
+            item_id=7003,
+            quantity=5,
+        )
 
 
 def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
@@ -427,13 +527,124 @@ def test_multi_stack_decrement_calibration_normalizes_base_and_stride():
     assert spec.quantity_removed_offset == 42
 
 
+def test_current_decrement_phase_does_not_learn_every_other_record():
+    """A cross-record ±8 coincidence must not double the true stride."""
+
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import (
+        _CalibratedItemRecord,
+        _Options,
+        _discover_source_stack_decrement,
+    )
+
+    flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
+
+    def frame(index, opcode, message):
+        message[0:2] = len(message).to_bytes(2, "little")
+        message[3:5] = opcode.to_bytes(2, "little")
+        return BDOFrame(
+            index=index,
+            message=bytes(message),
+            context=PacketContext(1000.0 + index, flow),
+            stream_sequence=index,
+        )
+
+    quantity = 1
+    item_id = 15156
+    instances = tuple(
+        value.to_bytes(8, "little")
+        for value in (
+            0x008E1BCCCF2C7101,
+            0x008E1BCCCF2C7122,
+            0x008E1BCCCF2C7143,
+            0x008E1BCCCF2C7164,
+        )
+    )
+
+    # Current source-decrement records begin at byte 26 and occupy 21 bytes:
+    # quantity@26 and instance@39. Consequently record one's instance@39 is
+    # also eight bytes before record two's quantity@47. The old normalizer
+    # mistook that cross-record coincidence for a field relationship and
+    # returned base=68/stride=42/quantity@47.
+    decrement_message = bytearray(47 + 3 * 21)
+    for index, instance in enumerate(instances):
+        delta = index * 21
+        decrement_message[26 + delta : 30 + delta] = quantity.to_bytes(
+            4, "little"
+        )
+        decrement_message[39 + delta : 47 + delta] = instance
+    decrement = frame(0, 0x1505, decrement_message)
+
+    delta_message = bytearray(270)
+    delta_message[44:48] = item_id.to_bytes(4, "little")
+    delta_message[48:52] = quantity.to_bytes(4, "little")
+    delta_message[79:87] = instances[0]
+    delta = frame(1, 0x1C51, delta_message)
+    record = _CalibratedItemRecord(
+        frame=delta,
+        item_offset=44,
+        item_id=item_id,
+        quantity=quantity,
+        instance_offset=79,
+        instance=instances[0],
+        confidence=0.95,
+        reasons=(),
+    )
+
+    spec = _discover_source_stack_decrement(
+        [decrement, delta],
+        record,
+        _Options(item_id, quantity, "auto", 5, 0.80),
+    )
+
+    assert spec is not None
+    assert (spec.opcode, spec.length, spec.repeat_stride) == (0x1505, 47, 21)
+    assert spec.source_instance_offset == 39
+    assert spec.quantity_removed_offset == 26
+
+
+def test_decrement_repeat_shape_rejects_incomplete_storage_cardinality():
+    from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+    from bdo_toolkit.calibration import _source_stack_repeated_shape
+
+    flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
+    message = bytearray(110)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x1505).to_bytes(2, "little")
+    message[47:51] = (1).to_bytes(4, "little")
+    message[89:93] = (1).to_bytes(4, "little")
+    message[39:47] = bytes.fromhex("01712ccfcb1b8e00")
+    message[81:89] = bytes.fromhex("43712ccfcb1b8e00")
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(1000.0, flow),
+        stream_sequence=0,
+    )
+
+    assert (
+        _source_stack_repeated_shape(
+            frame,
+            (1).to_bytes(4, "little"),
+            39,
+            expected_record_count=4,
+        )
+        is None
+    )
+
+
 @requires_fixtures
-def test_multi_only_unstackable_calibration_discovers_decrement_geometry(tmp_path):
+def test_unstackable_calibration_with_count_authority_discovers_decrement_geometry(
+    tmp_path,
+):
     from bdo_toolkit import replay_pcap
 
     capture = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
-    result = calibrate_pcap(
-        capture,
+    frames = collect_frames_pcap(capture) + collect_frames_pcap(
+        fixture_path("new_potato_3_tostorage.pcapng")
+    )
+    result = calibrate_frames(
+        frames,
         item_id=1000306,
         quantity=1,
         action="inventory-to-storage",
@@ -460,6 +671,68 @@ def test_multi_only_unstackable_calibration_discovers_decrement_geometry(tmp_pat
         ]
         for event in events
     ] == [1, 2, 3, 4, 5]
+
+
+@requires_fixtures
+def test_one_session_1_4_deposits_and_5_withdrawal_keep_all_strides():
+    """The guided single-target workflow retains every repeated geometry."""
+
+    deposit_frames = collect_frames_pcap(
+        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    )
+    decrement = deposit_frames[0]
+    storage = deposit_frames[1]
+    frames = []
+    stream_sequence = decrement.stream_sequence or 0
+
+    for count in (1, 4):
+        decrement_length = 52 + (count - 1) * 23
+        decrement_message = bytearray(decrement.message[:decrement_length])
+        decrement_message[0:2] = decrement_length.to_bytes(2, "little")
+        frames.append(
+            replace(
+                decrement,
+                index=len(frames),
+                message=bytes(decrement_message),
+                stream_sequence=stream_sequence,
+            )
+        )
+        stream_sequence += decrement_length
+
+        storage_length = 261 + (count - 1) * 226
+        storage_message = bytearray(storage.message[:storage_length])
+        storage_message[0:2] = storage_length.to_bytes(2, "little")
+        storage_message[6:8] = count.to_bytes(2, "little")
+        frames.append(
+            replace(
+                storage,
+                index=len(frames),
+                message=bytes(storage_message),
+                stream_sequence=stream_sequence,
+            )
+        )
+        stream_sequence += storage_length
+
+    frames.extend(
+        collect_frames_pcap(fixture_path("hit_1_5_unstackable.pcapng"))
+    )
+    result = calibrate_frames(
+        frames,
+        item_id=1000306,
+        quantity=1,
+        action="auto",
+    )
+    specs = _specs_by_event(result)
+
+    assert {
+        "INVENTORY_TRANSFER",
+        "SOURCE_STACK_DECREMENT",
+        "STORAGE_ITEM_DELTA",
+    } <= result.events_found
+    assert specs["INVENTORY_TRANSFER"][0].repeat_stride == 228
+    assert specs["SOURCE_STACK_DECREMENT"][0].repeat_stride == 23
+    assert specs["STORAGE_ITEM_DELTA"][0].repeat_stride == 226
+    assert specs["STORAGE_ITEM_DELTA"][0].record_count_offset == 6
 
 
 @pytest.mark.parametrize(
@@ -770,11 +1043,10 @@ def test_calibrated_profile_round_trips_into_decoder_specs(tmp_path):
     from bdo_toolkit import replay_pcap
 
     profile_path = tmp_path / "opcodes.json"
-    result = calibrate_pcap(
-        fixture_path("new_potato_3_tostorage.pcapng"),
+    result = _calibrate_i2s_with_count_authority(
+        "new_potato_3_tostorage.pcapng",
         item_id=7003,
         quantity=3,
-        action="inventory-to-storage",
     )
     update_profile(result, profile_path, action="inventory-to-storage")
 
@@ -793,16 +1065,26 @@ def test_reset_profile_writes_empty_active_profile(tmp_path):
     profile_path = tmp_path / "opcodes.json"
     profile_path.write_text("{}", encoding="utf-8")
 
-    backup = reset_profile(profile_path, 7003)
+    backup = reset_profile(profile_path)
     assert backup is not None and backup.exists()
 
     data = json.loads(profile_path.read_text(encoding="utf-8"))
     assert data["profile_active"] is True
+    assert data["calibration_item_id"] == 15156
     assert all(not entries for entries in data["specs"].values())
 
     profile = event_specs_from_profile(load_opcode_profile(profile_path))
     assert profile.active
     assert profile.specs == ()
+
+
+def test_reset_profile_accepts_explicit_metadata_item_override(tmp_path):
+    profile_path = tmp_path / "opcodes.json"
+
+    assert reset_profile(profile_path, 7003, backup=False) is None
+
+    data = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert data["calibration_item_id"] == 7003
 
 
 def test_calibration_session_guards_lifecycle():

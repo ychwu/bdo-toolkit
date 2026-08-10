@@ -1117,14 +1117,6 @@ class DepositOriginTracker:
             "matching_decrement": pending.matching_decrement,
         }
         if pending.manual_decrement_matches:
-            rank = {"observed": 0, "structural": 1, "heuristic": 2}
-            record_index, selected_manual = min(
-                pending.manual_decrement_matches,
-                key=lambda item: rank[item[1].confidence],
-            )
-            selected_payload = selected_manual.to_dict()
-            selected_payload["record_index"] = record_index
-            evidence["manual_decrement"] = selected_payload
             if len(pending.manual_decrement_matches) > 1:
                 evidence["manual_decrement_matches"] = tuple(
                     {
@@ -1157,9 +1149,29 @@ class DepositOriginTracker:
             )
 
         for original in events:
+            event_evidence = dict(evidence)
+            if pending.manual_decrement_matches:
+                rank = {"observed": 0, "structural": 1, "heuristic": 2}
+                matching_this_record = tuple(
+                    candidate
+                    for candidate in pending.manual_decrement_matches
+                    if candidate[0] == original.record_index
+                )
+                selection_pool = (
+                    matching_this_record
+                    if matching_this_record
+                    else pending.manual_decrement_matches
+                )
+                record_index, selected_manual = min(
+                    selection_pool,
+                    key=lambda item: rank[item[1].confidence],
+                )
+                selected_payload = selected_manual.to_dict()
+                selected_payload["record_index"] = record_index
+                event_evidence["manual_decrement"] = selected_payload
             extra = {
                 **original.extra,
-                "deposit_origin_evidence": evidence,
+                "deposit_origin_evidence": event_evidence,
             }
             if was_neutral:
                 # A calibrated source decrement or confirmed worker chain

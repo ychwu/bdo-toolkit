@@ -1,8 +1,10 @@
 """Live-calibrate a local opcode profile with explicit start/stop.
 
-Auto calibration detects both transfer directions from packet structure, so
-you just move an item to storage and back -- no need to declare which action
-is which.
+Auto calibration detects both transfer directions from packet structure. In
+one session, deposit one matching unstackable, deposit the remaining four,
+then withdraw all five. The deposits prove manual-origin and storage-wrapper
+geometry; the withdrawal proves the reverse transfer family. These are
+user-performed actions while the session passively captures traffic.
 """
 
 from __future__ import annotations
@@ -13,8 +15,10 @@ from bdo_toolkit.calibration import CalibrationSession, update_profile
 
 
 PROFILE = Path("opcodes.local")
-ITEM_ID = 7003  # Potato Test
-QUANTITY = 5
+ITEM_ID = 15156  # Matching unstackable calibration item selected for this run.
+# Expected in each serialized item record. A four-item action produces four
+# matching records whose quantity is 1; this does not automate the in-game move.
+QUANTITY = 1
 
 
 def main() -> None:
@@ -22,10 +26,12 @@ def main() -> None:
 
     session.start()
     print("Listening in the background.")
-    print(f"Move exactly {QUANTITY} of item {ITEM_ID} from storage to inventory,")
-    print("then back to storage (either order).")
+    print("Perform the following in-game actions yourself while capture remains open.")
+    print(f"Using unstackable item {ITEM_ID} (per-record quantity {QUANTITY}):")
+    print("deposit one item, then deposit the remaining four,")
+    print("then withdraw all five matching items in one action.")
     try:
-        input("Press Enter when both moves are done...")
+        input("Press Enter when all three moves are done...")
     except KeyboardInterrupt:
         print()
     finally:
@@ -33,8 +39,18 @@ def main() -> None:
         result = session.stop()
 
     print(result.summary())
-    if not result.specs:
-        raise SystemExit(1)
+    required = {
+        "INVENTORY_TRANSFER",
+        "SOURCE_STACK_DECREMENT",
+        "STORAGE_ITEM_DELTA",
+    }
+    missing = sorted(required - result.events_found)
+    if missing:
+        raise SystemExit(
+            "incomplete transfer profile; missing "
+            f"{', '.join(missing)}. Rerun one clean session: deposit 1, "
+            "deposit the remaining 4, then withdraw all 5."
+        )
 
     update = update_profile(result, PROFILE)
     print(update.summary())

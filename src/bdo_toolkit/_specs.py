@@ -203,6 +203,7 @@ def _event_spec_from_entry(
         if item_id_offset is None or quantity_added_offset is None:
             return None
         context_offset = _optional_int(entry.get("context_offset"))
+        record_count_offset = _optional_int(entry.get("record_count_offset"))
         repeat_stride = _optional_int(entry.get("repeat_stride"))
         return EventSpec(
             label="INVENTORY_TO_STORAGE",
@@ -219,8 +220,14 @@ def _event_spec_from_entry(
                     else None
                 ),
                 context_offset + 4 if context_offset is not None else None,
+                (
+                    record_count_offset + 2
+                    if record_count_offset is not None
+                    else None
+                ),
             ),
             source_context_offset=context_offset,
+            record_count_offset=record_count_offset,
             storage_instance_offset=destination_instance_offset,
             repeat_stride=repeat_stride,
             single_record_message_length=length,

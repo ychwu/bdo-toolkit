@@ -6,8 +6,8 @@ docs/
 tests/fixtures/
 tests/baselines/
 
-# Local Arena of Solare protocol research (promote proven pieces explicitly)
-tools/solare/
+# Local tooling and Arena of Solare protocol research
+tools/
 
 # Local calibration output
 opcodes_backups/

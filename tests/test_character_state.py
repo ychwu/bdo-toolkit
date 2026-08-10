@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from bdo_toolkit import PacketCaptureOptions
 from bdo_toolkit import _capture_runtime as capture_runtime
+from bdo_toolkit import capture as capture_module
 from bdo_toolkit import character_state as character_state_module
 from bdo_toolkit.character_state import (
     CharacterLoadSession,
@@ -24,6 +26,7 @@ from bdo_toolkit._protocol import (
     PacketContext,
 )
 from bdo_toolkit.events import BDOEvent, Flow
+from bdo_toolkit.diagnostics import DecoderHealth
 from bdo_toolkit.profiles import default_profile_path
 from fixture_paths import fixture_path, has_fixture_pcaps
 
@@ -51,6 +54,13 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     assert state.identity_complete
     assert state.inventory.missing_instance_records == 0
     assert state.storage_records_missing_instance == 0
+    assert state.decoder_health.storage_status == "compatible"
+    assert state.decoder_health.storage_is_compatible is True
+    assert (
+        state.decoder_health.storage_messages_decoded
+        == state.decoder_health.storage_messages_observed
+        > 0
+    )
     assert state.snapshot_records_retained == 2_727
     assert state.coverage.accumulation_status == "within_limits"
     assert state.inventory.raw_records == 247
@@ -521,6 +531,7 @@ def _snapshot_record(
     item_id: int | None = None,
     quantity: int | None = None,
     include_instance: bool = True,
+    flow_generation: int = 0,
 ) -> LootEvent:
     return LootEvent(
         label="INVENTORY_TO_STORAGE" if storage else "INVENTORY_TRANSFER",
@@ -543,6 +554,7 @@ def _snapshot_record(
             timestamp=timestamp,
             flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
             stream_start=sequence,
+            flow_generation=flow_generation,
         ),
         stream_sequence=sequence,
         record_offset=36 if storage else 31,
@@ -557,7 +569,12 @@ def _storage_snapshot_spec() -> EventSpec:
         opcode=0x126D,
         item_offset=36,
         quantity_offset=40,
-        min_message_length=35,
+        min_message_length=257,
+        source_context_offset=27,
+        record_count_offset=16,
+        storage_instance_offset=71,
+        repeat_stride=222,
+        single_record_message_length=257,
     )
 
 
@@ -566,6 +583,7 @@ def _empty_storage_frame(
     timestamp: float,
     sequence: int,
     storage_id: int = 0x0020,
+    flow_generation: int = 0,
 ) -> BDOFrame:
     message = bytearray(35)
     message[:2] = len(message).to_bytes(2, "little")
@@ -579,9 +597,698 @@ def _empty_storage_frame(
             timestamp=timestamp,
             flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
             stream_start=sequence,
+            flow_generation=flow_generation,
         ),
         stream_sequence=sequence,
     )
+
+
+_CHARACTER_STATE_FLOW = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+
+
+def _state_inventory_anchor(
+    *,
+    timestamp: float = 1.0,
+    sequence: int = 100,
+    flow: Flow = _CHARACTER_STATE_FLOW,
+    flow_generation: int = 0,
+) -> BDOEvent:
+    event = BDOEvent(
+        event_type="inventory_snapshot",
+        timestamp=timestamp,
+        flow=flow,
+        item_id=7003,
+        quantity=1,
+        opcode=0x194A,
+        message_length=254,
+        item_instance=f"inventory-anchor-{flow_generation}",
+        record_index=1,
+        record_count=1,
+        record_offset=31,
+        extra={"stream_sequence": sequence},
+    )
+    return replace(event, _flow_generation=flow_generation)
+
+
+def _state_storage_event(
+    *,
+    timestamp: float,
+    sequence: int,
+    storage_id: int,
+    event_type: str,
+    opcode: int = 0x126D,
+    flow: Flow = _CHARACTER_STATE_FLOW,
+    flow_generation: int = 0,
+) -> BDOEvent:
+    location = character_state_module.STORAGE_LOCATIONS.get(storage_id)
+    event = BDOEvent(
+        event_type=event_type,
+        timestamp=timestamp,
+        flow=flow,
+        item_id=7003 + storage_id,
+        quantity=1,
+        source=location.name if location is not None else None,
+        opcode=opcode,
+        message_length=257,
+        storage_instance=f"storage-{opcode}-{storage_id}-{sequence}",
+        storage_id=storage_id,
+        storage_name=location.name if location is not None else None,
+        storage_name_confidence=(
+            location.confidence if location is not None else None
+        ),
+        storage_operation=(
+            "snapshot"
+            if event_type == "storage_snapshot"
+            else "live" if event_type == "storage_delta" else "unknown"
+        ),
+        record_index=1,
+        record_count=1,
+        record_offset=36,
+        extra={"stream_sequence": sequence},
+    )
+    return replace(event, _flow_generation=flow_generation)
+
+
+@pytest.mark.parametrize(
+    ("first_type", "first_count", "second_type", "second_count"),
+    [
+        ("storage_record", 4, "storage_snapshot", 8),
+        ("storage_snapshot", 8, "storage_record", 4),
+    ],
+    ids=("neutral-4-then-proven-8", "proven-8-then-neutral-4"),
+)
+def test_character_state_reconciles_one_hydration_sweep_split_across_bursts(
+    first_type: str,
+    first_count: int,
+    second_type: str,
+    second_count: int,
+) -> None:
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_storage_snapshot_spec(),),
+    )
+    accumulator.observe_event(_state_inventory_anchor())
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+
+    offset = 0
+    for event_type, count, start_time in (
+        (first_type, first_count, 1.10),
+        (second_type, second_count, 1.80),
+    ):
+        for index in range(count):
+            accumulator.observe_event(
+                _state_storage_event(
+                    timestamp=start_time + index * 0.01,
+                    sequence=200 + (offset + index) * 300,
+                    storage_id=storage_ids[offset + index],
+                    event_type=event_type,
+                )
+            )
+        offset += count
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 12
+    assert state.known_storage_destinations_detected == 12
+    assert {storage.storage_id for storage in state.storages} == set(storage_ids)
+    assert any("split across timing bursts" in warning for warning in state.warnings)
+
+
+def test_split_hydration_reconciliation_stops_at_a_live_mutation_boundary() -> None:
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_storage_snapshot_spec(),),
+    )
+    accumulator.observe_event(_state_inventory_anchor())
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:13]
+    for index, storage_id in enumerate(storage_ids[:4]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.10 + index * 0.01,
+                sequence=200 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_record",
+            )
+        )
+    accumulator.observe_event(
+        _state_storage_event(
+            timestamp=1.50,
+            sequence=1_500,
+            storage_id=storage_ids[4],
+            event_type="storage_delta",
+        )
+    )
+    for index, storage_id in enumerate(storage_ids[5:]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.80 + index * 0.01,
+                sequence=1_800 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_snapshot",
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 8
+    assert state.known_storage_destinations_detected == 8
+    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
+    assert state.snapshot_records_retained == 13
+    assert not any("split across timing bursts" in warning for warning in state.warnings)
+
+
+def test_split_hydration_reconciliation_does_not_cross_opcode_families() -> None:
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_storage_snapshot_spec(),),
+    )
+    accumulator.observe_event(_state_inventory_anchor())
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+    for index, storage_id in enumerate(storage_ids[:4]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.10 + index * 0.01,
+                sequence=200 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_record",
+                opcode=0x126D,
+            )
+        )
+    for index, storage_id in enumerate(storage_ids[4:]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.80 + index * 0.01,
+                sequence=1_500 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_snapshot",
+                opcode=0x1C51,
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 8
+    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
+
+
+@pytest.mark.parametrize("isolation", ["flow", "generation"])
+def test_split_hydration_reconciliation_isolates_connection_identity(
+    isolation: str,
+) -> None:
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_storage_snapshot_spec(),),
+    )
+    selected_generation = 2 if isolation == "generation" else 0
+    accumulator.observe_event(
+        _state_inventory_anchor(flow_generation=selected_generation)
+    )
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+    neutral_flow = (
+        Flow("10.0.0.3", 8889, "10.0.0.4", 50001)
+        if isolation == "flow"
+        else _CHARACTER_STATE_FLOW
+    )
+    neutral_generation = 1 if isolation == "generation" else 0
+    for index, storage_id in enumerate(storage_ids[:4]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.10 + index * 0.01,
+                sequence=200 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_record",
+                flow=neutral_flow,
+                flow_generation=neutral_generation,
+            )
+        )
+    for index, storage_id in enumerate(storage_ids[4:]):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.80 + index * 0.01,
+                sequence=1_500 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_snapshot",
+                flow_generation=selected_generation,
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 8
+    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
+
+
+def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() -> None:
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_storage_snapshot_spec(),),
+    )
+    accumulator.observe_event(_state_inventory_anchor())
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:4]
+    for index, storage_id in enumerate(storage_ids):
+        accumulator.observe_event(
+            _state_storage_event(
+                timestamp=1.10 + index * 0.01,
+                sequence=200 + index * 300,
+                storage_id=storage_id,
+                event_type="storage_record",
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 0
+    assert state.known_storage_destinations_detected == 0
+    assert all(state.storage(storage_id) is None for storage_id in storage_ids)
+
+
+@pytest.mark.parametrize("repeat_stride", [222, None])
+def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
+    repeat_stride: int | None,
+):
+    spec = replace(
+        _storage_snapshot_spec(),
+        repeat_stride=repeat_stride,
+    )
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:8]
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    for index, storage_id in enumerate(storage_ids[:3]):
+        accumulator.observe_event(
+            BDOEvent(
+                event_type="storage_record",
+                timestamp=1.20 + index * 0.01,
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=spec.opcode,
+                message_length=spec.single_record_message_length,
+                storage_instance=f"sparse-{index}",
+                storage_id=storage_id,
+                storage_name=character_state_module.STORAGE_LOCATIONS[storage_id].name,
+                storage_name_confidence="observed",
+                storage_operation="unknown",
+                record_index=1,
+                record_count=1,
+                record_offset=spec.item_offset,
+                extra={"stream_sequence": 200 + index * 100},
+            )
+        )
+    for index, storage_id in enumerate(storage_ids[3:]):
+        accumulator.observe_frame(
+            _empty_storage_frame(
+                timestamp=1.25 + index * 0.01,
+                sequence=500 + index * 100,
+                storage_id=storage_id,
+            )
+        )
+
+    state = accumulator.snapshot(
+        decoder_health=DecoderHealth(
+            storage_status="compatible",
+            storage_messages_observed=8,
+            storage_messages_decoded=3,
+            storage_records_decoded=3,
+        )
+    )
+
+    assert state.storage_snapshot_records == 3
+    assert state.known_storage_destinations_detected == 8
+    assert state.nonempty_storage_destinations == 3
+    assert state.empty_storage_destinations == 5
+    assert state.decoder_health.storage_status == "compatible"
+    assert any("dedicated character-load boundary" in warning for warning in state.warnings)
+    assert state.to_dict()["decoder_health"]["storage_status"] == "compatible"
+
+
+def test_classified_nonempty_snapshot_keeps_leading_empty_envelopes_without_stride():
+    """The inventory anchor covers empty towns outside the nonempty event window."""
+    spec = replace(_storage_snapshot_spec(), repeat_stride=None)
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:10]
+    for index, storage_id in enumerate(storage_ids[:2]):
+        accumulator.observe_frame(
+            _empty_storage_frame(
+                timestamp=1.10 + index * 0.01,
+                sequence=200 + index * 100,
+                storage_id=storage_id,
+            )
+        )
+
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    for index, storage_id in enumerate(storage_ids[2:]):
+        accumulator.observe_event(
+            BDOEvent(
+                event_type="storage_snapshot",
+                timestamp=1.20 + index * 0.01,
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=spec.opcode,
+                message_length=spec.single_record_message_length,
+                storage_instance=f"classified-{index}",
+                storage_id=storage_id,
+                storage_name=(
+                    character_state_module.STORAGE_LOCATIONS[storage_id].name
+                ),
+                storage_name_confidence="observed",
+                storage_operation="snapshot",
+                record_index=1,
+                record_count=1,
+                record_offset=spec.item_offset,
+                extra={"stream_sequence": 500 + index * 100},
+            )
+        )
+
+    state = accumulator.snapshot(
+        decoder_health=DecoderHealth(
+            storage_status="compatible",
+            storage_messages_observed=8,
+            storage_messages_decoded=8,
+            storage_records_decoded=8,
+        )
+    )
+
+    assert state.known_storage_destinations_detected == 10
+    assert state.nonempty_storage_destinations == 8
+    assert state.empty_storage_destinations == 2
+
+
+def test_empty_cohort_cannot_override_observed_multi_record_geometry():
+    spec = _storage_snapshot_spec()
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:10]
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    proven_stride = 222
+    multi_length = spec.single_record_message_length + proven_stride
+    for index in range(2):
+        accumulator.observe_event(
+            BDOEvent(
+                event_type="storage_snapshot",
+                timestamp=1.20,
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=spec.opcode,
+                message_length=multi_length,
+                storage_instance=f"multi-{index}",
+                storage_id=storage_ids[0],
+                storage_name=(
+                    character_state_module.STORAGE_LOCATIONS[storage_ids[0]].name
+                ),
+                storage_name_confidence="observed",
+                storage_operation="snapshot",
+                record_index=index + 1,
+                record_count=2,
+                record_offset=spec.item_offset + index * proven_stride,
+                extra={"stream_sequence": 200},
+            )
+        )
+
+    # A broad, internally consistent cohort at the wrong length used to win
+    # over the exact stride proved by the decoded two-record wrapper above.
+    for index, storage_id in enumerate(storage_ids[1:9]):
+        frame = _empty_storage_frame(
+            timestamp=1.21 + index * 0.01,
+            sequence=300 + index * 100,
+            storage_id=storage_id,
+        )
+        wrong_length = bytearray(frame.message[:-1])
+        wrong_length[:2] = len(wrong_length).to_bytes(2, "little")
+        accumulator.observe_frame(replace(frame, message=bytes(wrong_length)))
+
+    accumulator.observe_frame(
+        _empty_storage_frame(
+            timestamp=1.30,
+            sequence=1_200,
+            storage_id=storage_ids[9],
+        )
+    )
+
+    state = accumulator.snapshot(
+        decoder_health=DecoderHealth(
+            storage_status="compatible",
+            storage_messages_observed=2,
+            storage_messages_decoded=2,
+            storage_records_decoded=2,
+        )
+    )
+
+    assert state.known_storage_destinations_detected == 2
+    assert state.nonempty_storage_destinations == 1
+    assert state.empty_storage_destinations == 1
+    assert state.storage(storage_ids[9]).current_empty
+    assert all(state.storage(storage_id) is None for storage_id in storage_ids[1:9])
+
+
+def test_character_state_does_not_merge_reused_four_tuple_generations():
+    accumulator = _CharacterStateAccumulator(profile_source="test", specs=())
+    for generation, timestamp, instance_byte in ((0, 1.0, 1), (1, 1.01, 2)):
+        accumulator.observe_record(
+            _snapshot_record(
+                timestamp=timestamp,
+                sequence=100,
+                storage=False,
+                instance_byte=instance_byte,
+                flow_generation=generation,
+            ),
+            b"",
+        )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.10,
+            sequence=200,
+            storage=True,
+            storage_id=0x0020,
+            instance_byte=3,
+            flow_generation=0,
+        ),
+        b"",
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.11,
+            sequence=200,
+            storage=True,
+            storage_id=0x0005,
+            instance_byte=4,
+            flow_generation=1,
+        ),
+        b"",
+    )
+
+    state = accumulator.snapshot()
+
+    assert state.hydration_generations_seen == 2
+    assert state.inventory.raw_records == 1
+    assert [item.item_id for item in state.inventory.items] == [7005]
+    assert state.storage(0x0020) is None
+    assert state.storage(0x0005) is not None
+
+
+def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
+    spec = replace(_storage_snapshot_spec(), repeat_stride=None)
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+            flow_generation=2,
+        ),
+        b"",
+    )
+
+    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:8]
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    for index, storage_id in enumerate(storage_ids[:3]):
+        accumulator.observe_event(
+            BDOEvent(
+                event_type="storage_record",
+                timestamp=1.20 + index * 0.01,
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=spec.opcode,
+                message_length=spec.single_record_message_length,
+                storage_instance=f"generation-two-{index}",
+                storage_id=storage_id,
+                storage_operation="unknown",
+                record_index=1,
+                record_count=1,
+                record_offset=spec.item_offset,
+                extra={"stream_sequence": 200 + index * 100},
+                _flow_generation=2,
+            )
+        )
+    for index, storage_id in enumerate(storage_ids[3:]):
+        accumulator.observe_frame(
+            _empty_storage_frame(
+                timestamp=1.25 + index * 0.01,
+                sequence=500 + index * 100,
+                storage_id=storage_id,
+                flow_generation=1,
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 0
+    assert state.known_storage_destinations_detected == 0
+
+
+def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
+    spec = replace(_storage_snapshot_spec(), repeat_stride=None)
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+    unknown_storage_id = 0x12345678
+    storage_ids = (
+        *tuple(character_state_module.STORAGE_LOCATIONS)[:7],
+        unknown_storage_id,
+    )
+    for index, storage_id in enumerate(storage_ids):
+        accumulator.observe_frame(
+            _empty_storage_frame(
+                timestamp=1.20 + index * 0.01,
+                sequence=200 + index * 100,
+                storage_id=storage_id,
+            )
+        )
+
+    state = accumulator.snapshot()
+
+    assert state.storage_snapshot_records == 0
+    assert state.empty_storage_destinations == 8
+    assert state.storage(unknown_storage_id) is not None
+    assert state.storage(unknown_storage_id).name is None
+    assert state.coverage.unregistered_storage_ids_observed == (unknown_storage_id,)
+    assert state.decoder_health.storage_status == "incompatible"
+    assert state.decoder_health.storage_destination_failures == 1
+    assert not any("opcode was not observed" in warning for warning in state.warnings)
+    assert any("numeric identities were preserved" in warning for warning in state.warnings)
+
+
+def test_unknown_empty_envelope_adds_to_decoded_destination_failure_count():
+    spec = _storage_snapshot_spec()
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(spec,),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+
+    decoded_unknown_id = 0x12345678
+    empty_unknown_id = 0x23456789
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    accumulator.observe_event(
+        BDOEvent(
+            event_type="storage_record",
+            timestamp=1.20,
+            flow=flow,
+            item_id=7003,
+            quantity=1,
+            opcode=spec.opcode,
+            message_length=spec.single_record_message_length,
+            storage_instance="decoded-unknown",
+            storage_id=decoded_unknown_id,
+            storage_operation="unknown",
+            record_index=1,
+            record_count=1,
+            record_offset=spec.item_offset,
+            extra={"stream_sequence": 200},
+        )
+    )
+    empty_ids = (
+        *tuple(character_state_module.STORAGE_LOCATIONS)[:6],
+        empty_unknown_id,
+    )
+    for index, storage_id in enumerate(empty_ids):
+        accumulator.observe_frame(
+            _empty_storage_frame(
+                timestamp=1.21 + index * 0.01,
+                sequence=300 + index * 100,
+                storage_id=storage_id,
+            )
+        )
+
+    state = accumulator.snapshot(
+        decoder_health=DecoderHealth(
+            storage_status="incompatible",
+            storage_messages_observed=1,
+            storage_messages_decoded=1,
+            storage_records_decoded=1,
+            storage_destination_failures=1,
+        )
+    )
+
+    assert state.storage_snapshot_records == 1
+    assert state.known_storage_destinations_detected == 6
+    assert state.coverage.unregistered_storage_ids_observed == (
+        decoded_unknown_id,
+        empty_unknown_id,
+    )
+    assert state.decoder_health.storage_destination_failures == 2
 
 
 def test_repeated_inventory_observation_keeps_raw_and_state_counts_distinct():
@@ -698,7 +1405,7 @@ def test_mixed_storage_identity_exposes_only_the_authoritative_stack():
     assert heidel.quantity_for(7003) == 5
 
 
-def test_item_state_profile_geometry_requires_instance_offsets():
+def test_item_state_profile_geometry_requires_identity_and_wrapper_authority():
     missing_inventory_identity = EventSpec(
         label="INVENTORY_TRANSFER",
         opcode=0x194A,
@@ -716,7 +1423,7 @@ def test_item_state_profile_geometry_requires_instance_offsets():
 
     with pytest.raises(
         character_state_module.ProfileError,
-        match="require observed instance offsets",
+        match="require calibrated identity and wrapper authority",
     ):
         character_state_module._validate_item_state_identity_specs(
             (missing_inventory_identity, missing_storage_identity)
@@ -731,6 +1438,7 @@ def test_item_state_profile_geometry_requires_instance_offsets():
                 quantity_offset=35,
                 min_message_length=254,
                 item_instance_offset=66,
+                source_context_offset=27,
             ),
             EventSpec(
                 label="INVENTORY_TO_STORAGE",
@@ -739,6 +1447,8 @@ def test_item_state_profile_geometry_requires_instance_offsets():
                 quantity_offset=40,
                 min_message_length=257,
                 storage_instance_offset=71,
+                source_context_offset=27,
+                record_count_offset=16,
             ),
         )
     )
@@ -1150,9 +1860,6 @@ def character_load_live_fakes(monkeypatch):
             self.prn(packet)
 
     monkeypatch.setattr(
-        character_state_module, "_active_specs", lambda path: ("test", ())
-    )
-    monkeypatch.setattr(
         capture_runtime,
         "import_scapy",
         lambda: (object(), object(), None, None, None),
@@ -1165,6 +1872,60 @@ def character_load_live_fakes(monkeypatch):
     )
     monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FakeSniffer)
     return FakeSniffer, parser_packets
+
+
+def test_offline_character_state_loads_one_profile_revision(monkeypatch):
+    real_load = capture_module.load_opcode_profile
+    calls = []
+
+    def counted_load(path):
+        calls.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
+    monkeypatch.setattr(character_state_module, "iter_pcap_file", lambda *args: ())
+
+    profile = default_profile_path()
+    state = analyze_character_load_pcap(
+        "unused.pcapng",
+        opcode_profile=profile,
+    )
+
+    assert calls == [profile]
+    assert state.profile_source == str(profile)
+
+
+def test_live_character_load_pins_profile_revision_at_construction(
+    monkeypatch,
+    character_load_live_fakes,
+):
+    real_load = capture_module.load_opcode_profile
+    calls = []
+
+    def counted_load(path):
+        calls.append(path)
+        return real_load(path)
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
+    session = CharacterLoadSession(
+        capture_options=PacketCaptureOptions(interface="test-interface")
+    )
+    assert len(calls) == 1
+
+    def unexpected_reload(_path):
+        raise AssertionError("an existing session must not reload its profile")
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", unexpected_reload)
+    session.start()
+    state = session.stop()
+
+    assert state.profile_source == str(default_profile_path())
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
+    CharacterLoadSession(
+        capture_options=PacketCaptureOptions(interface="test-interface")
+    )
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("suffix", [".pcap", ".pcapng"])
@@ -1292,7 +2053,11 @@ def test_live_character_load_surfaces_accumulation_limit_without_partial_result(
             engine._on_event(
                 _snapshot_record(
                     timestamp=float(emitted),
-                    sequence=emitted * 100,
+                    # The harness calls the collector callback directly and
+                    # therefore supplies no generic frame-tap evidence. Model
+                    # the real midstream recovery contract with two exactly
+                    # adjacent, fully decoded inventory wrappers.
+                    sequence=100 + (emitted - 1) * 254,
                     storage=False,
                     instance_byte=emitted,
                 ),
@@ -1645,11 +2410,14 @@ def test_live_character_load_successful_session_is_single_use_and_stop_is_cached
         capture_limits=limits,
     )
 
+    assert session.decoder_health.storage_status == "not_observed"
     session.start()
+    assert session.decoder_health.storage_status == "not_observed"
     first = session.stop()
     second = session.stop()
 
     assert second is first
+    assert session.decoder_health is first.decoder_health
     assert not session.running
     assert session.error is None
     assert session._capture is None

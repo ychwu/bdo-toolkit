@@ -6,6 +6,7 @@ synthetic tests pin the fail-closed rules that no capture currently
 exercises.
 """
 
+from dataclasses import replace
 import json
 from pathlib import Path
 from threading import Event as ThreadEvent, RLock, Thread
@@ -444,6 +445,68 @@ def test_configured_decrement_stride_matches_the_corresponding_record():
     assert manual["confidence"] == "observed"
 
 
+@pytest.mark.parametrize("record_count", range(1, 9))
+def test_current_decrement_stride_accepts_odd_and_even_batch_counts(record_count):
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x1505,
+                47,
+                26,
+                source_instance_offset=39,
+                repeat_stride=21,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    instances = tuple(
+        (0x008E1BCCCF2C7101 + index * 0x21).to_bytes(8, "little")
+        for index in range(record_count)
+    )
+    decrement = bytearray(47 + (record_count - 1) * 21)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x1505).to_bytes(2, "little")
+    for index, instance in enumerate(instances):
+        delta = index * 21
+        decrement[26 + delta : 30 + delta] = (1).to_bytes(4, "little")
+        decrement[39 + delta : 47 + delta] = instance
+
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+    message_length = 270 + (record_count - 1) * 228
+    tracker.observe_frame(_frame(0x1C51, seq=1000, length=message_length))
+    for index, instance in enumerate(instances, start=1):
+        tracker.register(
+            replace(
+                _storage_event(
+                    item_id=15156,
+                    quantity=1,
+                    seq=1000,
+                    message_length=message_length,
+                    record_offset=44 + (index - 1) * 228,
+                    storage_instance=f"0x{instance.hex()}",
+                ),
+                event_type="storage_record",
+                opcode=0x1C51,
+                record_index=index,
+                record_count=record_count,
+            )
+        )
+    tracker.finalize_all()
+
+    assert len(emitted) == record_count
+    assert all(event.event_type == "storage_delta" for event in emitted)
+    assert all(event.deposit_origin == "manual" for event in emitted)
+    assert [
+        event.extra["deposit_origin_evidence"]["manual_decrement"][
+            "record_index"
+        ]
+        for event in emitted
+    ] == list(range(1, record_count + 1))
+
+
 def test_malformed_declared_decrement_geometry_is_not_downgraded():
     profile = OpcodeProfile(
         path=Path("synthetic-opcodes.json"),
@@ -599,6 +662,10 @@ def test_worker_chain_resynchronizes_generic_tap_after_midframe_start():
         item_offset=37,
         quantity_offset=41,
         min_message_length=80,
+        source_context_offset=8,
+        record_count_offset=6,
+        storage_instance_offset=72,
+        single_record_message_length=80,
         default_context="Storage",
     )
     engine = PacketEngine(
@@ -610,8 +677,11 @@ def test_worker_chain_resynchronizes_generic_tap_after_midframe_start():
     )
     delta, first, second = _worker_chain()
     delta_message = bytearray(delta.message)
+    delta_message[6:8] = (1).to_bytes(2, "little")
+    delta_message[8:12] = (0x0020).to_bytes(4, "little")
     delta_message[37:41] = (7002).to_bytes(4, "little")
     delta_message[41:45] = (25).to_bytes(4, "little")
+    delta_message[72:80] = b"\x22" * 8
 
     # 0x1000 is a plausible but incomplete leading length.  The generic tap
     # must now skip it and use the known delta opcode as a frame boundary.
@@ -659,6 +729,7 @@ def _write_july17_unknown_operation_profile(tmp_path):
                             "quantity_added_offset": 40,
                             "destination_instance_offset": 71,
                             "context_offset": 27,
+                            "record_count_offset": 16,
                         }
                     ],
                 },
@@ -996,6 +1067,7 @@ def test_july17_single_record_profile_decodes_full_worker_batch(tmp_path):
                             "quantity_added_offset": 40,
                             "destination_instance_offset": 71,
                             "context_offset": 27,
+                            "record_count_offset": 16,
                         }
                     ]
                 },

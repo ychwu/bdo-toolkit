@@ -179,7 +179,9 @@ if not result.complete or result.snapshot is None:
         f"Npcap drops={health.pcap_dropped}, "
         f"interface drops={health.pcap_interface_dropped}, "
         f"queue overflows={health.packet_queue_overflows}, "
-        f"flow evictions={health.flow_state_evictions}",
+        f"flow evictions={health.flow_state_evictions}, "
+        f"candidate history rolled over="
+        f"{health.candidate_history_rolled_over}",
         flush=True,
     )
     if args.save_pcap is not None:

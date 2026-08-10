@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, fields
 
 from bdo_toolkit import __all__ as package_exports
 from bdo_toolkit.character_state import (
@@ -12,6 +12,7 @@ from bdo_toolkit.character_state import (
     analyze_character_load_pcap,
     format_character_state,
 )
+from bdo_toolkit.diagnostics import DecoderHealth
 from bdo_toolkit.item_state import (
     CharacterLoadSession,
     ItemStateCaptureLimitError,
@@ -157,13 +158,39 @@ def test_item_state_serialization_exposes_honest_coverage_and_provenance():
     assert provenance.accumulation_policy == "not_reported"
 
     payload = state.to_dict()
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
+    assert payload["decoder_health"]["storage_status"] == "not_observed"
     assert payload["coverage"] == coverage.to_dict()
     assert payload["provenance"] == provenance.to_dict()
     assert payload["storage"]["destinations"][0]["storage_id"] == 0x0020
     generic_payload = asdict(state)
     assert isinstance(generic_payload["storages"], tuple)
     assert generic_payload["storages"][0]["storage_id"] == 0x0020
+
+
+def test_decoder_health_is_a_first_class_snapshot_dataclass_field():
+    common = {
+        "profile_source": "opcodes.local",
+        "frames_seen": 1,
+        "inventory": _inventory(),
+        "storages": (),
+        "storage_snapshot_records": 0,
+        "hydration_generations_seen": 1,
+        "warnings": (),
+    }
+    compatible = CharacterStateSnapshot(
+        **common,
+        decoder_health=DecoderHealth(storage_status="compatible"),
+    )
+    incompatible = CharacterStateSnapshot(
+        **common,
+        decoder_health=DecoderHealth(storage_status="incompatible"),
+    )
+
+    assert "decoder_health" in {field.name for field in fields(compatible)}
+    assert asdict(compatible)["decoder_health"]["storage_status"] == "compatible"
+    assert "decoder_health=DecoderHealth" in repr(compatible)
+    assert compatible != incompatible
 
 
 def test_storage_only_provenance_discloses_missing_generation_boundary():

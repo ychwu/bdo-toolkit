@@ -7,8 +7,23 @@ The event filter intentionally excludes ``inventory_snapshot`` and
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
-from bdo_toolkit import ConsoleEventWriter, EventFilter, capture_live
+from bdo_toolkit import (
+    ConsoleEventWriter,
+    DecoderDiagnostic,
+    EventFilter,
+    capture_live,
+)
+
+
+def report_decoder_problem(diagnostic: DecoderDiagnostic) -> None:
+    print(
+        f"DECODER {diagnostic.severity.upper()} [{diagnostic.code}] "
+        f"{diagnostic.message}",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def main() -> None:
@@ -21,6 +36,7 @@ def main() -> None:
         opcode_profile=local_profile,
         # Keep live deltas/transfers; omit character-state hydration bursts.
         event_filter=EventFilter(event_types={"item_received", "storage_delta"}),
+        on_diagnostic=report_decoder_problem,
     ):
         writer.write(event)
 

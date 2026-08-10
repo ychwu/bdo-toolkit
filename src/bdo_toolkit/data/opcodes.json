@@ -89,6 +89,7 @@
     "STORAGE_ITEM_DELTA": [
       {
         "confidence": "calibrated-high",
+        "context_offset": 27,
         "destination_instance_offset": 71,
         "event": "STORAGE_ITEM_DELTA",
         "item_id_offset": 36,
@@ -96,6 +97,7 @@
         "observed_at": "2026-07-17T23:26:48Z",
         "opcode": "0x126D",
         "quantity_added_offset": 40,
+        "record_count_offset": 16,
         "score": 1.0,
         "source": "calibrate inventory-to-storage item_id=7003 qty=5"
       }

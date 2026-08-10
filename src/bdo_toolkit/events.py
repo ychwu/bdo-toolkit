@@ -101,10 +101,20 @@ class BDOEvent:
     storage_id: Optional[int] = None
     storage_name: Optional[str] = None
     storage_name_confidence: Optional[str] = None
-    # "snapshot" for initial-load state synchronization, "live" for a
-    # storage mutation, "unknown" for a recognized wrapper with unfamiliar
-    # semantics, and None when an older layout cannot expose the distinction.
+    # "snapshot" for character-load state synchronization, "live" for a
+    # storage mutation, "unknown" while a structurally decoded storage wrapper
+    # awaits relational classification, and None for non-storage events.
     storage_operation: Optional[str] = None
+    # Internal TCP connection-lifetime identity. This must not affect the
+    # public event schema, equality, or hashing; stateful classifiers use it to
+    # keep reconnects that reuse one four-tuple isolated.
+    _flow_generation: int = field(
+        default=0,
+        kw_only=True,
+        repr=False,
+        compare=False,
+        hash=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "extra", _freeze_value(self.extra))
@@ -168,6 +178,8 @@ class BDOEvent:
             getattr(self, field_info.name)
             for field_info in dataclasses.fields(self)
             if field_info.name != "extra"
+            and field_info.compare
+            and field_info.hash is not False
         )
         return hash((values, _hashable_value(self.extra)))
 

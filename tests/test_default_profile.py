@@ -49,8 +49,9 @@ def test_bundled_profile_is_the_reviewed_july17_authority() -> None:
         "quantity_added_offset",
         "destination_instance_offset",
         "context_offset",
+        "record_count_offset",
         "repeat_stride",
-    ) == ("0x126D", 257, 36, 40, 71, None, None)
+    ) == ("0x126D", 257, 36, 40, 71, 27, 16, None)
     assert _entry_shape(
         profile.specs["SOURCE_CONTAINER_DECREMENT"][0],
         "opcode",
@@ -247,9 +248,8 @@ def test_default_profile_does_not_match_the_disproved_offset_19() -> None:
 
     assert len(events) == 1
     event = events[0]
-    assert event.event_type == "storage_delta"
-    assert event.deposit_origin == "unknown"
-    assert event.extra["deposit_origin_evidence"]["matching_decrement"] is False
+    assert event.event_type == "storage_record"
+    assert event.deposit_origin is None
 
 
 @pytest.mark.skipif(

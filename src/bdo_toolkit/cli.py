@@ -11,8 +11,10 @@ from typing import Optional
 from . import __version__
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from .capture import capture_live, replay_pcap
+from .diagnostics import DecoderDiagnostic
 from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
+    CalibrationAuthorityError,
     CALIBRATION_ACTIONS,
     CalibrationResult,
     DirectionMismatchError,
@@ -152,6 +154,14 @@ def _decode_filter(args: argparse.Namespace) -> EventFilter | None:
     )
 
 
+def _report_decoder_diagnostic(diagnostic: DecoderDiagnostic) -> None:
+    print(
+        f"decoder {diagnostic.severity} [{diagnostic.code}]: "
+        f"{diagnostic.message}",
+        file=sys.stderr,
+    )
+
+
 def _run_replay(args: argparse.Namespace) -> int:
     writer = _writer(args)
     count = 0
@@ -160,6 +170,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         opcode_profile=args.profile,
         ports=args.ports,
         event_filter=_decode_filter(args),
+        on_diagnostic=_report_decoder_diagnostic,
     ):
         writer.write(event)
         count += 1
@@ -179,6 +190,7 @@ def _run_live(args: argparse.Namespace) -> int:
             ),
             event_filter=_decode_filter(args),
             capture_seconds=args.capture_seconds,
+            on_diagnostic=_report_decoder_diagnostic,
         ):
             writer.write(event)
     except KeyboardInterrupt:
@@ -271,6 +283,7 @@ def _print_calibration_result(result: CalibrationResult, verbose: bool) -> None:
             "quantity_offset",
             "item_instance_offset",
             "context_offset",
+            "record_count_offset",
             "inventory_slot_offset",
             "repeat_stride",
             "source_instance_offset",
@@ -318,8 +331,14 @@ def _run_calibrate(args: argparse.Namespace) -> int:
 
     if args.action == "auto":
         instruction = (
-            f"move item {args.item_id} from storage to inventory and back "
-            "(either order)"
+            f"with five matching unstackable items having raw ID {args.item_id}: "
+            "perform the in-game actions deposit 1, deposit 4, then withdraw "
+            "all 5 while capture passively listens"
+        )
+    elif args.action == "inventory-to-storage":
+        instruction = (
+            f"deposit matching item {args.item_id} records using at least "
+            "two different batch counts"
         )
     else:
         instruction = f"perform the {args.action} action with item {args.item_id} once"
@@ -353,7 +372,7 @@ def _run_calibrate(args: argparse.Namespace) -> int:
                 capture_seconds=args.capture_seconds,
                 min_confidence=args.min_confidence,
             )
-    except DirectionMismatchError as exc:
+    except (DirectionMismatchError, CalibrationAuthorityError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -376,12 +395,16 @@ def _run_calibrate(args: argparse.Namespace) -> int:
         print("nothing to write", file=sys.stderr)
         return 1
 
-    update = update_profile(
-        result,
-        args.write,
-        action=args.action,
-        replace=not args.merge,
-    )
+    try:
+        update = update_profile(
+            result,
+            args.write,
+            action=args.action,
+            replace=not args.merge,
+        )
+    except CalibrationAuthorityError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(update.summary(), file=sys.stderr)
     return 0
 
@@ -653,13 +676,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--item-id",
         type=_positive_int,
         required=True,
-        help="decimal item id used for the calibration action (Potato: 7003)",
+        help="decimal item id used for calibration (use matching unstackables)",
     )
     calibrate.add_argument(
         "--qty",
         type=_positive_int,
         default=None,
-        help="expected quantity for the action",
+        help="expected per-record quantity (normally 1 for unstackables)",
     )
     calibrate.add_argument(
         "--action",
@@ -667,10 +690,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "calibration workflow (default: auto). auto detects both transfer "
-            "directions from packet structure -- just move the item to storage "
-            "and back. Explicit directions are strict and refuse a capture whose "
-            "structure contradicts the declared action. loot-preview is a "
-            "separate optional gathering calibration."
+            "directions from packet structure. With five matching unstackables "
+            "and --qty 1, the user deposits 1, deposits 4, then withdraws all 5 "
+            "while capture listens; --qty remains the value in each record, not "
+            "the batch size. "
+            "Explicit directions are strict and refuse a capture whose structure "
+            "contradicts the declared action. loot-preview is a separate optional "
+            "gathering calibration."
         ),
     )
     calibrate.add_argument(
@@ -727,8 +753,8 @@ def build_parser() -> argparse.ArgumentParser:
     reset.add_argument(
         "--calibration-item-id",
         type=_positive_int,
-        default=7003,
-        help="item id recorded in the fresh profile (default: 7003)",
+        default=15156,
+        help="item id recorded in the fresh profile (default: 15156)",
     )
     reset.set_defaults(func=_run_reset_profile)
 

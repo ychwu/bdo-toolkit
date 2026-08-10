@@ -6,7 +6,7 @@ sent by the server during initial login or a character switch.
 For the smallest live example built only from the public item-state API, run:
 
 ```powershell
-py examples/live_item_state_snapshot.py
+py examples/live_character_load_snapshot.py
 ```
 
 It loads the repository `opcodes.local`, starts capture, waits for initial login
@@ -52,8 +52,9 @@ Add `--show-items` for every decoded item record or `--json` for a structured
 report. Use `--help` for interface, port, timed-capture, and filter options.
 `--save-pcap` is live-only and cannot be combined with the replay-only
 `--pcap` option. The JSON report is the aggregate model's `to_dict()` output:
-top-level `schema_version` is currently `1`, and `coverage` plus `provenance`
-make the observation limits and capture source machine-readable.
+top-level `schema_version` is currently `4`. `coverage`, `provenance`, and
+`decoder_health` separately make observation limits, capture source, and final
+storage-schema compatibility machine-readable.
 
 ## What the report means
 
@@ -62,42 +63,72 @@ make the observation limits and capture source machine-readable.
   occupied item stacks. Both are deduplicated by opaque instance identifiers.
 - Large storages can span several protocol wrappers; the tool merges those
   chunks instead of treating each wrapper as a complete storage.
-- Repeated hydration sweeps are merged by instance, so two identical sweeps do
-  not double the reported state.
+- Repeated hydration sweeps are ordered conservatively and the latest inferred
+  sweep is selected as current state. Older observations remain diagnostic but
+  do not inflate current item totals.
 - If one capture contains more than one inventory hydration generation, only
   the latest character load is reported; older inventory and storage state is
   discarded.
-- Empty storage envelopes are reported when the current wrapper exposes a
-  known numeric destination with zero records.
+- Empty storage envelopes are reported only when calibrated count/destination
+  fields, sibling prefix/stride geometry, a nonzero numeric destination, and
+  the hydration window all validate. An unregistered numeric ID is preserved
+  without inventing a town name and makes decoder health incompatible.
 - The profile supplies the patch-specific opcodes, calibrated item offsets,
-  instance offsets, and single-record lengths. Multi-record stride is derived
-  from each wrapper's declared count and validated record geometry.
+  instance offsets, single-record lengths, storage destination
+  `context_offset`, and storage `record_count_offset`. Multi-record stride is
+  derived from each wrapper's declared count and validated record geometry.
 
 ## After a game patch
 
-Run the normal guided transfer calibration first. It relearns the two shared
-record families (`INVENTORY_TRANSFER` and `STORAGE_ITEM_DELTA`) and their
-patch-specific opcodes, first-item positions, and normalized base lengths.
-There is currently no separate mandatory character-load calibration, but
-ordinary calibration is not a generic schema learner: quantity and instance
-still assume `item+4` / `item+35`, and receipt context discovery searches for
-known values. Storage destination/mode/token positions remain decoder-owned;
-the current decoder recognizes both the July 17 and August 7 layouts.
+Run the normal guided transfer calibration first. For storage authority, use a
+controlled unstackable sequence containing at least two distinct validated
+record counts: one single plus one multi, or two different multi counts. Pass
+the quantity in each record (normally `1`), not the batch size. Calibration
+relearns the shared `INVENTORY_TRANSFER` and `STORAGE_ITEM_DELTA` families,
+their patch-specific opcodes, first-item positions, normalized base lengths,
+storage destination `context_offset`, and declared `record_count_offset`.
+
+The recommended one-session sequence is three actions with five matching
+unstackables: deposit one, deposit the remaining four, then withdraw all five.
+Pass `quantity=1` throughout. Counts `1` and `4` provide the required distinct
+storage evidence; the final withdrawal provides the reverse transfer family.
+
+If a storage wrapper is observed but either destination or count column remains
+ambiguous—including a run with only one validated record count—calibration
+raises `bdo_toolkit.calibration.CalibrationAuthorityError`, returns no result,
+and writes no profile. An older profile missing either new storage field is
+reported incompatible and needs this one migration calibration; no July/August
+mode/token/layout branch is merged behind it.
 
 Inventory hydration should resume from that profile when the patch retains the
 shared transfer record and all-zero character-load context: its count is
 searched in the prefix, stride is derived per frame, and container metadata is
 learned from either a validated record tail or a common wrapper-header byte.
 
-Storage hydration has a narrower guarantee. Record count is searched in the
-prefix and stride is derived structurally, but snapshot/live/empty and town
-metadata use observed destination/mode/token wrapper layouts that ordinary
-calibration does not discover or persist. The July 17 and August 7 layouts are
-recognized. An opcode/base change should recover after calibration while the
-shared record assumptions and one recognized wrapper layout survive; a new
-wrapper-metadata layout requires a decoder update or a future snapshot-specific
-detection/calibration enhancement. In every case, replay the new capture and
-confirm the diagnostic summary before relying on it in an application.
+Storage hydration uses the calibrated destination and declared-count fields;
+runtime derives stride and validates every record without a patch-generation
+layout table. Every decoded storage record begins neutral. Manual/worker origin
+evidence gets first claim, a bounded multi-destination cohort can then prove
+hydration, and filtering happens last. The finite character-state assembler can
+also use its stronger inventory-load boundary to validate sparse/count-zero
+state while the continuous activity stream remains fail-neutral. If one
+otherwise coherent hydration sweep is split by the live tracker's timing
+window, finite assembly can reconcile the pieces only within the same flow
+generation, opcode, inferred sweep, and inventory-anchored epoch; a proven live
+storage mutation prevents reconciliation across it.
+
+Offline analysis loads one immutable profile revision for both decoding and
+aggregation. `CharacterLoadSession` pins the same combined profile/spec
+authority when constructed, so replacing the file before `start()` cannot mix
+revisions. Construct a new session after recalibration to use the new file.
+
+This survives ordinary opcode, absolute-offset, base-length, and stride rotation
+after fresh calibration. It still fails closed if the shared item record,
+quantity/instance relationships (`item+4` / `item+35`), count encoding,
+destination-ID meaning, or origin/hydration relationships themselves change.
+In every case, replay the new capture and require
+`state.decoder_health.storage_status == "compatible"` before treating missing
+towns as meaningful.
 
 ## Deliberate limitations
 
@@ -127,6 +158,10 @@ confirm the diagnostic summary before relying on it in an application.
   report observed every registered storage ID, there is no proven end marker;
   `coverage.completion_status` remains `"unknown"` and
   `coverage.capture_may_be_partial` remains true.
+- Decoder compatibility is a different signal. `"not_observed"` is
+  inconclusive; `"incompatible"` means calibrated authority failed or a numeric
+  destination is missing from the name registry. The latter ID and its items
+  are preserved with `name=None`, and the report includes a registry warning.
 
 Developers should use the canonical experimental `bdo_toolkit.item_state`
 facade:
@@ -163,7 +198,9 @@ if silver is not None:
     print(silver.quantity, silver.inventory_slot, silver.container_code)
 
 payload = state.to_dict()
-print(payload["schema_version"])        # 1
+print(payload["schema_version"])        # 4
+print(payload["decoder_health"]["storage_status"])
+print(state.decoder_health.storage_status)
 print(state.coverage.completion_status)  # "unknown"
 print(state.coverage.capture_may_be_partial)  # True
 print(state.provenance.capture_mode)     # "pcap_replay"
@@ -171,8 +208,8 @@ print(state.provenance.capture_mode)     # "pcap_replay"
 
 `state.storages` remains an immutable tuple: it supports tuple type checks and
 operators, iteration, integer indexing, and slicing in addition to the storage
-and cross-storage item queries shown above. The older `state.storage(id)` and `state.storage_named(name)`
-helpers remain available.
+and cross-storage item queries shown above. The older `state.storage(id)` and
+`state.storage_named(name)` helpers remain available.
 
 `state.coverage` reports decoded inventory/storage counts, registered IDs seen
 or not seen, unregistered IDs, and explicit empty envelopes without claiming a
@@ -182,6 +219,14 @@ input or saved-capture path, the generation-selection rule, and
 protocol. When no inventory boundary decodes, provenance reports
 `all_observed_storage_no_inventory_boundary` and the summary warns that retained
 storage records may span multiple loads.
+
+`state.decoder_health` is also available as `session.decoder_health` during a
+live `CharacterLoadSession`. The stopped snapshot freezes its final value. A
+validated sparse/count-zero cohort can upgrade aggregate health from
+`not_observed` to `compatible`; an unregistered authoritative destination makes
+it `incompatible` without discarding the numeric ID or item state. Schema 4
+adds this health object at top level, so persisted schema-3-or-earlier consumers
+must update their version gate.
 
 For an embedded live workflow, use the imported
 `CharacterLoadSession.start()` and `CharacterLoadSession.stop()`. Pass

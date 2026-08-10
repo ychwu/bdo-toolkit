@@ -322,6 +322,7 @@ def _validate_profile_entry(
         "quantity_offset",
         "item_instance_offset",
         "context_offset",
+        "record_count_offset",
         "inventory_slot_offset",
         "source_instance_offset",
         "quantity_removed_offset",
@@ -336,6 +337,19 @@ def _validate_profile_entry(
             raise ProfileError(
                 f"{field_name} in {location} must be a non-negative integer or null"
             )
+    if event == "STORAGE_ITEM_DELTA":
+        item_offset = entry.get("item_id_offset")
+        context_offset = entry.get("context_offset")
+        count_offset = entry.get("record_count_offset")
+        if isinstance(item_offset, int) and not isinstance(item_offset, bool):
+            if context_offset is not None and context_offset + 4 > item_offset:
+                raise ProfileError(
+                    f"context_offset in {location} must end before item_id_offset"
+                )
+            if count_offset is not None and count_offset + 2 > item_offset:
+                raise ProfileError(
+                    f"record_count_offset in {location} must end before item_id_offset"
+                )
     repeat_stride = entry.get("repeat_stride")
     if repeat_stride is not None and (
         isinstance(repeat_stride, bool)

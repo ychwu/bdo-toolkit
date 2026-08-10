@@ -231,8 +231,9 @@ def test_new_patch_family_is_discovered_without_being_known(tmp_path):
                             "item_id_offset": 37,
                             "quantity_added_offset": 41,
                             "destination_instance_offset": 72,
-                            "context_offset": 25,
-                            "repeat_stride": 221,
+                                "context_offset": 25,
+                                "record_count_offset": 35,
+                                "repeat_stride": 221,
                         }
                     ]
                 },

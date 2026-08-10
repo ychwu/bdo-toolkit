@@ -82,6 +82,7 @@
         "observed_at": "2026-07-02T11:51:05",
         "opcode": "0x0E6A",
         "quantity_added_offset": 41,
+        "record_count_offset": 6,
         "repeat_stride": 226,
         "score": 1.0,
         "source": "calibrate-potato inventory-to-storage qty=3"

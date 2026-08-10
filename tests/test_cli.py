@@ -38,6 +38,32 @@ def test_replay_invalid_capture_is_a_clean_cli_error(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(
+    ("extra_args", "expected_item_id"),
+    [
+        ([], 15156),
+        (["--calibration-item-id", "7003"], 7003),
+    ],
+)
+def test_reset_profile_cli_metadata_item_default_and_override(
+    tmp_path,
+    capsys,
+    extra_args,
+    expected_item_id,
+):
+    profile = tmp_path / "opcodes.json"
+
+    exit_code = cli.main(["reset-profile", str(profile), *extra_args])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "reset" in captured.err
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    assert data["calibration_item_id"] == expected_item_id
+    assert data["profile_active"] is True
+    assert all(not entries for entries in data["specs"].values())
+
+
+@pytest.mark.parametrize(
     ("write_mode", "expected_replace"),
     [
         ([], True),
@@ -58,6 +84,7 @@ def test_calibrate_cli_writes_mocked_result(
                 quantity_added_offset=41,
                 destination_instance_offset=72,
                 context_offset=8,
+                record_count_offset=6,
                 repeat_stride=226,
             ),
         ),
@@ -83,6 +110,8 @@ def test_calibrate_cli_writes_mocked_result(
             "unused.pcapng",
             "--item-id",
             "99123",
+            "--action",
+            "inventory-to-storage",
             "--write",
             str(profile),
             *write_mode,

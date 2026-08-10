@@ -6,20 +6,27 @@ local opcode profile from a capture of a known in-game action:
     from bdo_toolkit.calibration import calibrate_pcap, update_profile
 
     result = calibrate_pcap(
-        "move_3_potatoes_to_storage.pcapng",
-        item_id=7003,          # the item used for the action (Potato)
-        quantity=3,            # how many were moved
-        action="inventory-to-storage",
+        "unstackable_1_in_4_in_5_out.pcapng",
+        item_id=15156,         # replace with the unstackable item used
+        quantity=1,            # each serialized unstackable record has qty 1
+        action="auto",
     )
-    update_profile(result, "opcodes.json", action="inventory-to-storage")
+    update_profile(result, "opcodes.json")
 
 Then point the decoding APIs at the local profile:
 
     replay_pcap("session.pcapng", opcode_profile="opcodes.json")
 
-The calibration heuristics score every frame containing the watched item id
-and promote the most plausible record layouts. They are ported unchanged from
-the original research prototype.
+Storage calibration requires two distinct validated record counts so a moving
+wrapper flag cannot be mistaken for the authoritative count column. Capture,
+for example, a deposit of one matching unstackable followed by a deposit of
+four, then one withdrawal of all five in the same automatic session. The
+single deposit also anchors manual-origin evidence, while the multi deposit and
+withdrawal prove repeated geometry in both directions. The calibration
+session only observes these user-performed actions: ``quantity=1`` remains the
+expected value in every serialized record and is not changed to the action's
+batch size. The calibration heuristics score every frame containing the watched
+item ID and promote only structurally proven layouts.
 """
 
 from __future__ import annotations
@@ -31,7 +38,7 @@ import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Iterable, Optional
@@ -50,15 +57,13 @@ from ._capture_runtime import (
 from ._framing import FrameCollectorScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
-    CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH,
-    CURRENT_STORAGE_DELTA_RECORD_STRIDE,
     DEFAULT_SERVER_PORTS,
     LOOT_PREVIEW_SENTINEL_INSTANCE,
     MAX_PLAUSIBLE_ITEM_ID,
     SOURCE_CONTEXT_LABELS,
     STORAGE_DELTA_CONTEXTS,
     BDOFrame,
-    storage_location,
+    storage_destination_candidates,
 )
 from ._reassembly import FlowManager
 from ._specs import _validate_loot_profile_entries
@@ -68,6 +73,7 @@ __all__ = [
     "CALIBRATION_ACTIONS",
     "DEFAULT_CALIBRATION_MAX_RETAINED_BYTES",
     "DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES",
+    "CalibrationAuthorityError",
     "CalibrationResult",
     "CalibrationRetention",
     "CalibrationSession",
@@ -118,6 +124,7 @@ class MessageSpec:
     quantity_offset: Optional[int] = None
     item_instance_offset: Optional[int] = None
     context_offset: Optional[int] = None
+    record_count_offset: Optional[int] = field(default=None, kw_only=True)
     inventory_slot_offset: Optional[int] = None
     repeat_stride: Optional[int] = None
     source_instance_offset: Optional[int] = None
@@ -147,6 +154,7 @@ class MessageSpec:
             "quantity_offset",
             "item_instance_offset",
             "context_offset",
+            "record_count_offset",
             "inventory_slot_offset",
             "source_instance_offset",
             "quantity_removed_offset",
@@ -177,6 +185,7 @@ class MessageSpec:
                 "quantity_offset": 4,
                 "item_instance_offset": 8,
                 "context_offset": 4,
+                "record_count_offset": 2,
                 "inventory_slot_offset": 1,
                 "source_instance_offset": 8,
                 "quantity_removed_offset": 4,
@@ -187,6 +196,17 @@ class MessageSpec:
                 value = getattr(self, name)
                 if value is not None and value + width > self.length:
                     raise ValueError(f"{name} extends beyond the declared length")
+        if self.event == "STORAGE_ITEM_DELTA" and self.item_id_offset is not None:
+            if (
+                self.context_offset is not None
+                and self.context_offset + 4 > self.item_id_offset
+            ):
+                raise ValueError("context_offset must end before item_id_offset")
+            if (
+                self.record_count_offset is not None
+                and self.record_count_offset + 2 > self.item_id_offset
+            ):
+                raise ValueError("record_count_offset must end before item_id_offset")
 
     def dedupe_key(self) -> tuple[object, ...]:
         return (
@@ -197,6 +217,7 @@ class MessageSpec:
             self.quantity_offset,
             self.item_instance_offset,
             self.context_offset,
+            self.record_count_offset,
             self.inventory_slot_offset,
             self.source_instance_offset,
             self.quantity_removed_offset,
@@ -218,6 +239,7 @@ class MessageSpec:
             "quantity_offset": self.quantity_offset,
             "item_instance_offset": self.item_instance_offset,
             "context_offset": self.context_offset,
+            "record_count_offset": self.record_count_offset,
             "inventory_slot_offset": self.inventory_slot_offset,
             "repeat_stride": self.repeat_stride,
             "source_instance_offset": self.source_instance_offset,
@@ -240,6 +262,10 @@ class DirectionMismatchError(ValueError):
     transfer). Auto calibration never raises this; it classifies each direction
     from structure and keeps whatever it can confirm.
     """
+
+
+class CalibrationAuthorityError(ValueError):
+    """A captured target exists but cannot yield a safe decoder profile."""
 
 
 @dataclass(frozen=True)
@@ -725,10 +751,14 @@ def calibrate_frames(
     evidence: list[DirectionEvidence] = []
     specs: list[MessageSpec] = []
 
-    # Auto covers both transfer directions and classifies each from structure,
-    # so the user need only move an item storage->inventory and back (in either
-    # order). Direction is never taken on faith. Loot preview needs a gathering
-    # action, so it stays an explicit, optional mode.
+    # Auto covers both transfer directions and classifies each from structure.
+    # Storage authority additionally needs two distinct record counts so an
+    # unrelated small header integer cannot impersonate the count column. Use
+    # an unstackable item with quantity=1 and perform at least two different
+    # deposit sizes, plus one storage->inventory move. The guided example uses
+    # deposits of 1 and 4 followed by one withdrawal of all 5. Direction is
+    # never taken on faith. Loot preview needs a gathering action, so it stays
+    # an explicit, optional mode.
     actions: tuple[str, ...]
     if action == "auto":
         actions = ("storage-to-inventory", "inventory-to-storage")
@@ -807,17 +837,22 @@ class CalibrationSession:
     ``stop()``. ``start()`` returns after the capture adapter reports ready,
     or raises after a finite startup deadline. Typical app flow::
 
-        session = CalibrationSession(item_id=7003, quantity=3)  # action="auto"
+        # quantity=1 matches each serialized unstackable record; it is not
+        # the number of items moved by each user-performed action.
+        session = CalibrationSession(item_id=15156, quantity=1)
         session.start()
-        # ... tell the user to move the item to storage and back,
-        #     then have them click "Done" in your UI ...
+        # ... deposit 1; deposit the remaining 4; withdraw all 5;
+        #     then have the user click "Done" ...
         result = session.stop()
         if result.specs:
             update_profile(result, my_profile_path)
 
     Auto calibration (the default) classifies each transfer direction from
-    packet structure, so the user only needs to move an item to storage and
-    back in either order; no ``action`` need be declared.
+    packet structure, so no ``action`` need be declared. Storage authority
+    requires at least two distinct deposit counts plus one withdrawal. The
+    guided five-unstackable sequence is deposit one, deposit four, withdraw
+    all five. The user performs those actions; the session passively observes
+    them, and ``quantity=1`` continues to describe every repeated item record.
 
     Live evidence is bounded by both ``max_retained_frames`` and
     ``max_retained_bytes``. The newest contiguous frame tail is retained so a
@@ -1192,11 +1227,15 @@ def calibrate_live(
 ) -> CalibrationResult:
     """Blocking convenience wrapper around :class:`CalibrationSession`.
 
-    Suited to console scripts: perform the in-game action once while the
-    capture runs. With ``capture_seconds`` the capture stops automatically;
-    without it, the capture runs until the user interrupts (Ctrl+C), which is
-    treated as "action performed, calibrate now" rather than as an abort.
-    Apps with their own UI should use :class:`CalibrationSession` directly.
+    Suited to console scripts: perform the required in-game sequence while the
+    capture runs. For automatic transfer calibration, the guided sequence is
+    deposit one matching unstackable, deposit four, then withdraw all five.
+    The toolkit does not perform those actions; ``quantity=1`` matches every
+    serialized item record rather than the batch totals 1, 4, or 5.
+    With ``capture_seconds`` the capture stops automatically; without it, the
+    capture runs until the user interrupts (Ctrl+C), which is treated as
+    "actions performed, calibrate now" rather than as an abort. Apps with
+    their own UI should use :class:`CalibrationSession` directly.
     """
     import time
 
@@ -1268,14 +1307,37 @@ def update_profile(
             f"expected one of {CALIBRATION_ACTIONS} or 'auto'"
         )
     if isinstance(result, CalibrationResult):
+        from_calibration_result = True
         specs = tuple(result.specs)
         if calibration_item_id is None:
             calibration_item_id = result.calibration_item_id
     else:
+        from_calibration_result = False
         specs = tuple(result)
     if any(not isinstance(spec, MessageSpec) for spec in specs):
         raise TypeError("update_profile expects MessageSpec objects")
     _validate_profile_replacement_options(replace, replace_entire_action)
+    if from_calibration_result and action == "auto" and specs:
+        transfer_events = {
+            "INVENTORY_TRANSFER",
+            "SOURCE_CONTAINER_DECREMENT",
+            "SOURCE_STACK_DECREMENT",
+            "SOURCE_ITEM_REFERENCE",
+            "STORAGE_ITEM_DELTA",
+        }
+        observed_events = {spec.event for spec in specs}
+        if observed_events & transfer_events:
+            required = {"INVENTORY_TRANSFER", "STORAGE_ITEM_DELTA"}
+            missing = sorted(required - observed_events)
+            if missing:
+                raise CalibrationAuthorityError(
+                    "auto calibration is incomplete and cannot safely replace a "
+                    "post-patch profile; missing primary family/families: "
+                    f"{', '.join(missing)}. Capture both transfer directions, "
+                    "including an unstackable multi-record deposit into storage, "
+                    "or pass the matching explicit action only for an intentional "
+                    "reviewed partial update. No profile was written."
+                )
     profile_path = Path(path)
     if not specs:
         return ProfileUpdate(
@@ -1388,7 +1450,11 @@ def calibrate_and_update(
     default and both objects come back; if it found nothing the profile file
     is left untouched and the update slot is ``None``::
 
-        result, update = calibrate_and_update("opcodes.local", item_id=7003)
+        result, update = calibrate_and_update(
+            "opcodes.local",
+            item_id=1000306,
+            quantity=1,
+        )
         print(result.summary())
         if update is not None:
             print(update.summary())
@@ -1469,11 +1535,16 @@ def calibrate_and_update(
 
 def reset_profile(
     path: str | Path,
-    calibration_item_id: int = 7003,
+    calibration_item_id: int = 15156,
     *,
     backup: bool = True,
 ) -> Optional[Path]:
-    """Write an empty active profile, returning the backup path if any."""
+    """Write an empty active profile, returning the backup path if any.
+
+    ``calibration_item_id`` is maintenance metadata only. The default names the
+    recommended unstackable calibration item and remains explicitly
+    overrideable; resetting a profile does not itself calibrate that item.
+    """
     if (
         isinstance(calibration_item_id, bool)
         or not isinstance(calibration_item_id, int)
@@ -1811,8 +1882,7 @@ def _calibrate_storage_to_inventory(
             quantity_offset=layout_item_offset + 4,
             item_instance_offset=layout_instance_offset,
             context_offset=_discover_context_offset(best.frame, layout_item_offset),
-            repeat_stride=_discover_repeat_stride(best.frame, layout_item_offset)
-            or observed_stride,
+            repeat_stride=observed_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "storage-to-inventory"),
             observed_at=_iso_timestamp(best.frame.context.timestamp),
@@ -1864,7 +1934,25 @@ def _calibrate_inventory_to_storage(
         storage_records, key=lambda record: (record.confidence, -record.item_offset)
     )
     specs: list[MessageSpec] = []
-    source_stack = _discover_source_stack_decrement(frames, best, options)
+    # The single-record wrapper normally wins the primary-record score because
+    # its normalized message length is directly observable.  Do not let that
+    # choice discard stronger repeated decrement evidence from another
+    # validated deposit in the same calibration run.  Evaluate record zero of
+    # every unique target deposit frame; repeated shapes already outrank their
+    # single-record counterparts in companion scoring, while incompatible
+    # equal-strength shapes still fail closed in the shared selector.
+    first_storage_records: dict[int, _CalibratedItemRecord] = {}
+    for record in storage_records:
+        frame_identity = id(record.frame)
+        previous = first_storage_records.get(frame_identity)
+        if previous is None or record.item_offset < previous.item_offset:
+            first_storage_records[frame_identity] = record
+    source_stack_candidates: list[MessageSpec] = []
+    for record in first_storage_records.values():
+        candidate = _discover_source_stack_decrement(frames, record, options)
+        if candidate is not None:
+            source_stack_candidates.append(candidate)
+    source_stack = _unique_best_companion_spec(source_stack_candidates)
     if source_stack is not None:
         specs.append(source_stack)
 
@@ -1886,15 +1974,67 @@ def _calibrate_inventory_to_storage(
         layout_item_offset,
         layout_instance_offset,
     )
-    storage_context_offset = _discover_storage_context_offset(
-        best.frame,
-        layout_item_offset,
+    storage_context_offset = _discover_storage_context_offset_from_frames(
+        (record.frame for record in storage_records),
+        opcode=best.frame.opcode,
+        item_offset=layout_item_offset,
     )
-    repeat_stride = observed_stride or _discover_storage_repeat_stride(
-        best.frame,
-        layout_item_offset,
-        layout_instance_offset,
+    record_count_offset = _discover_storage_record_count_offset(
+        frames,
+        records=storage_records,
+        opcode=best.frame.opcode,
+        item_offset=layout_item_offset,
+        instance_offset=layout_instance_offset,
+        single_record_length=single_record_length,
     )
+    # The strongest target record can be the single-record action even when
+    # the same guided run also contains the multi-record shape that proves the
+    # wrapper stride. Learn that stride across every structurally compatible
+    # same-opcode frame instead of coupling it to whichever record won the score
+    # tie. This lets character-state analysis validate count-zero envelopes
+    # even for an account whose storages are all empty after calibration.
+    observed_strides = {observed_stride} if observed_stride is not None else set()
+    seen_shape_messages: set[bytes] = set()
+    for frame in frames:
+        if frame.opcode != best.frame.opcode or frame.message in seen_shape_messages:
+            continue
+        seen_shape_messages.add(frame.message)
+        candidate_base, candidate_stride = _record_frame_shape(
+            frame,
+            best.item_id,
+            layout_item_offset,
+            layout_instance_offset,
+        )
+        if candidate_base == single_record_length and candidate_stride is not None:
+            observed_strides.add(candidate_stride)
+    repeat_stride = (
+        next(iter(observed_strides)) if len(observed_strides) == 1 else None
+    )
+    missing_authority: list[str] = []
+    if storage_context_offset is None:
+        missing_authority.append("destination-field")
+    if record_count_offset is None:
+        missing_authority.append("record-count-field")
+    if missing_authority:
+        missing_text = ", ".join(missing_authority)
+        guidance: list[str] = []
+        if "destination-field" in missing_authority:
+            guidance.append(
+                "repeat the deposit in an unambiguous registered town such as "
+                "Velia or Heidel (or include controlled deposits to different towns)"
+            )
+        if "record-count-field" in missing_authority:
+            guidance.append(
+                "include two independently validated record counts (for example "
+                "one single-record and one unstackable multi-record deposit, or "
+                "two unstackable deposits with different counts)"
+            )
+        raise CalibrationAuthorityError(
+            f"storage opcode 0x{best.frame.opcode:04X} was observed, but its "
+            f"{missing_text} could not be uniquely proven. No calibration "
+            "result was produced and no profile should be updated. To resolve "
+            f"this, {'; and '.join(guidance)}. Then retry calibration."
+        )
     specs.append(
         MessageSpec(
             event="STORAGE_ITEM_DELTA",
@@ -1904,6 +2044,7 @@ def _calibrate_inventory_to_storage(
             quantity_added_offset=layout_item_offset + 4,
             destination_instance_offset=layout_instance_offset,
             context_offset=storage_context_offset,
+            record_count_offset=record_count_offset,
             repeat_stride=repeat_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "inventory-to-storage"),
@@ -2281,6 +2422,14 @@ def _discover_source_stack_decrement(
         else storage_delta.quantity
     )
     quantity_bytes = quantity.to_bytes(4, "little")
+    storage_record_offsets = _full_transfer_record_offsets(
+        storage_delta.frame,
+        storage_delta.item_offset,
+        storage_delta.instance_offset,
+    )
+    expected_record_count = (
+        len(storage_record_offsets) if len(storage_record_offsets) > 1 else None
+    )
     context = _context_before(
         options.frame_index or _FrameIndex(frames),
         storage_delta.frame,
@@ -2321,6 +2470,7 @@ def _discover_source_stack_decrement(
             frame,
             quantity_bytes,
             exact_instance_offset,
+            expected_record_count=expected_record_count,
         )
         if repeated_shape is not None:
             base_length, repeat_stride, instance_offset, quantity_offset = (
@@ -2378,78 +2528,112 @@ def _source_stack_repeated_shape(
     frame: BDOFrame,
     quantity_bytes: bytes,
     exact_instance_offset: Optional[int],
+    *,
+    expected_record_count: Optional[int] = None,
 ) -> Optional[tuple[int, int, int, int]]:
-    """Normalize an instance-anchored decrement batch to record-one geometry."""
+    """Normalize an instance-anchored decrement batch to record-one geometry.
+
+    The quantity/instance phase is part of the repeated record, not a stable
+    patch constant.  Anchor record zero with the exact destination instance,
+    try every repeated quantity phase that keeps both fields inside one
+    record, and retain only one longest valid geometry.  Longer stride
+    multiples can be aliases that skip records; equal-strength distinct
+    phases are ambiguous and fail closed.
+    """
 
     if exact_instance_offset is None:
         return None
-    quantity_offsets = set(_find_all(frame.message, quantity_bytes))
-    anchors: list[tuple[int, int]] = []
-    for quantity_offset in quantity_offsets:
-        if quantity_offset - 8 == exact_instance_offset:
-            anchors.append((quantity_offset, -8))
-        if (
-            quantity_offset + 8 == exact_instance_offset
-            and frame.message[quantity_offset + 4 : quantity_offset + 8]
-            == b"\x00" * 4
-        ):
-            anchors.append((quantity_offset, 8))
-    if len(anchors) != 1:
+    if expected_record_count is not None and expected_record_count < 2:
         return None
-    first_quantity_offset, instance_delta = anchors[0]
+    quantity_offsets = tuple(sorted(set(_find_all(frame.message, quantity_bytes))))
+    if len(quantity_offsets) < 2:
+        return None
+    quantity_offset_set = set(quantity_offsets)
 
-    def has_record(quantity_offset: int) -> bool:
-        if quantity_offset not in quantity_offsets:
-            return False
-        instance_offset = quantity_offset + instance_delta
-        if instance_offset < 5 or instance_offset + 8 > frame.length:
-            return False
-        if (
-            instance_delta == 8
-            and frame.message[quantity_offset + 4 : quantity_offset + 8]
-            != b"\x00" * 4
-        ):
-            return False
-        return _is_plausible_instance(
-            frame.message[instance_offset : instance_offset + 8]
-        )
-
-    candidates: list[tuple[int, int, int]] = []
-    for later_quantity_offset in sorted(quantity_offsets):
-        repeat_stride = later_quantity_offset - first_quantity_offset
-        if repeat_stride <= 0:
-            continue
-        record_count = 1
-        while has_record(
-            first_quantity_offset + record_count * repeat_stride
-        ):
-            record_count += 1
-        if record_count < 2:
-            continue
-
-        prefix_length = frame.length - record_count * repeat_stride
-        base_length = prefix_length + repeat_stride
-        if (
-            prefix_length < 5
-            or exact_instance_offset < prefix_length
-            or first_quantity_offset < prefix_length
-            or exact_instance_offset + 8 > base_length
-            or first_quantity_offset + 4 > base_length
+    # Four quantity bytes and eight instance bytes must coexist without
+    # overlap inside one repeated record, so a smaller stride cannot be a
+    # valid record geometry. This is a field-width invariant, not a layout
+    # constant.
+    minimum_stride = 12
+    candidates: list[tuple[int, int, int, int]] = []
+    for first_quantity_offset in quantity_offsets:
+        if _ranges_overlap(
+            first_quantity_offset,
+            4,
+            exact_instance_offset,
+            8,
         ):
             continue
-        candidates.append((record_count, base_length, repeat_stride))
+        for later_quantity_offset in quantity_offsets:
+            repeat_stride = later_quantity_offset - first_quantity_offset
+            if repeat_stride < minimum_stride:
+                continue
+
+            record_count = 0
+            while True:
+                delta = record_count * repeat_stride
+                quantity_offset = first_quantity_offset + delta
+                instance_offset = exact_instance_offset + delta
+                if quantity_offset not in quantity_offset_set:
+                    break
+                if (
+                    quantity_offset < 5
+                    or quantity_offset + 4 > frame.length
+                    or instance_offset < 5
+                    or instance_offset + 8 > frame.length
+                    or _ranges_overlap(
+                        quantity_offset,
+                        4,
+                        instance_offset,
+                        8,
+                    )
+                    or not _is_plausible_instance(
+                        frame.message[instance_offset : instance_offset + 8]
+                    )
+                ):
+                    break
+                record_count += 1
+            if record_count < 2 or (
+                expected_record_count is not None
+                and record_count != expected_record_count
+            ):
+                continue
+
+            prefix_length = frame.length - record_count * repeat_stride
+            base_length = prefix_length + repeat_stride
+            if (
+                prefix_length < 5
+                or first_quantity_offset < prefix_length
+                or exact_instance_offset < prefix_length
+                or first_quantity_offset + 4 > base_length
+                or exact_instance_offset + 8 > base_length
+            ):
+                continue
+            candidates.append(
+                (
+                    record_count,
+                    base_length,
+                    repeat_stride,
+                    first_quantity_offset,
+                )
+            )
 
     if not candidates:
         return None
     best_count = max(candidate[0] for candidate in candidates)
     best_shapes = {
-        (base_length, repeat_stride)
-        for record_count, base_length, repeat_stride in candidates
+        (base_length, repeat_stride, first_quantity_offset)
+        for (
+            record_count,
+            base_length,
+            repeat_stride,
+            first_quantity_offset,
+        ) in candidates
         if record_count == best_count
     }
     if len(best_shapes) != 1:
         return None
-    base_length, repeat_stride = next(iter(best_shapes))
+    base_length, repeat_stride, first_quantity_offset = next(iter(best_shapes))
     return (
         base_length,
         repeat_stride,
@@ -2617,109 +2801,193 @@ def _discover_storage_context_offset(
     frame: BDOFrame,
     before_offset: int,
 ) -> Optional[int]:
-    """Find a structurally credible storage destination before an item.
+    """Return one unambiguous town column in a structurally valid wrapper."""
+    if not _has_dynamic_storage_record_geometry(frame, before_offset):
+        return None
+    candidates = storage_destination_candidates(
+        frame.message,
+        before_offset=before_offset,
+    )
+    if len(candidates) == 1:
+        return candidates[0][0]
+    return None
 
-    Three legacy keys were observed at multiple offsets and remain explicit
-    signatures. Other town IDs are small integers and are only meaningful at
-    the current wrapper's item-relative field with its mode/token/count header;
-    scanning all known IDs anywhere would misclassify ordinary uint32 values.
+
+def _discover_storage_context_offset_from_frames(
+    frames: Iterable[BDOFrame],
+    *,
+    opcode: int,
+    item_offset: int,
+) -> Optional[int]:
+    """Learn the destination column by cross-frame offset consistency.
+
+    This intentionally assumes neither the byte envelope around a town ID nor
+    an item-relative position.  Registered-ID overlaps disappear when the
+    same field column is intersected across different destination values.
     """
-    best_offset = None
-    current_offset = before_offset - 9
-    for context_bytes in STORAGE_DELTA_CONTEXTS:
-        search_at = 0
-        while True:
-            offset = frame.message.find(context_bytes, search_at, before_offset)
-            if offset < 0:
-                break
-            # A legacy key at the current item-relative position must still
-            # prove current-wrapper record geometry. At any other historical
-            # position it retains its explicit legacy-signature behavior.
-            if offset != current_offset:
-                best_offset = (
-                    offset if best_offset is None else max(best_offset, offset)
-                )
-            search_at = offset + 1
 
-    mode_offset = before_offset - 30
-    token_end = before_offset - 21
-    count_offset = before_offset - 20
-    if mode_offset >= 5 and current_offset >= 0 and token_end <= len(frame.message):
-        candidate = frame.message[current_offset : current_offset + 4]
-        storage_id = int.from_bytes(candidate, "little")
+    candidate_intersection: Optional[set[int]] = None
+    unregistered_messages: list[bytes] = []
+    messages_seen: set[bytes] = set()
+    for frame in frames:
         if (
-            storage_location(storage_id) is not None
-            and _has_current_storage_declared_geometry(frame, before_offset)
+            frame.opcode != opcode
+            or frame.message in messages_seen
+            or not _has_dynamic_storage_record_geometry(frame, item_offset)
         ):
-            best_offset = (
-                current_offset
-                if best_offset is None
-                else max(best_offset, current_offset)
+            continue
+        candidates = {
+            offset
+            for offset, _storage_id in storage_destination_candidates(
+                frame.message,
+                before_offset=item_offset,
             )
-    return best_offset
+        }
+        messages_seen.add(frame.message)
+        if not candidates:
+            # A newly added town can be structurally valid before the bundled
+            # name registry knows its numeric key. Let registered destinations
+            # establish the column, then require that same column to contain a
+            # nonzero uint32 here. An unknown town must not veto an otherwise
+            # provable patch schema or be relabeled from a decoy elsewhere.
+            unregistered_messages.append(frame.message)
+            continue
+        candidate_intersection = (
+            candidates
+            if candidate_intersection is None
+            else candidate_intersection & candidates
+        )
+        if not candidate_intersection:
+            return None
+    if candidate_intersection is None or len(candidate_intersection) != 1:
+        return None
+    selected = next(iter(candidate_intersection))
+    if any(
+        selected + 4 > item_offset
+        or int.from_bytes(message[selected : selected + 4], "little") == 0
+        for message in unregistered_messages
+    ):
+        return None
+    return selected
 
 
-def _has_current_storage_declared_geometry(
+def _has_dynamic_storage_record_geometry(
     frame: BDOFrame,
     item_offset: int,
 ) -> bool:
-    """Validate the item-20 count against every declared item record.
+    """Whether some prefix count proves every full storage item record."""
 
-    The exact prefix length is not pinned. Search the narrow header-to-record
-    boundary and accept only one resulting record-offset geometry whose item,
-    quantity, and instance fields all validate. This keeps an unfamiliar
-    operation mode calibratable without trusting a coincidental town integer.
-    """
-    count_offset = item_offset - 20
-    context_end = item_offset - 5
-    if count_offset < 5 or count_offset + 2 > len(frame.message):
+    if item_offset + 43 > frame.length:
         return False
-    declared_count = int.from_bytes(
-        frame.message[count_offset : count_offset + 2], "little"
-    )
-    if declared_count <= 0:
-        return False
-
-    prefix_start = max(count_offset + 2, context_end)
-    geometries: set[tuple[int, ...]] = set()
-    for prefix_length in range(prefix_start, item_offset + 1):
-        record_bytes = frame.length - prefix_length
-        if record_bytes <= 0 or record_bytes % declared_count:
+    geometries: set[tuple[int, int]] = set()
+    for count_offset in range(5, max(5, item_offset - 1)):
+        count = int.from_bytes(
+            frame.message[count_offset : count_offset + 2],
+            "little",
+        )
+        if count <= 0:
             continue
-        stride = record_bytes // declared_count
-        relative_item_offset = item_offset - prefix_length
-        if relative_item_offset < 0 or relative_item_offset + 43 > stride:
-            continue
-        deltas = tuple(stride * index for index in range(declared_count))
-        if all(
-            _looks_like_full_item_record(frame, item_offset + delta)
-            for delta in deltas
-        ):
-            geometries.add(deltas)
-    return len(geometries) == 1
+        for prefix_length in range(max(5, count_offset + 2), item_offset + 1):
+            record_bytes = frame.length - prefix_length
+            if record_bytes <= 0 or record_bytes % count:
+                continue
+            stride = record_bytes // count
+            relative_item_offset = item_offset - prefix_length
+            if relative_item_offset < 0 or relative_item_offset + 43 > stride:
+                continue
+            if all(
+                _looks_like_full_item_record(
+                    frame,
+                    item_offset + index * stride,
+                )
+                for index in range(count)
+            ):
+                geometries.add((count, stride))
+    return bool(geometries)
 
 
-def _discover_repeat_stride(frame: BDOFrame, item_offset: int) -> Optional[int]:
-    if item_offset != 33:
-        return None
-    record_bytes = frame.length - CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
-    if record_bytes > 0 and record_bytes % 228 == 0:
-        return 228
-    return None
-
-
-def _discover_storage_repeat_stride(
-    frame: BDOFrame,
+def _discover_storage_record_count_offset(
+    frames: Iterable[BDOFrame],
+    *,
+    records: Iterable[_CalibratedItemRecord],
+    opcode: int,
     item_offset: int,
     instance_offset: Optional[int],
+    single_record_length: int,
 ) -> Optional[int]:
-    """Recognize the observed storage wrapper shape without trusting opcode."""
-    if item_offset != 37 or instance_offset != 72:
+    """Learn one authoritative uint16 count column from record geometry.
+
+    A single wrapper can contain another small integer equal to its item
+    count.  Intersecting candidates across independently validated frames and
+    count shapes prevents such a field from silently impersonating the real
+    declaration.  No absolute or item-relative count position is assumed.
+    """
+
+    if instance_offset is None:
         return None
-    record_bytes = frame.length - 35
-    if record_bytes > 0 and record_bytes % CURRENT_STORAGE_DELTA_RECORD_STRIDE == 0:
-        return CURRENT_STORAGE_DELTA_RECORD_STRIDE
-    return None
+    records_by_message: dict[bytes, list[int]] = {}
+    for record in records:
+        if record.frame.opcode != opcode:
+            continue
+        records_by_message.setdefault(record.frame.message, []).append(
+            record.item_offset
+        )
+    candidate_intersection: Optional[set[int]] = None
+    messages_seen: set[bytes] = set()
+    counts_seen: set[int] = set()
+    for frame in frames:
+        if frame.opcode != opcode or frame.message in messages_seen:
+            continue
+        offsets = _full_transfer_record_offsets(
+            frame,
+            item_offset,
+            instance_offset,
+        )
+        if not offsets:
+            offsets = sorted(set(records_by_message.get(frame.message, ())))
+        if not offsets or offsets[0] != item_offset:
+            continue
+        count = len(offsets)
+        if count == 1:
+            if frame.length != single_record_length:
+                continue
+        else:
+            strides = {later - earlier for earlier, later in zip(offsets, offsets[1:])}
+            if len(strides) != 1:
+                continue
+            stride = next(iter(strides))
+            if frame.length - (count - 1) * stride != single_record_length:
+                continue
+
+        search_end = min(item_offset, len(frame.message))
+        candidates = {
+            offset
+            for offset in range(5, max(5, search_end - 1))
+            if int.from_bytes(frame.message[offset : offset + 2], "little")
+            == count
+        }
+        if not candidates:
+            return None
+        messages_seen.add(frame.message)
+        counts_seen.add(count)
+        candidate_intersection = (
+            candidates
+            if candidate_intersection is None
+            else candidate_intersection & candidates
+        )
+        if not candidate_intersection:
+            return None
+
+    # One count shape cannot distinguish the declaration from an unrelated
+    # header integer that happens to carry the same value. Two independently
+    # validated shapes are the minimum patch-agnostic semantic proof.
+    if (
+        len(counts_seen) < 2
+        or candidate_intersection is None
+        or len(candidate_intersection) != 1
+    ):
+        return None
+    return next(iter(candidate_intersection))
 
 
 def _looks_like_full_item_record(frame: BDOFrame, item_offset: int) -> bool:
@@ -2896,6 +3164,7 @@ def _profile_dedupe_keys(data: dict[str, Any]) -> set[tuple[object, ...]]:
                     entry.get("quantity_offset"),
                     entry.get("item_instance_offset"),
                     entry.get("context_offset"),
+                    entry.get("record_count_offset"),
                     entry.get("inventory_slot_offset"),
                     entry.get("source_instance_offset"),
                     entry.get("quantity_removed_offset"),

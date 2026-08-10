@@ -26,6 +26,7 @@ from .calibration import (
     CalibrationSession,
 )
 from .capture import LiveCaptureHealth, LiveCaptureSession, _validate_poll_timeout
+from .diagnostics import DecoderDiagnostic, DecoderHealth
 from .events import BDOEvent
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
@@ -75,12 +76,14 @@ class AsyncLiveCaptureSession:
         live_options: Optional[LiveCaptureOptions] = None,
         event_filter: Optional[EventFilter] = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+        on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
     ) -> None:
         self._session = LiveCaptureSession(
             opcode_profile=opcode_profile,
             live_options=live_options,
             event_filter=event_filter,
             origin_observer=origin_observer,
+            on_diagnostic=on_diagnostic,
         )
         # A pending blocking poll needs a second worker so stop() can wake it,
         # even when the host app configured a one-thread default executor.
@@ -127,6 +130,10 @@ class AsyncLiveCaptureSession:
     @property
     def health(self) -> LiveCaptureHealth:
         return self._session.health
+
+    @property
+    def decoder_health(self) -> DecoderHealth:
+        return self._session.decoder_health
 
     def raise_if_failed(self) -> None:
         """Re-raise a retained background capture failure."""

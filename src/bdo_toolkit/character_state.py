@@ -12,7 +12,7 @@ providing a queryable model for tools and early adopters.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable, Optional
@@ -27,6 +27,7 @@ from ._capture_runtime import (
     LivePacketCapture,
     _attach_cleanup_owner,
 )
+from .capture import _EventCollector, _ProfileAuthority, _load_profile_authority
 from ._engine import PacketEngine, toolkit_event_from_record
 from ._protocol import (
     BDOFrame,
@@ -36,14 +37,20 @@ from ._protocol import (
     EventSpec,
     storage_location,
 )
-from ._specs import event_specs_from_profile
+from .diagnostics import DecoderHealth
 from .events import BDOEvent
-from .profiles import ProfileError, default_profile_path, load_opcode_profile
+from .filters import EventFilter
+from .profiles import ProfileError, default_profile_path
 
 _INVENTORY_GENERATION_GAP_SECONDS = 1.0
 _INVENTORY_TRAILING_DISCOVERY_BYTES = 12
 _STORAGE_DESTINATION_CHUNK_GAP_SECONDS = 1.0
-_ITEM_STATE_SCHEMA_VERSION = 3
+_STORAGE_EMPTY_WINDOW_MARGIN_SECONDS = 1.0
+_STORAGE_HYDRATION_BURST_GAP_SECONDS = 0.5
+_STORAGE_HYDRATION_MAX_BURST_SECONDS = 1.0
+_STORAGE_HYDRATION_EPOCH_SECONDS = 30.0
+_STORAGE_HYDRATION_MIN_DESTINATIONS = 8
+_ITEM_STATE_SCHEMA_VERSION = 4
 _CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
 
 # These interpretations agree across the July 17 initial-load and character-
@@ -611,6 +618,7 @@ class CharacterStateSnapshot:
     relevant_frames_retained: Optional[int] = None
     relevant_bytes_retained: Optional[int] = None
     snapshot_records_retained: Optional[int] = None
+    decoder_health: DecoderHealth = DecoderHealth()
 
     def __init__(
         self,
@@ -631,6 +639,7 @@ class CharacterStateSnapshot:
         relevant_frames_retained: Optional[int] = None,
         relevant_bytes_retained: Optional[int] = None,
         snapshot_records_retained: Optional[int] = None,
+        decoder_health: Optional[DecoderHealth] = None,
     ) -> None:
         # ``storages`` was originally a tuple. Accept every historical tuple
         # call site while exposing a tuple subclass with additive query methods.
@@ -668,6 +677,9 @@ class CharacterStateSnapshot:
         object.__setattr__(self, "relevant_frames_retained", relevant_frames_retained)
         object.__setattr__(self, "relevant_bytes_retained", relevant_bytes_retained)
         object.__setattr__(self, "snapshot_records_retained", snapshot_records_retained)
+        if decoder_health is not None and not isinstance(decoder_health, DecoderHealth):
+            raise TypeError("decoder_health must be a DecoderHealth or None")
+        object.__setattr__(self, "decoder_health", decoder_health or DecoderHealth())
 
     @property
     def schema_version(self) -> int:
@@ -853,6 +865,7 @@ class CharacterStateSnapshot:
             "hydration_generations_seen": self.hydration_generations_seen,
             "provenance": self.provenance.to_dict(),
             "coverage": self.coverage.to_dict(),
+            "decoder_health": self.decoder_health.to_dict(),
             "accumulation": {
                 "policy": self.provenance.accumulation_policy,
                 "status": self.coverage.accumulation_status,
@@ -886,6 +899,7 @@ class _FrameKey:
     source_port: int
     destination_ip: str
     destination_port: int
+    flow_generation: int
     stream_sequence: Optional[int]
 
 
@@ -896,6 +910,7 @@ class _StorageGroupObservation:
     storage_id: int
     frame_key: _FrameKey
     timestamp: float
+    opcode: int
     items: tuple[SnapshotItem, ...]
     raw_records: int
     missing_instance_records: int
@@ -907,11 +922,18 @@ class _StorageDestinationBlock:
     """Consecutive chunks belonging to one destination within one sweep."""
 
     storage_id: int
+    stream_key: tuple[str, int, str, int, int, int]
     groups: tuple[_StorageGroupObservation, ...]
 
     @property
     def empty(self) -> bool:
         return all(group.empty for group in self.groups)
+
+
+@dataclass(frozen=True)
+class _StorageEmptySchema:
+    spec: EventSpec
+    prefix_length: int
 
 
 def _event_frame_key(event: BDOEvent) -> _FrameKey:
@@ -921,6 +943,7 @@ def _event_frame_key(event: BDOEvent) -> _FrameKey:
         event.flow.source_port,
         event.flow.destination_ip,
         event.flow.destination_port,
+        event._flow_generation,
         sequence if isinstance(sequence, int) else None,
     )
 
@@ -931,7 +954,29 @@ def _frame_key(frame: BDOFrame) -> _FrameKey:
         frame.context.flow.source_port,
         frame.context.flow.destination_ip,
         frame.context.flow.destination_port,
+        frame.context.flow_generation,
         frame.stream_sequence,
+    )
+
+
+def _event_flow_generation_key(event: BDOEvent) -> tuple[str, int, str, int, int]:
+    frame_key = _event_frame_key(event)
+    return (
+        event.flow.source_ip,
+        event.flow.source_port,
+        event.flow.destination_ip,
+        event.flow.destination_port,
+        frame_key.flow_generation,
+    )
+
+
+def _frame_flow_generation_key(frame: BDOFrame) -> tuple[str, int, str, int, int]:
+    return (
+        frame.context.flow.source_ip,
+        frame.context.flow.source_port,
+        frame.context.flow.destination_ip,
+        frame.context.flow.destination_port,
+        frame.context.flow_generation,
     )
 
 
@@ -1287,6 +1332,8 @@ class _CharacterStateAccumulator:
         self._seen_frames: set[tuple[_FrameKey, bytes]] = set()
         self._inventory_events: list[BDOEvent] = []
         self._storage_events: list[BDOEvent] = []
+        self._neutral_storage_events: list[BDOEvent] = []
+        self._live_storage_boundaries: list[BDOEvent] = []
 
     @property
     def frames_seen(self) -> int:
@@ -1325,24 +1372,45 @@ class _CharacterStateAccumulator:
 
     def observe_record(self, record: Any, raw_message: bytes) -> None:
         del raw_message
-        event = toolkit_event_from_record(record)
+        self.observe_event(toolkit_event_from_record(record))
+
+    def observe_event(self, event: BDOEvent) -> None:
+        """Retain snapshot records and fail-neutral storage candidates."""
+
         with self._lock:
             if self._limit_error is not None:
                 raise self._limit_error
-            if event.event_type not in {"inventory_snapshot", "storage_snapshot"}:
+            if event.event_type not in {
+                "inventory_snapshot",
+                "storage_snapshot",
+                "storage_record",
+                "storage_delta",
+            }:
                 return
-            attempted_records = self._snapshot_records_retained + 1
-            if attempted_records > self.capture_limits.max_snapshot_records:
+            attempted_evidence = (
+                self._snapshot_records_retained
+                + len(self._live_storage_boundaries)
+                + 1
+            )
+            if attempted_evidence > self.capture_limits.max_snapshot_records:
                 self._raise_limit(
                     "max_snapshot_records",
                     self.capture_limits.max_snapshot_records,
-                    attempted_records,
+                    attempted_evidence,
                 )
             if event.event_type == "inventory_snapshot":
                 self._inventory_events.append(event)
-            else:
+            elif event.event_type == "storage_snapshot":
                 self._storage_events.append(event)
-            self._snapshot_records_retained = attempted_records
+            elif event.event_type == "storage_delta":
+                # A proven live mutation is not snapshot content, but it is a
+                # semantic boundary: neutral records on opposite sides must
+                # never be reconciled into one character-load sweep.
+                self._live_storage_boundaries.append(event)
+                return
+            else:
+                self._neutral_storage_events.append(event)
+            self._snapshot_records_retained += 1
 
     def _raise_limit(self, limit_name: str, limit: int, attempted: int) -> None:
         error = ItemStateCaptureLimitError(
@@ -1353,7 +1421,11 @@ class _CharacterStateAccumulator:
         self._limit_error = error
         raise error
 
-    def snapshot(self) -> CharacterStateSnapshot:
+    def snapshot(
+        self,
+        *,
+        decoder_health: Optional[DecoderHealth] = None,
+    ) -> CharacterStateSnapshot:
         with self._lock:
             if self._limit_error is not None:
                 raise self._limit_error
@@ -1364,6 +1436,8 @@ class _CharacterStateAccumulator:
             frames = tuple(self._frames)
             inventory_events = tuple(self._inventory_events)
             storage_events = tuple(self._storage_events)
+            neutral_storage_events = tuple(self._neutral_storage_events)
+            live_storage_boundaries = tuple(self._live_storage_boundaries)
 
         (
             inventory_events,
@@ -1375,12 +1449,69 @@ class _CharacterStateAccumulator:
             # storage hydration afterward. It is therefore a clean boundary
             # between separate character loads while retaining repeated
             # storage sweeps belonging to the same load.
+            selected_flow_generations = {
+                _event_flow_generation_key(event) for event in inventory_events
+            }
             storage_events = tuple(
-                event for event in storage_events if event.timestamp >= generation_start
+                event
+                for event in storage_events
+                if event.timestamp >= generation_start
+                and _event_flow_generation_key(event) in selected_flow_generations
+            )
+            neutral_storage_events = tuple(
+                event
+                for event in neutral_storage_events
+                if event.timestamp >= generation_start
+                and _event_flow_generation_key(event) in selected_flow_generations
+            )
+            live_storage_boundaries = tuple(
+                event
+                for event in live_storage_boundaries
+                if event.timestamp >= generation_start
+                and _event_flow_generation_key(event) in selected_flow_generations
             )
             frames = tuple(
-                frame for frame in frames if frame.context.timestamp >= generation_start
+                frame
+                for frame in frames
+                if frame.context.timestamp >= generation_start
+                and _frame_flow_generation_key(frame) in selected_flow_generations
             )
+
+        fallback_observations: Optional[
+            tuple[_StorageGroupObservation, ...]
+        ] = None
+        sparse_fallback_used = False
+        split_reconciliation_used = False
+        if not storage_events:
+            storage_events, selected_observations = (
+                _character_storage_snapshot_fallback(
+                    frames,
+                    neutral_storage_events,
+                    inventory_events,
+                    self.storage_specs,
+                )
+            )
+            if selected_observations:
+                fallback_observations = selected_observations
+                sparse_fallback_used = True
+
+        if storage_events and neutral_storage_events:
+            (
+                reconciled_events,
+                reconciled_observations,
+                reconciled_count,
+            ) = _reconcile_split_storage_hydration(
+                frames,
+                storage_events,
+                neutral_storage_events,
+                live_storage_boundaries,
+                inventory_events,
+                self.storage_specs,
+            )
+            if reconciled_count:
+                storage_events = reconciled_events
+                fallback_observations = reconciled_observations
+                split_reconciliation_used = True
 
         inventory = self._inventory_summary(frames, inventory_events)
         storage_records_missing_instance = sum(
@@ -1391,7 +1522,13 @@ class _CharacterStateAccumulator:
             unresolved_storage,
             storage_sweeps_observed,
             selected_storage_sweep,
-        ) = self._storage_summaries(frames, storage_events)
+            unknown_empty_envelopes,
+        ) = self._storage_summaries(
+            frames,
+            storage_events,
+            observations=fallback_observations,
+            hydration_anchors=inventory_events,
+        )
         warnings = [
             "Initial login and character switch use the same observed hydration "
             "shape; the packet-level trigger is not decoded.",
@@ -1421,10 +1558,79 @@ class _CharacterStateAccumulator:
                     "diagnostics contain all observed records, while current contents "
                     "use the latest inferred sweep and may span multiple loads."
                 )
-        if not storage_events:
+        if sparse_fallback_used:
+            warnings.append(
+                "Storage hydration was proven by the dedicated character-load "
+                "boundary plus a broad count-zero/nonempty destination cohort; "
+                "the ordinary live stream remained fail-neutral."
+            )
+        if split_reconciliation_used:
+            warnings.append(
+                "Storage hydration records split across timing bursts were "
+                "reconciled only within one inventory-anchored flow generation, "
+                "opcode family, inferred sweep, and live-mutation boundary."
+            )
+        if not storage_events and not storages:
             warnings.append(
                 "No storage snapshot records were decoded; the capture may be partial "
                 "or the storage wrapper/profile may have changed."
+            )
+        resolved_health = decoder_health or DecoderHealth()
+        if storages and resolved_health.storage_status == "not_observed":
+            validated_messages = len(fallback_observations or ())
+            resolved_health = replace(
+                resolved_health,
+                storage_status="compatible",
+                storage_messages_observed=max(
+                    resolved_health.storage_messages_observed,
+                    validated_messages,
+                ),
+                storage_messages_decoded=max(
+                    resolved_health.storage_messages_decoded,
+                    validated_messages,
+                ),
+            )
+        unregistered_storage_ids = {
+            storage.storage_id
+            for storage in storages
+            if storage.storage_id not in STORAGE_LOCATIONS
+        }
+        if unregistered_storage_ids:
+            selected_unknown_records = sum(
+                event.storage_id is not None
+                and event.storage_id not in STORAGE_LOCATIONS
+                for event in storage_events
+            )
+            resolved_health = replace(
+                resolved_health,
+                storage_status="incompatible",
+                storage_destination_failures=(
+                    max(
+                        resolved_health.storage_destination_failures,
+                        selected_unknown_records,
+                    )
+                    + unknown_empty_envelopes
+                ),
+            )
+        if resolved_health.storage_status == "incompatible":
+            warnings.append(
+                "The storage decoder reported an incompatible wrapper, geometry, "
+                "or destination field. Recalibrate before treating missing towns "
+                "as empty."
+            )
+        elif (
+            resolved_health.storage_status == "not_observed" and inventory_events
+        ):
+            warnings.append(
+                "Inventory hydration was observed, but the calibrated storage "
+                "opcode was not observed. The capture may be partial or the storage "
+                "profile may be stale; not_observed is not proof of compatibility."
+            )
+        if unregistered_storage_ids:
+            warnings.append(
+                f"{len(unregistered_storage_ids)} storage destination ID(s) are "
+                "not in the town registry. Their numeric identities were preserved, "
+                "but display names and name-based filters require a registry update."
             )
         if unresolved_storage:
             warnings.append(
@@ -1475,6 +1681,7 @@ class _CharacterStateAccumulator:
             relevant_frames_retained=relevant_frames_retained,
             relevant_bytes_retained=relevant_bytes_retained,
             snapshot_records_retained=snapshot_records_retained,
+            decoder_health=resolved_health,
         )
 
     def _inventory_summary(
@@ -1678,15 +1885,30 @@ class _CharacterStateAccumulator:
         self,
         frames: tuple[BDOFrame, ...],
         events: tuple[BDOEvent, ...],
-    ) -> tuple[tuple[StorageSnapshotSummary, ...], int, int, Optional[int]]:
+        *,
+        observations: Optional[tuple[_StorageGroupObservation, ...]] = None,
+        hydration_anchors: Iterable[BDOEvent] = (),
+    ) -> tuple[
+        tuple[StorageSnapshotSummary, ...],
+        int,
+        int,
+        Optional[int],
+        int,
+    ]:
         unresolved = sum(event.storage_id is None for event in events)
         resolved_events = tuple(
             event for event in events if event.storage_id is not None
         )
-        observations = _storage_group_observations(
-            frames,
-            resolved_events,
-            self.storage_specs,
+        if observations is None:
+            observations = _storage_group_observations(
+                frames,
+                resolved_events,
+                self.storage_specs,
+                hydration_anchors=hydration_anchors,
+            )
+        unknown_empty_envelopes = sum(
+            observation.empty and observation.storage_id not in STORAGE_LOCATIONS
+            for observation in observations
         )
         sweeps = _infer_storage_sweeps(observations)
         selected_sweep = len(sweeps) if sweeps else None
@@ -1792,7 +2014,13 @@ class _CharacterStateAccumulator:
                 summary.storage_id,
             )
         )
-        return tuple(summaries), unresolved, len(sweeps), selected_sweep
+        return (
+            tuple(summaries),
+            unresolved,
+            len(sweeps),
+            selected_sweep,
+            unknown_empty_envelopes,
+        )
 
 
 def _frame_has_zero_context(frame: BDOFrame, spec: EventSpec) -> bool:
@@ -1814,29 +2042,365 @@ def _latest_inventory_generation(
 
     frame_times = sorted(
         {(event.timestamp, _event_frame_key(event)) for event in events},
-        key=lambda item: item[0],
+        key=lambda item: (
+            item[0],
+            item[1].source_ip,
+            item[1].source_port,
+            item[1].destination_ip,
+            item[1].destination_port,
+            item[1].flow_generation,
+            item[1].stream_sequence is None,
+            item[1].stream_sequence or 0,
+        ),
     )
-    generation_starts = [frame_times[0][0]]
-    previous_timestamp = frame_times[0][0]
-    for timestamp, _ in frame_times[1:]:
-        if timestamp - previous_timestamp > _INVENTORY_GENERATION_GAP_SECONDS:
+    first_timestamp, first_frame_key = frame_times[0]
+    previous_generation_key = (
+        first_frame_key.source_ip,
+        first_frame_key.source_port,
+        first_frame_key.destination_ip,
+        first_frame_key.destination_port,
+        first_frame_key.flow_generation,
+    )
+    generation_starts = [first_timestamp]
+    generation_keys = [previous_generation_key]
+    previous_timestamp = first_timestamp
+    for timestamp, frame_key in frame_times[1:]:
+        generation_key = (
+            frame_key.source_ip,
+            frame_key.source_port,
+            frame_key.destination_ip,
+            frame_key.destination_port,
+            frame_key.flow_generation,
+        )
+        if (
+            timestamp - previous_timestamp > _INVENTORY_GENERATION_GAP_SECONDS
+            or generation_key != previous_generation_key
+        ):
             generation_starts.append(timestamp)
+            generation_keys.append(generation_key)
         previous_timestamp = timestamp
+        previous_generation_key = generation_key
 
     latest_start = generation_starts[-1]
+    latest_key = generation_keys[-1]
     return (
-        tuple(event for event in events if event.timestamp >= latest_start),
+        tuple(
+            event
+            for event in events
+            if event.timestamp >= latest_start
+            and _event_flow_generation_key(event) == latest_key
+        ),
         latest_start,
         len(generation_starts),
     )
+
+
+def _character_storage_snapshot_fallback(
+    frames: Iterable[BDOFrame],
+    neutral_events: Iterable[BDOEvent],
+    inventory_events: Iterable[BDOEvent],
+    specs: Iterable[EventSpec],
+) -> tuple[tuple[BDOEvent, ...], tuple[_StorageGroupObservation, ...]]:
+    """Prove a sparse storage hydration cohort inside the dedicated API.
+
+    The general live classifier intentionally requires eight *populated*
+    destinations so an uncorrelated worker batch cannot become a snapshot.
+    Character-load capture additionally retains exact count-zero envelopes.
+    Those envelopes can prove the same broad, tightly timed town sweep for an
+    account with only a few populated storages without weakening live event
+    filtering for every application.
+    """
+
+    frames = tuple(frames)
+    neutral_events = tuple(neutral_events)
+    inventory_events = tuple(inventory_events)
+    if not inventory_events:
+        return (), ()
+
+    anchors: dict[tuple[str, int, str, int, int], float] = {}
+    for event in inventory_events:
+        frame_key = _event_frame_key(event)
+        key = (
+            event.flow.source_ip,
+            event.flow.source_port,
+            event.flow.destination_ip,
+            event.flow.destination_port,
+            frame_key.flow_generation,
+        )
+        anchors[key] = max(anchors.get(key, event.timestamp), event.timestamp)
+
+    observations = _storage_group_observations(
+        frames,
+        neutral_events,
+        specs,
+        hydration_anchors=inventory_events,
+    )
+    by_stream: dict[
+        tuple[str, int, str, int, int, int],
+        list[_StorageGroupObservation],
+    ] = {}
+    for observation in observations:
+        frame_key = observation.frame_key
+        stream_key = (
+            frame_key.source_ip,
+            frame_key.source_port,
+            frame_key.destination_ip,
+            frame_key.destination_port,
+            frame_key.flow_generation,
+            observation.opcode,
+        )
+        by_stream.setdefault(stream_key, []).append(observation)
+
+    candidates: list[tuple[_StorageGroupObservation, ...]] = []
+    for stream_key, stream_observations in by_stream.items():
+        anchor = anchors.get(stream_key[:5])
+        if anchor is None:
+            continue
+        ordered = sorted(
+            stream_observations,
+            key=lambda observation: observation.timestamp,
+        )
+        burst: list[_StorageGroupObservation] = []
+
+        def consider() -> None:
+            if not burst:
+                return
+            distinct_destinations = {
+                observation.storage_id
+                for observation in burst
+                if observation.storage_id > 0
+            }
+            if (
+                len(distinct_destinations) >= _STORAGE_HYDRATION_MIN_DESTINATIONS
+                and any(observation.empty for observation in burst)
+                and anchor <= burst[0].timestamp
+                and burst[-1].timestamp - anchor
+                <= _STORAGE_HYDRATION_EPOCH_SECONDS
+            ):
+                candidates.append(tuple(burst))
+
+        for observation in ordered:
+            if burst and (
+                observation.timestamp - burst[-1].timestamp
+                > _STORAGE_HYDRATION_BURST_GAP_SECONDS
+                or observation.timestamp - burst[0].timestamp
+                > _STORAGE_HYDRATION_MAX_BURST_SECONDS
+            ):
+                consider()
+                burst = []
+            burst.append(observation)
+        consider()
+
+    if not candidates:
+        return (), ()
+    selected = max(candidates, key=lambda cohort: cohort[-1].timestamp)
+    selected_records = {
+        (observation.frame_key, observation.timestamp, observation.storage_id)
+        for observation in selected
+        if not observation.empty
+    }
+    promoted: list[BDOEvent] = []
+    for event in neutral_events:
+        if (
+            _event_frame_key(event),
+            event.timestamp,
+            event.storage_id,
+        ) not in selected_records:
+            continue
+        extra = dict(event.extra)
+        extra.pop("storage_delta", None)
+        extra["storage_quantity"] = event.quantity
+        promoted.append(
+            replace(
+                event,
+                event_type="storage_snapshot",
+                storage_operation="snapshot",
+                deposit_origin=None,
+                extra=extra,
+            )
+        )
+    return tuple(promoted), selected
+
+
+def _reconcile_split_storage_hydration(
+    frames: Iterable[BDOFrame],
+    snapshot_events: Iterable[BDOEvent],
+    neutral_events: Iterable[BDOEvent],
+    live_boundaries: Iterable[BDOEvent],
+    inventory_events: Iterable[BDOEvent],
+    specs: Iterable[EventSpec],
+) -> tuple[
+    tuple[BDOEvent, ...],
+    tuple[_StorageGroupObservation, ...],
+    int,
+]:
+    """Extend a proven snapshot sweep across harmless timing-burst splits.
+
+    The continuous live classifier deliberately treats a timing gap as a
+    fail-neutral boundary.  The dedicated character-state API has stronger
+    evidence: a selected inventory hydration generation plus storage records
+    that were already promoted by the live classifier.  Neutral records may
+    join such a proven sweep only on the same flow generation and opcode, in
+    the bounded inventory epoch, and without crossing a positive live
+    mutation.  Repeated destinations remain separate sweeps through
+    :func:`_infer_storage_sweeps`.
+    """
+
+    frames = tuple(frames)
+    snapshot_events = tuple(snapshot_events)
+    neutral_events = tuple(neutral_events)
+    live_boundaries = tuple(live_boundaries)
+    inventory_events = tuple(inventory_events)
+    specs = tuple(specs)
+    if not snapshot_events or not neutral_events or not inventory_events:
+        return snapshot_events, (), 0
+
+    anchors: dict[tuple[str, int, str, int, int], float] = {}
+    for event in inventory_events:
+        key = _event_flow_generation_key(event)
+        anchors[key] = max(anchors.get(key, event.timestamp), event.timestamp)
+
+    confirmed_groups = {
+        (_event_frame_key(event), event.timestamp, event.storage_id)
+        for event in snapshot_events
+        if event.storage_id is not None
+    }
+    observations = _storage_group_observations(
+        frames,
+        (*snapshot_events, *neutral_events),
+        specs,
+        hydration_anchors=inventory_events,
+    )
+
+    boundaries_by_flow: dict[
+        tuple[str, int, str, int, int],
+        list[tuple[float, bool, int]],
+    ] = {}
+    for event in live_boundaries:
+        frame_key = _event_frame_key(event)
+        boundaries_by_flow.setdefault(
+            _event_flow_generation_key(event),
+            [],
+        ).append(
+            (
+                event.timestamp,
+                frame_key.stream_sequence is None,
+                frame_key.stream_sequence or 0,
+            )
+        )
+    for boundaries in boundaries_by_flow.values():
+        boundaries.sort()
+
+    cohorts: dict[
+        tuple[str, int, str, int, int, int, int],
+        list[_StorageGroupObservation],
+    ] = {}
+    for observation in observations:
+        frame_key = observation.frame_key
+        flow_key = (
+            frame_key.source_ip,
+            frame_key.source_port,
+            frame_key.destination_ip,
+            frame_key.destination_port,
+            frame_key.flow_generation,
+        )
+        anchor = anchors.get(flow_key)
+        if (
+            anchor is None
+            or observation.timestamp < anchor
+            or observation.timestamp - anchor > _STORAGE_HYDRATION_EPOCH_SECONDS
+        ):
+            continue
+        order_key = (
+            observation.timestamp,
+            frame_key.stream_sequence is None,
+            frame_key.stream_sequence or 0,
+        )
+        boundary_index = sum(
+            boundary <= order_key
+            for boundary in boundaries_by_flow.get(flow_key, ())
+        )
+        cohorts.setdefault(
+            (*flow_key, observation.opcode, boundary_index),
+            [],
+        ).append(observation)
+
+    eligible_groups: set[tuple[_FrameKey, float, int]] = set()
+    for cohort in cohorts.values():
+        for sweep in _infer_storage_sweeps(cohort):
+            sweep_groups = {
+                (group.frame_key, group.timestamp, group.storage_id)
+                for block in sweep
+                for group in block.groups
+                if not group.empty
+            }
+            if sweep_groups & confirmed_groups:
+                eligible_groups.update(sweep_groups)
+
+    promoted: list[BDOEvent] = []
+    for event in neutral_events:
+        group_key = (
+            _event_frame_key(event),
+            event.timestamp,
+            event.storage_id,
+        )
+        if (
+            event.storage_id is None
+            or group_key in confirmed_groups
+            or group_key not in eligible_groups
+        ):
+            continue
+        extra = dict(event.extra)
+        extra.pop("storage_delta", None)
+        extra["storage_quantity"] = event.quantity
+        promoted.append(
+            replace(
+                event,
+                event_type="storage_snapshot",
+                storage_operation="snapshot",
+                deposit_origin=None,
+                extra=extra,
+            )
+        )
+
+    if not promoted:
+        return snapshot_events, (), 0
+
+    reconciled = tuple(
+        sorted(
+            (*snapshot_events, *promoted),
+            key=lambda event: (
+                event.timestamp,
+                event.flow.source_ip,
+                event.flow.source_port,
+                event.flow.destination_ip,
+                event.flow.destination_port,
+                _event_frame_key(event).flow_generation,
+                _event_frame_key(event).stream_sequence is None,
+                _event_frame_key(event).stream_sequence or 0,
+                event.record_index or 0,
+            ),
+        )
+    )
+    reconciled_observations = _storage_group_observations(
+        frames,
+        reconciled,
+        specs,
+        hydration_anchors=inventory_events,
+    )
+    return reconciled, reconciled_observations, len(promoted)
 
 
 def _storage_group_observations(
     frames: Iterable[BDOFrame],
     events: Iterable[BDOEvent],
     specs: Iterable[EventSpec],
+    *,
+    hydration_anchors: Iterable[BDOEvent] = (),
 ) -> tuple[_StorageGroupObservation, ...]:
     """Merge record-bearing frames and empty wrappers into capture order."""
+    frames = tuple(frames)
+    events = tuple(events)
     event_groups: dict[tuple[_FrameKey, float, int], list[BDOEvent]] = {}
     for event in events:
         if event.storage_id is None:
@@ -1861,6 +2425,7 @@ def _storage_group_observations(
                 storage_id=storage_id,
                 frame_key=frame_key,
                 timestamp=timestamp,
+                opcode=group[0].opcode or 0,
                 items=tuple(
                     sorted(
                         items_by_instance.values(),
@@ -1873,11 +2438,20 @@ def _storage_group_observations(
             )
         )
 
-    specs_by_opcode = _spec_candidates_by_opcode(specs)
+    empty_schemas, hydration_windows = _storage_empty_schemas(
+        events,
+        specs,
+        frames=frames,
+        hydration_anchors=hydration_anchors,
+    )
     for frame in frames:
         matches: list[int] = []
-        for spec in specs_by_opcode.get(frame.opcode, ()):
-            candidate_storage_id = _empty_storage_envelope_id(frame, spec)
+        for schema in empty_schemas.get(frame.opcode, ()):
+            candidate_storage_id = _empty_storage_envelope_id(
+                frame,
+                schema,
+                hydration_windows,
+            )
             if candidate_storage_id is not None:
                 matches.append(candidate_storage_id)
         if len(matches) != 1:
@@ -1888,6 +2462,7 @@ def _storage_group_observations(
                 storage_id=storage_id,
                 frame_key=_frame_key(frame),
                 timestamp=frame.context.timestamp,
+                opcode=frame.opcode,
                 items=(),
                 raw_records=0,
                 missing_instance_records=0,
@@ -1902,8 +2477,10 @@ def _storage_group_observations(
             observation.frame_key.source_port,
             observation.frame_key.destination_ip,
             observation.frame_key.destination_port,
+            observation.frame_key.flow_generation,
             observation.frame_key.stream_sequence is None,
             observation.frame_key.stream_sequence or 0,
+            observation.opcode,
             observation.storage_id,
             observation.empty,
         )
@@ -1923,26 +2500,42 @@ def _infer_storage_sweeps(
     """
     blocks: list[_StorageDestinationBlock] = []
     current_storage_id: Optional[int] = None
+    current_stream_key: Optional[tuple[str, int, str, int, int, int]] = None
     current_groups: list[_StorageGroupObservation] = []
     current_empty: Optional[bool] = None
 
     def close_current() -> None:
-        nonlocal current_storage_id, current_groups, current_empty
-        if current_storage_id is not None and current_groups:
+        nonlocal current_storage_id, current_stream_key, current_groups, current_empty
+        if (
+            current_storage_id is not None
+            and current_stream_key is not None
+            and current_groups
+        ):
             blocks.append(
                 _StorageDestinationBlock(
                     storage_id=current_storage_id,
+                    stream_key=current_stream_key,
                     groups=tuple(current_groups),
                 )
             )
         current_storage_id = None
+        current_stream_key = None
         current_groups = []
         current_empty = None
 
     for observation in observations:
+        observation_stream_key = (
+            observation.frame_key.source_ip,
+            observation.frame_key.source_port,
+            observation.frame_key.destination_ip,
+            observation.frame_key.destination_port,
+            observation.frame_key.flow_generation,
+            observation.opcode,
+        )
         previous_timestamp = current_groups[-1].timestamp if current_groups else None
         if current_storage_id is not None and (
             observation.storage_id != current_storage_id
+            or observation_stream_key != current_stream_key
             or observation.empty != current_empty
             or (
                 previous_timestamp is not None
@@ -1953,6 +2546,7 @@ def _infer_storage_sweeps(
             close_current()
         if current_storage_id is None:
             current_storage_id = observation.storage_id
+            current_stream_key = observation_stream_key
             current_empty = observation.empty
         current_groups.append(observation)
     close_current()
@@ -1960,11 +2554,17 @@ def _infer_storage_sweeps(
     sweeps: list[tuple[_StorageDestinationBlock, ...]] = []
     current_sweep: list[_StorageDestinationBlock] = []
     destinations_seen: set[int] = set()
+    current_sweep_stream: Optional[tuple[str, int, str, int, int, int]] = None
     for block in blocks:
-        if block.storage_id in destinations_seen:
+        if current_sweep and (
+            block.storage_id in destinations_seen
+            or block.stream_key != current_sweep_stream
+        ):
             sweeps.append(tuple(current_sweep))
             current_sweep = []
             destinations_seen = set()
+        if not current_sweep:
+            current_sweep_stream = block.stream_key
         current_sweep.append(block)
         destinations_seen.add(block.storage_id)
     if current_sweep:
@@ -1972,102 +2572,359 @@ def _infer_storage_sweeps(
     return tuple(sweeps)
 
 
-def _empty_storage_envelope_id(
-    frame: BDOFrame,
+def _anchored_empty_prefix_lengths(
+    frames: Iterable[BDOFrame],
+    events: Iterable[BDOEvent],
     spec: EventSpec,
-) -> Optional[int]:
-    """Return the registered destination in a validated count-zero wrapper."""
-    item_offset = spec.item_offset
-    mode_offset = item_offset - 30
-    token_start = item_offset - 29
-    token_end = item_offset - 21
-    count_offset = item_offset - 20
-    storage_offset = item_offset - 9
-    if min(mode_offset, token_start, count_offset, storage_offset) < 5:
-        return None
-    if max(token_end, count_offset + 2, storage_offset + 4) > len(frame.message):
-        return None
-    if frame.message[mode_offset] != 2:
-        return None
-    if frame.message[token_start:token_end] != b"\x00" * 8:
-        return None
-    if (
-        int.from_bytes(
-            frame.message[count_offset : count_offset + 2],
+    hydration_windows: dict[
+        tuple[str, int, str, int, int, int],
+        tuple[float, float],
+    ],
+) -> set[int]:
+    """Infer an empty-wrapper length from a broad anchored town cohort.
+
+    Older complete profiles may predate ``repeat_stride`` persistence. The
+    dedicated character-load boundary still lets us prove a prefix without a
+    patch table: exact count-zero wrappers at one length plus decoded nonempty
+    records must form a tightly timed cohort spanning at least eight numeric
+    destinations. Competing lengths fail closed.
+    """
+
+    count_offset = spec.record_count_offset
+    destination_offset = spec.source_context_offset
+    if count_offset is None or destination_offset is None:
+        return set()
+
+    empty_by_stream_and_length: dict[
+        tuple[tuple[str, int, str, int, int, int], int],
+        list[tuple[float, int, bool]],
+    ] = {}
+    for frame in frames:
+        if frame.opcode != spec.opcode or frame.length > spec.item_offset:
+            continue
+        if max(count_offset + 2, destination_offset + 4) > len(frame.message):
+            continue
+        if int.from_bytes(frame.message[count_offset : count_offset + 2], "little"):
+            continue
+        storage_id = int.from_bytes(
+            frame.message[destination_offset : destination_offset + 4],
             "little",
         )
-        != 0
+        if storage_id == 0:
+            continue
+        stream_key = (
+            frame.context.flow.source_ip,
+            frame.context.flow.source_port,
+            frame.context.flow.destination_ip,
+            frame.context.flow.destination_port,
+            frame.context.flow_generation,
+            frame.opcode,
+        )
+        window = hydration_windows.get(stream_key)
+        if window is None or not window[0] <= frame.context.timestamp <= window[1]:
+            continue
+        empty_by_stream_and_length.setdefault(
+            (stream_key, frame.length),
+            [],
+        ).append((frame.context.timestamp, storage_id, True))
+
+    nonempty_by_stream: dict[
+        tuple[str, int, str, int, int, int],
+        list[tuple[float, int, bool]],
+    ] = {}
+    for event in events:
+        if event.opcode != spec.opcode or not event.storage_id:
+            continue
+        frame_key = _event_frame_key(event)
+        stream_key = (
+            event.flow.source_ip,
+            event.flow.source_port,
+            event.flow.destination_ip,
+            event.flow.destination_port,
+            frame_key.flow_generation,
+            spec.opcode,
+        )
+        nonempty_by_stream.setdefault(stream_key, []).append(
+            (event.timestamp, event.storage_id, False)
+        )
+
+    proven: set[int] = set()
+    for (stream_key, prefix_length), empty_points in empty_by_stream_and_length.items():
+        points = sorted(
+            empty_points + nonempty_by_stream.get(stream_key, []),
+            key=lambda point: point[0],
+        )
+        burst: list[tuple[float, int, bool]] = []
+
+        def consider() -> None:
+            if (
+                burst
+                and any(point[2] for point in burst)
+                and len({point[1] for point in burst})
+                >= _STORAGE_HYDRATION_MIN_DESTINATIONS
+            ):
+                proven.add(prefix_length)
+
+        for point in points:
+            if burst and (
+                point[0] - burst[-1][0] > _STORAGE_HYDRATION_BURST_GAP_SECONDS
+                or point[0] - burst[0][0] > _STORAGE_HYDRATION_MAX_BURST_SECONDS
+            ):
+                consider()
+                burst = []
+            burst.append(point)
+        consider()
+    return proven
+
+
+def _storage_empty_schemas(
+    events: Iterable[BDOEvent],
+    specs: Iterable[EventSpec],
+    *,
+    frames: Iterable[BDOFrame] = (),
+    hydration_anchors: Iterable[BDOEvent] = (),
+) -> tuple[
+    dict[int, tuple[_StorageEmptySchema, ...]],
+    dict[tuple[str, int, str, int, int, int], tuple[float, float]],
+]:
+    """Learn empty-wrapper geometry from profile authority and live records."""
+
+    events = tuple(events)
+    frames = tuple(frames)
+    hydration_anchors = tuple(hydration_anchors)
+    storage_specs = tuple(
+        spec for spec in specs if spec.label == "INVENTORY_TO_STORAGE"
+    )
+    by_opcode = _spec_candidates_by_opcode(storage_specs)
+    observed_strides: dict[EventSpec, set[int]] = {
+        spec: set() for spec in storage_specs
+    }
+    windows: dict[tuple[str, int, str, int, int, int], tuple[float, float]] = {}
+    groups: dict[tuple[_FrameKey, float, Optional[int]], list[BDOEvent]] = {}
+    for event in events:
+        groups.setdefault(
+            (_event_frame_key(event), event.timestamp, event.opcode),
+            [],
+        ).append(event)
+        if event.opcode is None:
+            continue
+        window_key = (
+            event.flow.source_ip,
+            event.flow.source_port,
+            event.flow.destination_ip,
+            event.flow.destination_port,
+            _event_frame_key(event).flow_generation,
+            event.opcode,
+        )
+        previous = windows.get(window_key)
+        windows[window_key] = (
+            event.timestamp if previous is None else min(previous[0], event.timestamp),
+            event.timestamp if previous is None else max(previous[1], event.timestamp),
+        )
+
+    # The dedicated character-state API has a stronger semantic boundary than
+    # the continuous event stream: a proven inventory hydration generation.
+    # It may therefore retain exact count-zero storage envelopes even when an
+    # account has too few populated towns to satisfy the live classifier's
+    # conservative nonempty-destination threshold. The profile still supplies
+    # the authoritative opcode, count column, destination column, and stride;
+    # this only supplies the bounded time window in which those envelopes may
+    # represent the same character-load cohort.
+    for anchor in hydration_anchors:
+        anchor_key = _event_frame_key(anchor)
+        for spec in storage_specs:
+            window_key = (
+                anchor.flow.source_ip,
+                anchor.flow.source_port,
+                anchor.flow.destination_ip,
+                anchor.flow.destination_port,
+                anchor_key.flow_generation,
+                spec.opcode,
+            )
+            start = anchor.timestamp
+            end = anchor.timestamp + _STORAGE_HYDRATION_EPOCH_SECONDS
+            previous = windows.get(window_key)
+            windows[window_key] = (
+                start if previous is None else min(previous[0], start),
+                end if previous is None else max(previous[1], end),
+            )
+
+    for (_frame_key_value, _timestamp, opcode), group in groups.items():
+        if opcode is None or len(group) < 2:
+            continue
+        offsets = sorted(
+            event.record_offset
+            for event in group
+            if isinstance(event.record_offset, int)
+            and not isinstance(event.record_offset, bool)
+        )
+        if len(offsets) != len(group):
+            continue
+        strides = {later - earlier for earlier, later in zip(offsets, offsets[1:])}
+        if len(strides) != 1:
+            continue
+        stride = next(iter(strides))
+        if stride <= 0:
+            continue
+        for spec in by_opcode.get(opcode, ()):
+            base_length = spec.single_record_message_length
+            if base_length is None or offsets[0] != spec.item_offset:
+                continue
+            message_lengths = {
+                event.message_length
+                for event in group
+                if isinstance(event.message_length, int)
+                and not isinstance(event.message_length, bool)
+            }
+            if len(message_lengths) != 1:
+                continue
+            message_length = next(iter(message_lengths))
+            if message_length != base_length + (len(group) - 1) * stride:
+                continue
+            observed_strides[spec].add(stride)
+
+    schemas_by_opcode: dict[int, list[_StorageEmptySchema]] = {}
+    for spec in storage_specs:
+        strides = observed_strides[spec]
+        selected_stride: Optional[int] = None
+        prefix_length: Optional[int] = None
+        if len(strides) == 1:
+            selected_stride = next(iter(strides))
+        elif len(strides) > 1:
+            # Conflicting same-capture record geometry is stronger evidence
+            # of ambiguity than a coincidental count-zero cohort. Fail closed.
+            continue
+        elif spec.repeat_stride is not None:
+            selected_stride = spec.repeat_stride
+        else:
+            # Only a profile with no record-stride authority may learn its
+            # empty-envelope length from the dedicated character-load cohort.
+            # A weaker cohort must never override observed or calibrated
+            # repeated-record geometry.
+            inferred_prefixes = _anchored_empty_prefix_lengths(
+                frames,
+                events,
+                spec,
+                windows,
+            )
+            if len(inferred_prefixes) != 1:
+                continue
+            prefix_length = next(iter(inferred_prefixes))
+        base_length = spec.single_record_message_length
+        count_offset = spec.record_count_offset
+        destination_offset = spec.source_context_offset
+        if (
+            count_offset is None
+            or destination_offset is None
+        ):
+            continue
+        if prefix_length is None:
+            if base_length is None or selected_stride is None:
+                continue
+            prefix_length = base_length - selected_stride
+        if (
+            prefix_length < 5
+            or count_offset + 2 > prefix_length
+            or destination_offset + 4 > prefix_length
+            or prefix_length > spec.item_offset
+        ):
+            continue
+        schemas_by_opcode.setdefault(spec.opcode, []).append(
+            _StorageEmptySchema(spec=spec, prefix_length=prefix_length)
+        )
+    return (
+        {opcode: tuple(schemas) for opcode, schemas in schemas_by_opcode.items()},
+        windows,
+    )
+
+
+def _empty_storage_envelope_id(
+    frame: BDOFrame,
+    schema: _StorageEmptySchema,
+    hydration_windows: dict[
+        tuple[str, int, str, int, int, int],
+        tuple[float, float],
+    ],
+) -> Optional[int]:
+    """Return a town only from a learned, in-cohort count-zero envelope."""
+
+    spec = schema.spec
+    count_offset = spec.record_count_offset
+    destination_offset = spec.source_context_offset
+    if count_offset is None or destination_offset is None:
+        return None
+    if frame.length != schema.prefix_length or frame.length > spec.item_offset:
+        return None
+    if max(count_offset + 2, destination_offset + 4) > len(frame.message):
+        return None
+    if int.from_bytes(frame.message[count_offset : count_offset + 2], "little") != 0:
+        return None
+    window_key = (
+        frame.context.flow.source_ip,
+        frame.context.flow.source_port,
+        frame.context.flow.destination_ip,
+        frame.context.flow.destination_port,
+        frame.context.flow_generation,
+        frame.opcode,
+    )
+    window = hydration_windows.get(window_key)
+    if window is None or not (
+        window[0] - _STORAGE_EMPTY_WINDOW_MARGIN_SECONDS
+        <= frame.context.timestamp
+        <= window[1] + _STORAGE_EMPTY_WINDOW_MARGIN_SECONDS
     ):
         return None
-    # A declared-empty envelope ends before the first calibrated item. This
-    # rejects malformed nonempty frames whose count happens to be zero.
-    if frame.length > item_offset:
-        return None
     storage_id = int.from_bytes(
-        frame.message[storage_offset : storage_offset + 4],
+        frame.message[destination_offset : destination_offset + 4],
         "little",
     )
-    # Empty wrappers have no item records to validate. Restrict this path to a
-    # registered numeric destination.
-    return storage_id if storage_id in STORAGE_LOCATIONS else None
-
-
-def _empty_storage_envelopes(
-    frames: Iterable[BDOFrame],
-    specs: Iterable[EventSpec],
-) -> tuple[set[int], dict[int, int]]:
-    """Recognize empty current-wrapper envelopes without creating fake items."""
-    by_opcode = _spec_candidates_by_opcode(specs)
-    empty_ids: set[int] = set()
-    group_counts: dict[int, int] = {}
-    for frame in frames:
-        matches: list[int] = []
-        for spec in by_opcode.get(frame.opcode, ()):
-            candidate_storage_id = _empty_storage_envelope_id(frame, spec)
-            if candidate_storage_id is not None:
-                matches.append(candidate_storage_id)
-        if len(matches) != 1:
-            continue
-        storage_id = matches[0]
-        empty_ids.add(storage_id)
-        group_counts[storage_id] = group_counts.get(storage_id, 0) + 1
-    return empty_ids, group_counts
+    # The calibrated column is authoritative even when a new town has not yet
+    # been added to the display-name registry. Preserve its numeric identity so
+    # coverage and decoder health can report the unresolved mapping instead of
+    # silently dropping an otherwise proven empty destination.
+    return storage_id or None
 
 
 def _validate_item_state_identity_specs(specs: Iterable[EventSpec]) -> None:
-    """Reject snapshot layouts that cannot produce authoritative stack identity."""
-    invalid = [
-        spec
-        for spec in specs
-        if (spec.label == "INVENTORY_TRANSFER" and spec.item_instance_offset is None)
-        or (
-            spec.label == "INVENTORY_TO_STORAGE"
-            and spec.storage_instance_offset is None
-        )
-    ]
-    if not invalid:
+    """Reject layouts that cannot prove complete character-state semantics."""
+    missing: list[tuple[EventSpec, tuple[str, ...]]] = []
+    for spec in specs:
+        fields: list[str] = []
+        if spec.label == "INVENTORY_TRANSFER":
+            if spec.item_instance_offset is None:
+                fields.append("item instance")
+            if spec.source_context_offset is None:
+                fields.append("snapshot context")
+        elif spec.label == "INVENTORY_TO_STORAGE":
+            if spec.storage_instance_offset is None:
+                fields.append("storage instance")
+            if spec.source_context_offset is None:
+                fields.append("storage destination")
+            if spec.record_count_offset is None:
+                fields.append("record count")
+        if fields:
+            missing.append((spec, tuple(fields)))
+    if not missing:
         return
-    descriptions = ", ".join(f"{spec.label}(0x{spec.opcode:04X})" for spec in invalid)
+    descriptions = ", ".join(
+        f"{spec.label}(0x{spec.opcode:04X}: {', '.join(fields)})"
+        for spec, fields in missing
+    )
     raise ProfileError(
-        "item-state snapshots require observed instance offsets for every "
-        f"snapshot layout; missing identity geometry: {descriptions}"
+        "item-state snapshots require calibrated identity and wrapper authority; "
+        f"missing geometry: {descriptions}. Recalibrate the active profile."
     )
 
 
-def _active_specs(
+def _active_profile_authority(
     opcode_profile: str | Path | None,
-) -> tuple[str, tuple[EventSpec, ...]]:
+) -> _ProfileAuthority:
     profile_path = (
         Path(opcode_profile) if opcode_profile is not None else default_profile_path()
     )
-    profile = load_opcode_profile(profile_path)
-    if not profile.active:
-        raise ProfileError(
-            f"Opcode profile is inactive: {profile_path}. Activate or recalibrate it."
-        )
-    loaded = event_specs_from_profile(profile)
-    _validate_item_state_identity_specs(loaded.specs)
-    return str(profile_path), loaded.specs
+    authority = _load_profile_authority(profile_path)
+    _validate_item_state_identity_specs(authority.loaded_specs.specs)
+    return authority
 
 
 def analyze_character_load_pcap(
@@ -2079,7 +2936,9 @@ def analyze_character_load_pcap(
 ) -> CharacterStateSnapshot:
     """Replay a capture and summarize framed inventory/storage hydration."""
     options = PacketCaptureOptions(ports=ports)
-    profile_source, specs = _active_specs(opcode_profile)
+    authority = _active_profile_authority(opcode_profile)
+    profile_source = str(authority.profile.path)
+    specs = authority.loaded_specs.specs
     accumulator = _CharacterStateAccumulator(
         profile_source=profile_source,
         specs=specs,
@@ -2087,15 +2946,24 @@ def analyze_character_load_pcap(
         input_path=path,
         capture_limits=capture_limits,
     )
-    engine = PacketEngine(
+    collector = _EventCollector(
         server_ports=options.ports,
-        event_specs=specs,
-        on_event=accumulator.observe_record,
+        event_filter=EventFilter(
+            event_types={
+                "inventory_snapshot",
+                "storage_snapshot",
+                "storage_record",
+                "storage_delta",
+            }
+        ),
+        on_event=accumulator.observe_event,
         frame_observer=accumulator.observe_frame,
+        _profile_authority=authority,
     )
-    for _ in iter_pcap_file(Path(path), engine):
+    for _ in iter_pcap_file(Path(path), collector.engine):
         pass
-    return accumulator.snapshot()
+    collector.finalize()
+    return accumulator.snapshot(decoder_health=collector.decoder_health)
 
 
 def _validate_save_pcap_path(path: str | Path) -> Path:
@@ -2149,9 +3017,12 @@ class CharacterLoadSession:
         self._save_pcap_path = (
             _validate_save_pcap_path(save_pcap) if save_pcap is not None else None
         )
-        self._profile_source, self._specs = _active_specs(opcode_profile)
+        self._profile_authority = _active_profile_authority(opcode_profile)
+        self._profile_source = str(self._profile_authority.profile.path)
+        self._specs = self._profile_authority.loaded_specs.specs
         self._start_attempted = False
         self._accumulator: Optional[_CharacterStateAccumulator] = None
+        self._collector: Optional[_EventCollector] = None
         self._engine: Optional[PacketEngine] = None
         self._capture: Optional[LivePacketCapture] = None
         self._capture_writer: Any = None
@@ -2173,6 +3044,16 @@ class CharacterLoadSession:
     @property
     def frames_seen(self) -> int:
         return self._accumulator.frames_seen if self._accumulator is not None else 0
+
+    @property
+    def decoder_health(self) -> DecoderHealth:
+        """Current storage-decoder compatibility for this capture."""
+
+        if self._collector is not None:
+            return self._collector.decoder_health
+        if self._result is not None:
+            return self._result.decoder_health
+        return DecoderHealth()
 
     @property
     def error(self) -> Optional[BaseException]:
@@ -2209,12 +3090,21 @@ class CharacterLoadSession:
             saved_capture_path=self._save_pcap_path,
             capture_limits=self._capture_limits,
         )
-        engine = PacketEngine(
+        collector = _EventCollector(
             server_ports=self._capture_options.ports,
-            event_specs=self._specs,
-            on_event=accumulator.observe_record,
+            event_filter=EventFilter(
+                event_types={
+                    "inventory_snapshot",
+                    "storage_snapshot",
+                    "storage_record",
+                    "storage_delta",
+                }
+            ),
+            on_event=accumulator.observe_event,
             frame_observer=accumulator.observe_frame,
+            _profile_authority=self._profile_authority,
         )
+        engine = collector.engine
         packet_handler = make_packet_handler(engine)
         capture_writer = None
         capture: Optional[LivePacketCapture] = None
@@ -2242,6 +3132,7 @@ class CharacterLoadSession:
                 startup_timeout=_CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS,
             )
             self._accumulator = accumulator
+            self._collector = collector
             self._engine = engine
             self._capture_writer = capture_writer
             self._capture = capture
@@ -2267,6 +3158,7 @@ class CharacterLoadSession:
             self._capture = None
             self._capture_writer = None
             self._accumulator = None
+            self._collector = None
             self._engine = None
             raise
 
@@ -2278,9 +3170,15 @@ class CharacterLoadSession:
                 # failed run into an apparent success on a repeated stop().
                 raise self._error
             return self._result
-        if self._capture is None or self._engine is None or self._accumulator is None:
+        if (
+            self._capture is None
+            or self._collector is None
+            or self._engine is None
+            or self._accumulator is None
+        ):
             raise RuntimeError("character-load session was not started")
         capture = self._capture
+        collector = self._collector
         engine = self._engine
         accumulator = self._accumulator
         capture_writer = self._capture_writer
@@ -2306,6 +3204,10 @@ class CharacterLoadSession:
             engine.finish()
         except BaseException as exc:
             self._record_error(exc)
+        try:
+            collector.finalize()
+        except BaseException as exc:
+            self._record_error(exc)
         if capture_writer is not None:
             try:
                 capture_writer.close()
@@ -2313,11 +3215,12 @@ class CharacterLoadSession:
                 self._record_error(exc)
         result: Optional[CharacterStateSnapshot] = None
         try:
-            result = accumulator.snapshot()
+            result = accumulator.snapshot(decoder_health=collector.decoder_health)
         except BaseException as exc:
             self._record_error(exc)
         self._capture = None
         self._capture_writer = None
+        self._collector = None
         self._engine = None
         if result is not None:
             self._result = result
@@ -2369,6 +3272,13 @@ def format_character_state(
         "CHARACTER LOAD SNAPSHOT DIAGNOSTIC",
         f"Profile: {snapshot.profile_source}",
         f"Generic BDO frames observed: {snapshot.frames_seen}",
+        (
+            "Storage decoder: "
+            f"{snapshot.decoder_health.storage_status} "
+            f"({snapshot.decoder_health.storage_messages_decoded}/"
+            f"{snapshot.decoder_health.storage_messages_observed} "
+            "observed wrappers decoded)"
+        ),
         (
             "Hydration packets detected; trigger is unclassified "
             "(initial login vs character switch)."

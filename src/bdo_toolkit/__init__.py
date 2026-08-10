@@ -13,6 +13,7 @@ from .capture import (
     replay_pcap,
 )
 from .events import BDOEvent, Flow
+from .diagnostics import DecoderDiagnostic, DecoderHealth
 from .filters import EventFilter
 from .profiles import (
     OpcodeProfile,
@@ -47,6 +48,8 @@ __all__ = [
     "CaptureEndpoint",
     "CaptureIntegrityError",
     "ConsoleEventWriter",
+    "DecoderDiagnostic",
+    "DecoderHealth",
     "EventFilter",
     "Flow",
     "JsonlEventWriter",

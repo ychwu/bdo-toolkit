@@ -167,7 +167,10 @@ class TestCalibrateAndUpdate:
         profile = tmp_path / "opcodes.json"
 
         result, update = calibrate_and_update(
-            profile, item_id=7003, pcap="capture.pcapng"
+            profile,
+            item_id=7003,
+            pcap="capture.pcapng",
+            action="inventory-to-storage",
         )
 
         assert result is canned
@@ -201,7 +204,10 @@ class TestCalibrateAndUpdate:
             calibration, "calibrate_pcap", lambda *args, **kwargs: canned
         )
         _, update = calibrate_and_update(
-            profile, item_id=7003, pcap="capture.pcapng"
+            profile,
+            item_id=7003,
+            pcap="capture.pcapng",
+            action="inventory-to-storage",
         )
 
         assert update is not None

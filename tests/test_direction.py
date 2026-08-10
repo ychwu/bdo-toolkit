@@ -104,8 +104,15 @@ def test_auto_calibration_on_single_direction_capture_is_clean():
 
 @requires_fixtures
 def test_auto_calibration_on_inventory_to_storage_capture_is_clean():
-    result = calibrate_pcap(
-        fixture_path("new_potato_3_tostorage.pcapng"), item_id=7003, quantity=3
+    from bdo_toolkit.calibration import calibrate_frames
+
+    frames = collect_frames_pcap(
+        fixture_path("new_potato_3_tostorage.pcapng")
+    ) + collect_frames_pcap(fixture_path("1000306_qty5_unstackable_i2s.pcapng"))
+    result = calibrate_frames(
+        frames,
+        item_id=7003,
+        quantity=3,
     )
     events = {spec.event for spec in result.specs}
     assert "STORAGE_ITEM_DELTA" in events
@@ -118,8 +125,15 @@ def test_auto_calibration_multi_record_deposit_without_reference_frame():
     # frame, so the windowed feature is absent. Auto must still classify it
     # into_storage via the intrinsic offset-8 context, and the written spec
     # must decode all records. (Bug: auto returned no specs.)
-    result = calibrate_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng"), item_id=1000306, quantity=5
+    from bdo_toolkit.calibration import calibrate_frames
+
+    frames = collect_frames_pcap(
+        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    ) + collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
+    result = calibrate_frames(
+        frames,
+        item_id=1000306,
+        quantity=5,
     )
     delta = next(s for s in result.specs if s.event == "STORAGE_ITEM_DELTA")
     assert delta.length == 261 and delta.repeat_stride == 226
@@ -173,17 +187,20 @@ def _synthetic_storage_record_frame(item_id, quantity, opcode=0x2222, length=261
     )
 
 
-def test_explicit_mode_accepts_unclassified_records():
-    # If a future patch silences both features, EXPLICIT calibration must
-    # remain usable (post-patch recovery path): no contradiction => accept.
-    from bdo_toolkit.calibration import calibrate_frames
+def test_explicit_mode_refuses_unclassified_storage_schema():
+    # An explicit action declaration cannot invent destination/count authority.
+    # A structurally plausible but semantically unanchored wrapper must fail
+    # closed instead of writing a profile that drops town names in production.
+    from bdo_toolkit.calibration import (
+        CalibrationAuthorityError,
+        calibrate_frames,
+    )
 
     frame = _synthetic_storage_record_frame(item_id=99123, quantity=3)
-    result = calibrate_frames(
-        [frame], item_id=99123, quantity=3, action="inventory-to-storage"
-    )
-    assert {spec.event for spec in result.specs} == {"STORAGE_ITEM_DELTA"}
-    assert result.evidence[0].detected_family is None
+    with pytest.raises(CalibrationAuthorityError, match="No calibration result"):
+        calibrate_frames(
+            [frame], item_id=99123, quantity=3, action="inventory-to-storage"
+        )
 
 
 def test_auto_mode_drops_unclassified_records():
@@ -236,6 +253,7 @@ def test_intrinsic_storage_context_beats_windowed_reference():
     message = bytearray(length)
     message[0:2] = length.to_bytes(2, "little")
     message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[6:8] = (1).to_bytes(2, "little")
     message[8:12] = bytes.fromhex("20000000")  # batch storage-delta context
     item_offset = 37
     message[item_offset : item_offset + 4] = (99123).to_bytes(4, "little")
@@ -262,6 +280,7 @@ def test_contradictory_intrinsic_features_refuse():
     length = 261
     message = bytearray(length)
     message[0:2] = length.to_bytes(2, "little")
+    message[6:8] = (1).to_bytes(2, "little")
     message[8:12] = bytes.fromhex("20000000")  # storage-delta context
     message[20:24] = bytes.fromhex("d0f205a3")  # high-entropy "Storage" label
     item_offset = 37
@@ -344,11 +363,14 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     calibration recovers both families' opcodes."""
     s2i = collect_frames_pcap(fixture_path("new_potato.pcapng"))
     i2s = collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
+    count_authority = collect_frames_pcap(
+        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    )
 
     from bdo_toolkit.calibration import calibrate_frames
 
     # Same item id (7003) moved both ways, as in the real guided flow.
-    result = calibrate_frames(s2i + i2s, item_id=7003)
+    result = calibrate_frames(s2i + i2s + count_authority, item_id=7003)
     events = {spec.event for spec in result.specs}
     assert {"INVENTORY_TRANSFER", "STORAGE_ITEM_DELTA"} <= events
 
@@ -364,16 +386,17 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     assert "INVENTORY_TO_STORAGE" in labels
 
 
-def test_special_production_context_is_intrinsic_into_storage():
-    # 0x8c050000 is the little-endian Yukjo Street storage destination. It
-    # must classify into_storage WITHOUT needing a reference frame, and must
-    # never read as a receipt context label.
+def test_overlapping_town_keys_require_cross_frame_storage_evidence():
+    # Yukjo Street (0x058c) contains Velia (0x0005) one byte later. A single
+    # frame therefore has two registered candidates and must not guess which
+    # column is authoritative. Calibration resolves it across multiple frames.
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
     from bdo_toolkit.calibration import detect_transfer_family
 
     message = bytearray(261)
     message[0:2] = (261).to_bytes(2, "little")
     message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[6:8] = (1).to_bytes(2, "little")
     message[8:12] = bytes.fromhex("8c050000")
     message[37:41] = (821108).to_bytes(4, "little")
     message[41:45] = (65).to_bytes(4, "little")
@@ -385,8 +408,8 @@ def test_special_production_context_is_intrinsic_into_storage():
         stream_sequence=1,
     )
     family, ref, ctx, storage_ctx = detect_transfer_family([frame], frame, 37, 821108)
-    assert family == "into_storage"
-    assert storage_ctx and not ctx and not ref
+    assert family is None
+    assert not storage_ctx and not ctx and not ref
 
 
 def test_arbitrary_town_sized_integer_is_not_a_storage_direction_signal():

@@ -6,7 +6,7 @@ from collections import deque
 import hashlib
 from typing import Callable, Iterable, Optional
 
-from ._framing import FrameCollectorScanner, TargetMessageScanner
+from ._framing import FrameCollectorScanner, MessageObserver, TargetMessageScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
     DEDUP_HISTORY_LIMIT,
@@ -105,7 +105,7 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         extra["stream_sequence"] = event.stream_sequence
     if is_storage and event.storage_operation == "snapshot":
         extra["storage_quantity"] = event.quantity
-    elif is_storage and event.storage_operation != "unknown":
+    elif is_storage and event.storage_operation == "live":
         extra["storage_delta"] = event.quantity
 
     return BDOEvent(
@@ -140,6 +140,7 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         record_offset=event.record_offset,
         confidence="observed",
         extra=extra,
+        _flow_generation=event.context.flow_generation,
     )
 
 
@@ -152,16 +153,21 @@ def _event_type_for_label(label: str) -> str:
 
 
 def _event_type_for_record(event: LootEvent) -> str:
-    if (
-        event.label == "INVENTORY_TRANSFER"
-        and event.source_context_candidate == CHARACTER_LOAD_CONTEXT
-    ):
-        return "inventory_snapshot"
+    if event.label == "INVENTORY_TRANSFER":
+        if event.source_context_candidate == CHARACTER_LOAD_CONTEXT:
+            return "inventory_snapshot"
+        if event.source_context_candidate is None:
+            # Without a calibrated context field, hydration and ordinary
+            # receipts cannot be separated safely. Keep the record neutral so
+            # an incomplete post-patch profile cannot flood activity filters.
+            return "inventory_record"
+        return "item_received"
     if event.label == "INVENTORY_TO_STORAGE":
         if event.storage_operation == "snapshot":
             return "storage_snapshot"
-        if event.storage_operation == "unknown":
-            return "storage_record"
+        if event.storage_operation == "live":
+            return "storage_delta"
+        return "storage_record"
     return _event_type_for_label(event.label)
 
 
@@ -183,6 +189,7 @@ class PacketEngine:
         frame_observer: Optional[Callable[[BDOFrame], None]] = None,
         stream_observer: Optional[Callable[[bytes, PacketContext], None]] = None,
         flow_close_observer: Optional[Callable[[FlowKey], None]] = None,
+        message_observer: Optional[MessageObserver] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
@@ -190,7 +197,11 @@ class PacketEngine:
         self._flow_state_evictions = 0
 
         def build_scanner():
-            primary = TargetMessageScanner(self._handle_record, self.event_specs)
+            primary = TargetMessageScanner(
+                self._handle_record,
+                self.event_specs,
+                message_observer=message_observer,
+            )
             if frame_observer is None and stream_observer is None:
                 return primary
             tap = (
@@ -206,16 +217,17 @@ class PacketEngine:
         self._flow_manager = FlowManager(
             server_ports=server_ports,
             scanner_factory=build_scanner,
+            track_flow_generations=True,
             max_flows=_ITEM_MAX_ACTIVE_FLOWS,
             on_flow_eviction=self._count_flow_state_eviction,
             on_flow_close=flow_close_observer,
             idle_timeout=_ITEM_FLOW_IDLE_SECONDS,
         )
         self._seen_event_keys: set[
-            tuple[FlowKey, int, int, Optional[int], bytes]
+            tuple[FlowKey, int, int, int, Optional[int], bytes]
         ] = set()
         self._seen_event_order: deque[
-            tuple[FlowKey, int, int, Optional[int], bytes]
+            tuple[FlowKey, int, int, int, Optional[int], bytes]
         ] = deque()
         self._last_raw_message: Optional[bytes] = None
         self._last_raw_message_digest: Optional[bytes] = None
@@ -287,6 +299,7 @@ class PacketEngine:
 
         key = (
             event.context.flow,
+            event.context.flow_generation,
             event.stream_sequence,
             event.opcode,
             event.record_offset,

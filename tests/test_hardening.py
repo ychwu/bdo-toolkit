@@ -23,6 +23,7 @@ from bdo_toolkit._framing import TargetMessageScanner
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit._specs import event_specs_from_profile
 from bdo_toolkit.calibration import (
+    CalibrationAuthorityError,
     CalibrationResult,
     DirectionMismatchError,
     MessageSpec,
@@ -57,6 +58,7 @@ SYNTHETIC_EVENT_SPECS = (
         quantity_offset=41,
         min_message_length=80,
         source_context_offset=8,
+        record_count_offset=6,
         storage_instance_offset=72,
         repeat_stride=226,
         single_record_message_length=261,
@@ -99,26 +101,35 @@ def _storage_frame(
     opcode: int = 0x9999,
     item_id: int = 99123,
     quantity: int = 3,
+    count: int = 1,
+    index: int = 0,
     contradictory: bool = False,
 ) -> BDOFrame:
-    length = 261
+    stride = 226
+    length = 261 + (count - 1) * stride
     message = bytearray(length)
     message[0:2] = length.to_bytes(2, "little")
     message[3:5] = opcode.to_bytes(2, "little")
+    message[6:8] = count.to_bytes(2, "little")
     message[8:12] = bytes.fromhex("20000000")
     if contradictory:
         message[20:24] = bytes.fromhex("d0f205a3")
-    message[37:41] = item_id.to_bytes(4, "little")
-    message[41:45] = quantity.to_bytes(4, "little")
-    message[72:80] = b"\x22" * 8
+    for record_index in range(count):
+        offset = 37 + record_index * stride
+        message[offset : offset + 4] = (item_id + record_index).to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = (
+            quantity if record_index == 0 else 1
+        ).to_bytes(4, "little")
+        message[offset + 12 : offset + 20] = b"\xff" * 8
+        message[offset + 35 : offset + 43] = (record_index + 1).to_bytes(8, "little")
     return BDOFrame(
-        index=0,
+        index=index,
         message=bytes(message),
         context=PacketContext(
-            timestamp=1000.0,
+            timestamp=1000.0 + index / 100,
             flow=FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000),
         ),
-        stream_sequence=100,
+        stream_sequence=100 + index,
     )
 
 
@@ -193,6 +204,7 @@ def test_storage_batch_above_old_4096_byte_limit_decodes_all_records():
     message = bytearray(length)
     message[0:2] = length.to_bytes(2, "little")
     message[3:5] = (0x0E6A).to_bytes(2, "little")
+    message[6:8] = count.to_bytes(2, "little")
     message[8:12] = bytes.fromhex("20000000")
     for index in range(count):
         offset = 37 + 226 * index
@@ -295,10 +307,43 @@ def test_explicit_calibration_refuses_contradictory_intrinsics():
         )
 
 
+def test_storage_count_authority_requires_two_distinct_validated_shapes():
+    single = _storage_frame()
+    multi = _storage_frame(count=2, index=1)
+
+    assert "CalibrationAuthorityError" in calibration_module.__all__
+    for frames in ([single], [multi]):
+        with pytest.raises(
+            CalibrationAuthorityError,
+            match="record-count-field",
+        ):
+            calibrate_frames(
+                frames,
+                item_id=99123,
+                quantity=3,
+                action="inventory-to-storage",
+            )
+
+    result = calibrate_frames(
+        [single, multi],
+        item_id=99123,
+        quantity=3,
+        action="inventory-to-storage",
+    )
+    delta = next(spec for spec in result.specs if spec.event == "STORAGE_ITEM_DELTA")
+    assert delta.record_count_offset == 6
+
+
 def test_post_patch_storage_profile_keeps_context_and_stride(tmp_path):
     frame = _storage_frame(opcode=0x9999)
+    count_authority = _storage_frame(
+        opcode=0x9999,
+        item_id=88123,
+        count=2,
+        index=1,
+    )
     result = calibrate_frames(
-        [frame],
+        [frame, count_authority],
         item_id=99123,
         quantity=3,
         action="inventory-to-storage",
@@ -306,6 +351,7 @@ def test_post_patch_storage_profile_keeps_context_and_stride(tmp_path):
     delta = next(spec for spec in result.specs if spec.event == "STORAGE_ITEM_DELTA")
 
     assert delta.context_offset == 8
+    assert delta.record_count_offset == 6
     assert delta.repeat_stride == 226
 
     profile_path = tmp_path / "nested" / "opcodes.json"
@@ -313,11 +359,13 @@ def test_post_patch_storage_profile_keeps_context_and_stride(tmp_path):
     loaded = event_specs_from_profile(load_opcode_profile(profile_path))
     decode_spec = next(spec for spec in loaded.specs if spec.opcode == 0x9999)
     assert decode_spec.source_context_offset == 8
+    assert decode_spec.record_count_offset == 6
     assert decode_spec.repeat_stride == 226
 
     message = bytearray(487)
     message[0:2] = (487).to_bytes(2, "little")
     message[3:5] = (0x9999).to_bytes(2, "little")
+    message[6:8] = (2).to_bytes(2, "little")
     message[8:12] = bytes.fromhex("20000000")
     for index, item_id in enumerate((99123, 99124)):
         offset = 37 + 226 * index
@@ -358,6 +406,7 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
                 quantity_added_offset=41,
                 destination_instance_offset=72,
                 context_offset=8,
+                record_count_offset=6,
             ),
         ],
         profile_path,
@@ -381,6 +430,7 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
     storage = bytearray(258)
     storage[0:2] = (258).to_bytes(2, "little")
     storage[3:5] = (0x0D7E).to_bytes(2, "little")
+    storage[6:8] = (1).to_bytes(2, "little")
     storage[8:12] = bytes.fromhex("05000000")
     storage[37:41] = (7003).to_bytes(4, "little")
     storage[41:45] = (5).to_bytes(4, "little")
@@ -431,6 +481,7 @@ def test_runtime_derives_changed_batch_stride_from_records(saved_stride):
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         repeat_stride=saved_stride,
         single_record_message_length=257,
@@ -453,7 +504,7 @@ def test_runtime_derives_changed_batch_stride_from_records(saved_stride):
         (4003, 21, 2, 2),
     ]
     assert {event.storage_id for event in decoded} == {0x20}
-    assert {event.storage_operation for event in decoded} == {"live"}
+    assert {event.storage_operation for event in decoded} == {"unknown"}
 
 
 def test_declared_batch_with_invalid_record_instance_fails_closed():
@@ -469,6 +520,7 @@ def test_declared_batch_with_invalid_record_instance_fails_closed():
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
@@ -499,6 +551,7 @@ def test_current_wrapper_cannot_fall_back_after_count_geometry_conflicts():
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
@@ -526,6 +579,7 @@ def test_current_wrapper_preserves_unfamiliar_operation_mode_as_unknown():
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
@@ -543,7 +597,7 @@ def test_current_wrapper_preserves_unfamiliar_operation_mode_as_unknown():
     assert {event.storage_operation for event in decoded} == {"unknown"}
 
 
-def test_item_minus_nine_context_alone_does_not_disable_legacy_fallback():
+def test_storage_profile_without_count_authority_fails_closed():
     message = bytearray(261)
     message[0:2] = (261).to_bytes(2, "little")
     message[3:5] = (0x0E6A).to_bytes(2, "little")
@@ -573,8 +627,7 @@ def test_item_minus_nine_context_alone_does_not_disable_legacy_fallback():
     _segment(engine, 1, bytes(message))
     engine.finish()
 
-    assert [(event.item_id, event.quantity) for event in decoded] == [(7003, 3)]
-    assert decoded[0].storage_operation is None
+    assert decoded == []
 
 
 def _july17_arehaza_snapshot() -> bytes:
@@ -615,6 +668,7 @@ def test_declared_count_decodes_arehaza_records_without_marker():
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
@@ -633,7 +687,7 @@ def test_declared_count_decodes_arehaza_records_without_marker():
     assert decoded[0].record_index == 1
     assert decoded[-1].record_index == decoded[-1].record_count == 25
     assert {event.storage_id for event in decoded} == {0x02B5}
-    assert {event.storage_operation for event in decoded} == {"snapshot"}
+    assert {event.storage_operation for event in decoded} == {"unknown"}
 
 
 def test_declared_count_length_mismatch_fails_closed_without_markers():
@@ -647,6 +701,7 @@ def test_declared_count_length_mismatch_fails_closed_without_markers():
         quantity_offset=40,
         min_message_length=257,
         source_context_offset=27,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
@@ -691,17 +746,16 @@ def _august7_storage_wrapper(
 
 
 @pytest.mark.parametrize(
-    ("mode", "token", "expected_operation"),
+    ("mode", "token"),
     (
-        (2, b"\x00" * 8, "snapshot"),
-        (1, bytes.fromhex("1122334455667788"), "live"),
-        (0, b"\x00" * 8, "unknown"),
+        (2, b"\x00" * 8),
+        (1, bytes.fromhex("1122334455667788")),
+        (0, b"\x00" * 8),
     ),
 )
-def test_august_storage_layout_decodes_count_destination_and_operation(
+def test_august_storage_layout_decodes_dynamic_count_and_destination(
     mode,
     token,
-    expected_operation,
 ):
     decoded: list = []
     spec = EventSpec(
@@ -710,6 +764,8 @@ def test_august_storage_layout_decodes_count_destination_and_operation(
         item_offset=44,
         quantity_offset=48,
         min_message_length=270,
+        source_context_offset=8,
+        record_count_offset=5,
         storage_instance_offset=79,
         single_record_message_length=270,
         default_context="Storage",
@@ -731,7 +787,7 @@ def test_august_storage_layout_decodes_count_destination_and_operation(
     assert [event.record_index for event in decoded] == [1, 2]
     assert {event.record_count for event in decoded} == {2}
     assert {event.storage_id for event in decoded} == {0x0020}
-    assert {event.storage_operation for event in decoded} == {expected_operation}
+    assert {event.storage_operation for event in decoded} == {"unknown"}
 
 
 def test_august_snapshot_count_conflict_fails_closed_without_marker_fallback():
@@ -746,6 +802,8 @@ def test_august_snapshot_count_conflict_fails_closed_without_marker_fallback():
         item_offset=44,
         quantity_offset=48,
         min_message_length=270,
+        source_context_offset=8,
+        record_count_offset=5,
         storage_instance_offset=79,
         single_record_message_length=270,
         default_context="Storage",
@@ -767,6 +825,7 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
     message[0:2] = (479).to_bytes(2, "little")
     message[3:5] = (0x0D7E).to_bytes(2, "little")
     message[25:29] = bytes.fromhex("20000000")
+    message[35:37] = (2).to_bytes(2, "little")
     for offset, item_id, quantity, instance_byte in (
         (37, 5004, 6, b"\x11"),
         (258, 4604, 25, b"\x22"),
@@ -785,8 +844,27 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
         stream_sequence=100,
     )
 
+    single_message = bytearray(258)
+    single_message[0:2] = (258).to_bytes(2, "little")
+    single_message[3:5] = (0x0D7E).to_bytes(2, "little")
+    single_message[25:29] = bytes.fromhex("20000000")
+    single_message[35:37] = (1).to_bytes(2, "little")
+    single_message[37:41] = (5004).to_bytes(4, "little")
+    single_message[41:45] = (6).to_bytes(4, "little")
+    single_message[49:57] = b"\xff" * 8
+    single_message[72:80] = b"\x33" * 8
+    single_frame = BDOFrame(
+        index=1,
+        message=bytes(single_message),
+        context=PacketContext(
+            timestamp=1000.1,
+            flow=frame.context.flow,
+        ),
+        stream_sequence=101,
+    )
+
     result = calibrate_frames(
-        [frame],
+        [frame, single_frame],
         item_id=5004,
         quantity=6,
         action="inventory-to-storage",
@@ -795,12 +873,13 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
 
     assert delta.length == 258
     assert delta.context_offset == 25
+    assert delta.record_count_offset == 35
     assert delta.repeat_stride == 221
 
     # Watching the SECOND item in the same mixed batch must still write a
     # first-record profile rather than pinning offsets to record 2.
     second_result = calibrate_frames(
-        [frame],
+        [frame, single_frame],
         item_id=4604,
         quantity=25,
         action="inventory-to-storage",
@@ -817,7 +896,12 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
     ) == (258, 37, 41, 72, 221)
 
     profile_path = tmp_path / "opcodes.local"
-    update_profile(result, profile_path, backup=False)
+    update_profile(
+        result,
+        profile_path,
+        action="inventory-to-storage",
+        backup=False,
+    )
     loaded = event_specs_from_profile(load_opcode_profile(profile_path))
     decoded: list = []
     engine = PacketEngine(
@@ -836,6 +920,7 @@ def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
 
 def test_growing_reference_frame_is_persisted():
     record = _storage_frame()
+    count_authority = _storage_frame(item_id=88123, count=2, index=2)
     reference_message = bytearray(54)
     reference_message[0:2] = (54).to_bytes(2, "little")
     reference_message[3:5] = (0x1234).to_bytes(2, "little")
@@ -848,7 +933,7 @@ def test_growing_reference_frame_is_persisted():
     )
 
     result = calibrate_frames(
-        [reference, record],
+        [reference, record, count_authority],
         item_id=99123,
         quantity=3,
         action="inventory-to-storage",
@@ -927,6 +1012,52 @@ def test_empty_profile_update_is_a_true_noop(tmp_path):
 
     assert not update.written
     assert update.backup_path is None
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_partial_auto_calibration_cannot_preserve_stale_storage_silently(tmp_path):
+    path = tmp_path / "opcodes.json"
+    original = json.dumps(
+        {
+            "version": 1,
+            "profile_active": True,
+            "specs": {
+                "STORAGE_ITEM_DELTA": [
+                    {
+                        "event": "STORAGE_ITEM_DELTA",
+                        "opcode": "0x0E6A",
+                        "length": 261,
+                        "item_id_offset": 37,
+                        "quantity_added_offset": 41,
+                        "destination_instance_offset": 72,
+                        "context_offset": 8,
+                        "record_count_offset": 6,
+                    }
+                ]
+            },
+        },
+        indent=2,
+    ) + "\n"
+    path.write_text(original, encoding="utf-8")
+    partial = CalibrationResult(
+        specs=(
+            MessageSpec(
+                "INVENTORY_TRANSFER",
+                0x2222,
+                255,
+                item_id_offset=34,
+                quantity_offset=38,
+                item_instance_offset=69,
+                context_offset=21,
+            ),
+        ),
+        ignored=(),
+        frames_scanned=1,
+    )
+
+    with pytest.raises(CalibrationAuthorityError, match="auto calibration is incomplete"):
+        update_profile(partial, path, backup=False)
+
     assert path.read_text(encoding="utf-8") == original
 
 
@@ -1248,6 +1379,38 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
                 }
             ],
         },
+        {
+            "specs": {
+                "STORAGE_ITEM_DELTA": [
+                    {
+                        "event": "STORAGE_ITEM_DELTA",
+                        "opcode": "0x1234",
+                        "length": 100,
+                        "item_id_offset": 20,
+                        "quantity_added_offset": 24,
+                        "destination_instance_offset": 55,
+                        "context_offset": 18,
+                        "record_count_offset": 6,
+                    }
+                ]
+            }
+        },
+        {
+            "specs": {
+                "STORAGE_ITEM_DELTA": [
+                    {
+                        "event": "STORAGE_ITEM_DELTA",
+                        "opcode": "0x1234",
+                        "length": 100,
+                        "item_id_offset": 20,
+                        "quantity_added_offset": 24,
+                        "destination_instance_offset": 55,
+                        "context_offset": 8,
+                        "record_count_offset": 19,
+                    }
+                ]
+            }
+        },
     ],
 )
 def test_malformed_profiles_raise_public_profile_error(tmp_path, payload):
@@ -1259,7 +1422,7 @@ def test_malformed_profiles_raise_public_profile_error(tmp_path, payload):
 
 
 def test_event_extra_is_deeply_immutable_hashable_and_json_safe():
-    original = {"nested": {"values": [1, 2]}}
+    original = {"nested": {"values": [1, 2]}, "_vendor": "preserved"}
     event = BDOEvent("test", 0.0, Flow("a", 1, "b", 2), 1, 1, extra=original)
     original["nested"]["values"].append(3)
 
@@ -1268,7 +1431,10 @@ def test_event_extra_is_deeply_immutable_hashable_and_json_safe():
     with pytest.raises(TypeError):
         event.extra["nested"]["new"] = True
     assert hash(event) == hash(event)
-    assert event.to_dict()["extra"] == {"nested": {"values": [1, 2]}}
+    assert event.to_dict()["extra"] == {
+        "nested": {"values": [1, 2]},
+        "_vendor": "preserved",
+    }
     assert event.to_dict()["timestamp_iso"] == "1970-01-01T00:00:00.000Z"
     assert "timestamp_text" not in event.to_dict()
 

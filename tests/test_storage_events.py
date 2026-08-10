@@ -172,7 +172,7 @@ def test_zero_storage_context_is_not_promoted_to_a_location_key():
         )
     )
 
-    assert event.event_type == "storage_delta"
+    assert event.event_type == "storage_record"
     assert event.storage_id is None
     assert event.storage_name is None
     assert event.source == "Character Load"

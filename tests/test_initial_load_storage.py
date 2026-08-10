@@ -37,6 +37,7 @@ def test_initial_game_load_is_separated_from_live_storage_activity(tmp_path):
                             "quantity_added_offset": 40,
                             "destination_instance_offset": 71,
                             "context_offset": 27,
+                            "record_count_offset": 16,
                         }
                     ]
                 },
@@ -110,6 +111,8 @@ def _august7_profile(tmp_path):
                             "item_id_offset": 44,
                             "quantity_added_offset": 48,
                             "destination_instance_offset": 79,
+                            "context_offset": 8,
+                            "record_count_offset": 5,
                         }
                     ],
                     "SOURCE_STACK_DECREMENT": [
@@ -153,7 +156,8 @@ def test_august_character_switch_hydration_is_not_live_activity(tmp_path):
     assert state.inventory.currency_balance_records == 4
     assert state.inventory.unclassified_records == 0
     assert state.storage_snapshot_records == 2452
-    assert len(state.storages) == 29
+    assert len(state.storages) == 33
+    assert state.empty_storage_destinations == 4
     assert state.storage_named("Arehaza").occupied_stacks == 25
 
 

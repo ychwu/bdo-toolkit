@@ -480,15 +480,12 @@ class LivePacketCapture:
             self._record_error(capture_error)
 
         capture_thread = getattr(capture, "thread", None)
-        thread_alive: Optional[bool] = None
+        thread_alive = False
         if capture_thread is not None:
-            try:
-                thread_alive = bool(capture_thread.is_alive())
-            except BaseException as exc:
-                retain(exc)
+            thread_alive = bool(capture_thread.is_alive())
 
         if capture is not None and (
-            bool(getattr(capture, "running", False)) or thread_alive is True
+            bool(getattr(capture, "running", False)) or thread_alive
         ):
             try:
                 stop_method = capture.stop
@@ -536,12 +533,8 @@ class LivePacketCapture:
         )
 
         if capture_thread is not None:
-            try:
-                thread_alive = bool(capture_thread.is_alive())
-            except BaseException as exc:
-                retain(exc)
-                thread_alive = None
-            if thread_alive is True:
+            thread_alive = bool(capture_thread.is_alive())
+            if thread_alive:
                 if capture_thread is current_thread():
                     retain(
                         RuntimeError(
@@ -555,11 +548,7 @@ class LivePacketCapture:
                         )
                     except BaseException as exc:
                         retain(exc)
-                    try:
-                        thread_alive = bool(capture_thread.is_alive())
-                    except BaseException as exc:
-                        retain(exc)
-                        thread_alive = None
+                    thread_alive = bool(capture_thread.is_alive())
 
         backend_running_without_thread = (
             capture is not None
@@ -567,8 +556,7 @@ class LivePacketCapture:
             and bool(getattr(capture, "running", False))
         )
         incomplete = (
-            thread_alive is True
-            or (thread_alive is None and capture_thread is not None)
+            thread_alive
             or backend_running_without_thread
             or self._capture_socket is not None
         )
@@ -577,13 +565,11 @@ class LivePacketCapture:
 
         if incomplete:
             reasons: list[str] = []
-            if thread_alive is True or backend_running_without_thread:
+            if thread_alive or backend_running_without_thread:
                 reasons.append(
                     "the capture thread/backend is still running after the "
                     f"{_CAPTURE_JOIN_TIMEOUT_SECONDS:g}-second join deadline"
                 )
-            elif thread_alive is None and capture_thread is not None:
-                reasons.append("capture-thread termination could not be verified")
             if self._capture_socket is not None:
                 reasons.append("the caller-owned capture socket did not close")
             cleanup_error = RuntimeError(

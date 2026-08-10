@@ -1,4 +1,4 @@
-"""Capture one character load and print its aggregate item-state snapshot."""
+"""Capture the next character load and print its aggregate item-state snapshot."""
 
 from __future__ import annotations
 
