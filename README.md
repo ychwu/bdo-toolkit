@@ -6,8 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a?style=flat-square)](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE)
 
 Passive, read-only Python tooling that turns live or recorded Black Desert
-traffic into typed item activity, character-load item state, and Arena of
-Solare leaderboard results.
+traffic into structured, application-ready data.
 
 [API reference](https://ychwu.github.io/bdo-toolkit/) ·
 [Runnable examples](https://ychwu.github.io/bdo-toolkit/#item-examples) ·
@@ -20,11 +19,11 @@ Solare leaderboard results.
 
 ## What it provides
 
-| Workflow | Status | Public result | Start here |
+| In-game moment | What the toolkit provides | Status | Start here |
 | --- | --- | --- | --- |
-| Continuing item activity | Alpha | `BDOEvent` stream | [Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) |
-| Character-load item state | Experimental | `ItemStateSnapshot` | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
-| Arena of Solare Leaderboard refresh | Alpha | `SolareCaptureResult` | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
+| Collect loot, gather items, withdraw items, or add items to town storage | A continuing `BDOEvent` stream describing supported item activity as it happens | Alpha | [Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) |
+| Log in or switch characters | One finite `ItemStateSnapshot` assembled from the existing inventory, known balances, and town-storage records observed while the character loads | Experimental | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
+| Open or refresh the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains the overall top 100 and all 31 class-specific top-20 lists | Alpha | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
 
 The domains share passive packet capture, TCP reassembly, and framing while
 keeping their app-facing models separate. Only the selected API runs its
