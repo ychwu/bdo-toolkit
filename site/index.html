@@ -2507,7 +2507,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       <div class="nav-group">
         <button class="nav-toggle" type="button" aria-expanded="true" aria-controls="nav-getting-started"><span>Getting started</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-getting-started">
-          <a class="nav-link" href="#overview" data-page="overview" data-search="overview start architecture shared transport result contracts items item state arena solare capture passive replay toolkit"><span>Overview</span><em class="nav-kind guide">Guide</em></a>
+          <a class="nav-link" href="#overview" data-page="overview" data-search="overview start architecture shared transport result contracts items item state arena solare capture passive replay toolkit na eu region regional compatibility support"><span>Overview</span><em class="nav-kind guide">Guide</em></a>
           <a class="nav-link" href="#capture-foundation" data-page="capture-foundation" data-search="shared capture foundation setup install installation pip Npcap permissions replay live driver adapter ports BPF"><span>Capture setup</span><span class="nav-badges"><abbr class="nav-requirement" title="Required setup">REQ</abbr><em class="nav-kind guide">Guide</em></span></a>
           <a class="nav-link" href="#packet-capture-options" data-page="packet-capture-options" data-search="PacketCaptureOptions bdo_toolkit.PacketCaptureOptions shared capture calibration solare character load interface local_ip ports use_bpf auto_local_ip"><span><code>PacketCaptureOptions</code></span><em class="nav-kind">API</em></a>
         </div>
@@ -2668,6 +2668,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <h1 class="page-title">BDO Toolkit</h1>
         <p class="page-lede">BDO Toolkit passively reads live or recorded Black Desert traffic and returns structured Python objects for item events, inventory and storage state, and Arena of Solare rankings.</p>
         <div class="meta-row"><span class="meta-pill">v0.1.0 · alpha</span><span class="meta-pill">Python ≥ 3.10</span><span class="meta-pill">passive · read-only</span></div>
+
+        <div class="callout warning"><strong>Region validation currently covers NA/EU only.</strong> Other regional services are unverified, may use different network traffic or packet layouts, and have unknown compatibility.</div>
 
         <p class="route-links"><strong>First use:</strong> choose whether the integration needs continuing item activity, the inventory and town-storage state sent during login or a character switch, or an Arena of Solare leaderboard result. Complete <a href="#capture-foundation">Capture setup</a> before moving from replay to live traffic.</p>
 

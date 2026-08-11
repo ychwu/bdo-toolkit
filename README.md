@@ -2,6 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
+![Tested on NA/EU](https://img.shields.io/badge/tested-NA%2FEU-5b61a8?style=flat-square)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-d97706?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a?style=flat-square)](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE)
 
@@ -21,9 +22,9 @@ traffic into structured, application-ready data.
 
 | In-game moment | What the toolkit provides | Status | Start here |
 | --- | --- | --- | --- |
-| Collect loot, gather items, withdraw items, or add items to town storage | A continuing `BDOEvent` stream describing supported item activity as it happens | Alpha | [Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) |
-| Log in or switch characters | One finite `ItemStateSnapshot` assembled from the existing inventory, known balances, and town-storage records observed while the character loads | Experimental | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
-| Open or refresh the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains the overall top 100 and all 31 class-specific top-20 lists | Alpha | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
+| Collect loot, gather items, or add items to town storage | A continuing `BDOEvent` stream describing supported item activity as it happens | Alpha | [Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) |
+| Log in or switch characters | One `ItemStateSnapshot` assembled from the existing inventory, currency balances, and town-storage records observed while the character loads | Experimental | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
+| Opening the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains the overall top 100 and all 31 class-specific top-20 lists | Alpha | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
 
 The domains share passive packet capture, TCP reassembly, and framing while
 keeping their app-facing models separate. Only the selected API runs its
@@ -126,6 +127,9 @@ use item calibration.
   traffic.
 - **Patch-specific item profiles:** use one profile matching the captured game
   patch. Recalibrate instead of combining opcode generations.
+- **Region compatibility:** testing and validation currently cover NA/EU only.
+  Other regional services are unverified, may use different packet layouts,
+  and have unknown compatibility.
 - **Live and replay defaults differ:** live item capture defaults to ordinary
   activity; unfiltered replay is exhaustive. An explicit `EventFilter` is
   honored exactly in either path.
