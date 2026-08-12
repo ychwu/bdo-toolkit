@@ -38,7 +38,7 @@ def test_source_label_unknown_candidate_stays_visible():
 
 def test_source_label_promotes_observed_remote_item_contexts():
     assert source_label(bytes.fromhex("60260000")) == "Event Adventures"
-    assert source_label(bytes.fromhex("3e010000")) == "Magnus Remote Inventory"
+    assert source_label(bytes.fromhex("3e010000")) == "Remote Inventory"
 
 
 def _loot_preview_frame(item_id: int, quantity: int) -> bytes:
@@ -102,7 +102,7 @@ def _frame_context(sequence: int = 100) -> PacketContext:
 def test_promoted_remote_item_sources_reach_events_and_exact_filters():
     observed = (
         (bytes.fromhex("60260000"), "Event Adventures"),
-        (bytes.fromhex("3e010000"), "Magnus Remote Inventory"),
+        (bytes.fromhex("3e010000"), "Remote Inventory"),
     )
 
     for raw_context, expected_source in observed:

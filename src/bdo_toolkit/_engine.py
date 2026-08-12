@@ -196,6 +196,7 @@ class PacketEngine:
         self.events_found = 0
         self._on_event = on_event
         self._flow_state_evictions = 0
+        # Counter-only: never extend across flow work, callbacks, or delivery.
         self._diagnostics_lock = Lock()
 
         def build_scanner():

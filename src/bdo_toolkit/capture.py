@@ -931,7 +931,11 @@ class LiveCaptureSession:
 
     @property
     def health(self) -> LiveCaptureHealth:
-        """Return a stable snapshot of live-capture integrity diagnostics."""
+        """Return an immutable, observational integrity snapshot.
+
+        Active counter families may be sampled at adjacent instants. Sampling
+        does not acquire structural TCP-reassembly ownership.
+        """
 
         capture = self._capture
         stats = self._capture_stats

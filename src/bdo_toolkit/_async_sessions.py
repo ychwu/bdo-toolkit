@@ -130,6 +130,8 @@ class AsyncLiveCaptureSession:
 
     @property
     def health(self) -> LiveCaptureHealth:
+        """Return the underlying observational health snapshot synchronously."""
+
         return self._session.health
 
     @property

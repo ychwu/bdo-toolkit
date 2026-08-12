@@ -77,7 +77,7 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("56687f25"): "Choose Your Rewards Box",
     bytes.fromhex("52e89da8"): "NPC Sell",
     bytes.fromhex("60260000"): "Event Adventures",
-    bytes.fromhex("3e010000"): "Magnus Remote Inventory",
+    bytes.fromhex("3e010000"): "Remote Inventory",
 }
 
 

@@ -441,6 +441,7 @@ class FlowManager:
         self._next_flow_generation = 0
         self._flows: OrderedDict[FlowKey, TCPFlowState] = OrderedDict()
         self._tcp_gap_resets = 0
+        # Counter-only: never acquire _lock or protect callbacks/delivery here.
         self._diagnostics_lock = Lock()
         # Packet delivery and an eventual wall-clock service hook may run on
         # different threads. Serialize both paths around the same flow state.

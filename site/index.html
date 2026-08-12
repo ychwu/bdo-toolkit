@@ -2535,7 +2535,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
           <a class="nav-link" href="#capture-functions" data-page="capture-functions" data-search="capture api replay functions replay_pcap capture_live pcap offline live blocking iterator shared parameters opcode_profile item profile required setup current matching era"><span><code>replay_pcap()</code> / <code>capture_live()</code></span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#live-capture-session" data-page="live-capture-session" data-search="live capture session start stop request_stop cleanup_incomplete cleanup_owner origin observer callback events blocking iterator worker thread service stream single consumer shutdown drain poll ui timer timeout class lifecycle opcode_profile item profile required setup current"><span><code>LiveCaptureSession</code></span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#live-capture-options" data-page="live-capture-options" data-search="LiveCaptureOptions bdo_toolkit.LiveCaptureOptions bdo_toolkit item live capture interface local_ip ports use_bpf auto_local_ip event_queue_size packet_queue_size queue backpressure"><span><code>LiveCaptureOptions</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#live-capture-health" data-page="live-capture-health" data-search="LiveCaptureHealth DecoderHealth DecoderDiagnostic on_diagnostic CaptureIntegrityError CaptureEndpoint bdo_toolkit live capture health decoder compatibility source filter destination warning endpoint packet queue overflow TCP gap flow eviction native drops capture buffer fallback diagnostics clean integrity"><span>Capture diagnostics</span><em class="nav-kind">API</em></a>
+          <a class="nav-link" href="#live-capture-health" data-page="live-capture-health" data-search="LiveCaptureHealth DecoderHealth DecoderDiagnostic on_diagnostic callback synchronous thread safe request_stop replay live failure timing CaptureIntegrityError CaptureEndpoint bdo_toolkit capture health decoder compatibility source filter destination warning endpoint packet queue overflow TCP gap flow eviction native drops capture buffer fallback diagnostics clean integrity"><span>Capture diagnostics</span><em class="nav-kind">API</em></a>
         </div>
       </div>
       <div class="nav-group collapsed">
@@ -2892,7 +2892,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
 
         <section class="doc-section">
           <h2 id="item-overview/before-you-build" class="section-heading" data-anchor="before-you-build" data-toc>Item decoding after patches</h2>
-          <div class="callout warning"><strong>Profiles can go stale.</strong> There is no published protocol specification; game patches can change item opcodes or byte offsets and leave decoding quiet without an exception. <a href="#calibration-workflow">Calibration</a> rebuilds a local profile from known traffic.</div>
+          <div class="callout warning"><strong>Profiles can go stale.</strong> There is no published protocol specification; game patches can change item opcodes or byte offsets and leave decoding quiet without an exception. Return to <a href="#profiles">Opcode profile setup</a> to select and verify a current profile; if verification fails or no current profile is available, <a href="#calibration-workflow">calibration</a> rebuilds one from known traffic.</div>
           <p class="supporting-note"><code>BDOEvent</code> exposes raw item IDs and does not include an item-name or marketplace catalog. See the <a href="#bdo-event">event fields</a> and <a href="#stability">stability contract</a>.</p>
         </section>
 
@@ -3072,16 +3072,8 @@ for event in capture_live(
             <tr id="capture-functions/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">required</span></td><td>One explicit local item profile. Use a current active profile for live traffic and the matching-era profile for saved traffic. A path is loaded when decoding starts; an already loaded immutable <code>OpcodeProfile</code> is pinned directly and avoids a second file read. No capture API searches, merges, downloads, refreshes, or falls back to another profile. See <a href="#profiles">opcode profiles</a>.</td></tr>
             <tr id="capture-functions/opt-event_filter" data-anchor="opt-event_filter"><td><code>event_filter</code></td><td class="type"><a href="#event-filter">EventFilter</a> | None</td><td><code>None</code></td><td>Reusable delivery policy. On replay, <code>None</code> yields every successfully decoded event. On every item-event live API, <code>None</code> applies <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> so character-load hydration and neutral <code>inventory_record</code>/<code>storage_record</code> values do not flood an ordinary activity stream. Any explicitly supplied filter is used exactly as constructed: <code>EventFilter()</code> or <code>EventFilter.all()</code> restores exhaustive live delivery, while a source-only filter remains source-only and can match snapshot records. Filtering happens after storage-origin classification and any evidence-based <code>storage_record</code> promotion.</td></tr>
             <tr id="capture-functions/opt-origin_observer" data-anchor="opt-origin_observer"><td><span class="field-name"><code>origin_observer</code><span class="field-badge">Advanced</span></span></td><td class="type">Callable | None</td><td><code>None</code></td><td>Optional maintainer-facing callback for auditing structurally discovered worker companion chains. Origin classification runs without it. Invocation is synchronous on whichever capture-processing or finalization thread emits the observation, so keep the callback fast and thread-safe. See <a href="#origin-learner"><code>OriginLearner</code></a>.</td></tr>
-            <tr id="capture-functions/opt-on_diagnostic" data-anchor="opt-on_diagnostic"><td><code>on_diagnostic</code></td><td class="type">Callable[[<a href="#live-capture-health/decoder-diagnostic">DecoderDiagnostic</a>], object] | None</td><td><code>None</code></td><td>Synchronous, out-of-band storage-compatibility callback that bypasses <a href="#event-filter"><code>EventFilter</code></a>. Replay invokes it on the iterator thread. Live execution and failure timing depend on the lifecycle phase described <a href="#capture-functions/diagnostic-phases">below</a>; the callback is never awaited.</td></tr>
+            <tr id="capture-functions/opt-on_diagnostic" data-anchor="opt-on_diagnostic"><td><code>on_diagnostic</code></td><td class="type">Callable[[<a href="#live-capture-health/decoder-diagnostic">DecoderDiagnostic</a>], object] | None</td><td><code>None</code></td><td>Synchronous, out-of-band storage-compatibility callback that bypasses <a href="#event-filter"><code>EventFilter</code></a>. Replay invokes it on the iterator thread, and callback exceptions propagate while that iterator advances. Live threading, callback-safe shutdown, and failure timing are documented in the <a href="#live-capture-health/on-diagnostic">callback contract</a>. The callback is never awaited.</td></tr>
           </tbody></table></div>
-          <h3 id="capture-functions/diagnostic-phases" class="subheading" data-anchor="diagnostic-phases" data-search-title="on_diagnostic live execution phases" data-toc><code>on_diagnostic</code> live execution phases</h3>
-          <div class="table-wrap"><table><thead><tr><th>Phase</th><th>Execution context</th><th>Failure path</th></tr></thead><tbody>
-            <tr><td>Profile preflight</td><td>The synchronous <code>start()</code> caller after the backend starts; for <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>, the facade&rsquo;s private executor worker.</td><td>The original callback exception is a startup failure. Bounded startup rollback runs before it is re-raised.</td></tr>
-            <tr><td>Packet or timed decoding</td><td>Normally the item decoder worker for packet-driven diagnostics. Timed TCP-gap servicing can instead emit from the stop-monitor thread while the session is running.</td><td>The exception is retained as a background failure; normal consumption drains buffered and shutdown-finalized events before raising unless bounded cleanup itself cannot finish.</td></tr>
-            <tr><td>Shutdown finalization</td><td>Whichever control, stop-monitor, live-duration timer, or async-executor thread owns finalization.</td><td>The same retained-error and drain/cleanup ordering applies.</td></tr>
-          </tbody></table></div>
-          <div class="callout note"><strong>A live session can invoke the callback from more than one thread.</strong> Keep <code>on_diagnostic</code> fast, synchronous, and thread-safe. It is never awaited. Use <code>request_stop()</code> for callback-safe shutdown; the blocking session operations below remain prohibited from either callback.</div>
-          <div class="callout warning"><strong>Live callbacks cannot block on their own session.</strong> On an explicit live session, calling synchronous or asynchronous <code>stop()</code>, <code>poll()</code>, or event iteration from <code>origin_observer</code> or <code>on_diagnostic</code> is rejected, including an async call scheduled onto another thread. Those operations can wait for the callback or decoder that is currently invoking them. Call the non-blocking <code>request_stop()</code>; control code can consume events and complete shutdown after the callback returns.</div>
           <div class="callout note"><strong>Both functions are lazy iterators.</strong> Calling either function only creates an iterator. Configuration and the supplied local profile are loaded or validated when the iterator is first advanced. <code>replay_pcap()</code> then opens the recording; <code>capture_live()</code> starts the live-capture backend. Neither path performs a remote request.</div>
         </section>
 
@@ -3446,14 +3438,14 @@ for event in capture_live(
           <div class="callout note"><strong>BPF and event filtering are different layers.</strong> <code>use_bpf</code> reduces raw network traffic entering Python. <a href="#event-filter"><code>EventFilter</code></a> selects completed <a href="#bdo-event"><code>BDOEvent</code></a> objects after origin classification and any supported storage-operation promotion.</div>
         </section>
 
-        <div class="page-end"><a class="page-jump" href="#live-capture-session">&larr; LiveCaptureSession</a><a class="page-jump" href="#live-capture-health">Next: Live-capture diagnostics &rarr;</a></div>
+        <div class="page-end"><a class="page-jump" href="#live-capture-session">&larr; LiveCaptureSession</a><a class="page-jump" href="#live-capture-health">Next: capture diagnostics &rarr;</a></div>
       </article>
 
-      <article class="doc-page" id="live-capture-health" data-page="live-capture-health" data-title="Live-capture diagnostics" hidden>
+      <article class="doc-page" id="live-capture-health" data-page="live-capture-health" data-title="Capture diagnostics" hidden>
         <div class="page-kicker"><span class="kind-badge class">Types</span> bdo_toolkit &middot; Item events</div>
-        <h1 class="page-title">Live-capture diagnostics</h1>
-        <p class="page-lede"><code>LiveCaptureHealth</code> reports packet acquisition integrity, <code>DecoderHealth</code> reports storage schema compatibility, <code>DecoderDiagnostic</code> explains actionable decoder failures out of band, and <code>CaptureEndpoint</code> records the adapter and filters selected at startup.</p>
-        <p class="route-links"><strong>Available from:</strong> <a href="#live-capture-session/attributes"><code>LiveCaptureSession.health</code>, <code>.decoder_health</code>, and <code>.endpoint</code></a> &middot; <a href="#async-live-capture-session/attributes"><code>AsyncLiveCaptureSession</code> equivalents</a> &middot; <a href="#character-load-session/methods"><code>CharacterLoadSession.decoder_health</code></a> and the final <a href="#item-state-snapshot/attributes"><code>ItemStateSnapshot.decoder_health</code></a> &middot; <a href="#capture-functions/opt-on_diagnostic"><code>on_diagnostic=</code> on every item-event capture API</a></p>
+        <h1 class="page-title">Capture diagnostics</h1>
+        <p class="page-lede"><code>LiveCaptureHealth</code> reports live packet-acquisition integrity, <code>DecoderHealth</code> reports storage-schema compatibility, <code>DecoderDiagnostic</code> explains actionable decoder failures out of band, and <code>CaptureEndpoint</code> records the adapter and filters selected at startup.</p>
+        <p class="route-links"><strong>Available from:</strong> <a href="#live-capture-session/attributes"><code>LiveCaptureSession.health</code>, <code>.decoder_health</code>, and <code>.endpoint</code></a> &middot; <a href="#async-live-capture-session/attributes"><code>AsyncLiveCaptureSession</code> equivalents</a> &middot; <a href="#character-load-session/methods"><code>CharacterLoadSession.decoder_health</code></a> and the final <a href="#item-state-snapshot/attributes"><code>ItemStateSnapshot.decoder_health</code></a> &middot; <a href="#live-capture-health/on-diagnostic"><code>on_diagnostic=</code> on every item-event capture API</a></p>
         <p class="supporting-note"><strong>Integrity and compatibility answer different questions.</strong> A packet capture can be clean while a post-patch storage layout is incompatible. The <a href="#capture-functions/capture-live"><code>capture_live()</code></a> convenience iterator hides its internal session, so it cannot return either health snapshot, but its <code>on_diagnostic=</code> callback still reports decoder failures.</p>
 
         <section class="doc-section">
@@ -3477,6 +3469,40 @@ if decoder_health.storage_is_compatible is False:
             <tr><td><a href="#live-capture-health/integrity-error"><code>CaptureIntegrityError</code></a></td><td>The raw-packet queue overflowed, so the session stopped fail-closed.</td><td>Do not treat the run as complete. Diagnose pressure before increasing queue capacity.</td></tr>
             <tr><td><code>capture_buffer_fallback is True</code></td><td>Enlarged Windows/Npcap buffer setup failed and capture continued through the fallback backend path.</td><td>Inspect the remaining counters. This flag alone does not make the capture unclean.</td></tr>
             <tr><td><code>storage_status == "incompatible"</code></td><td>The selected profile lacks required storage fields, observed geometry contradicted them, no destination value decoded, or the authoritative numeric key is absent from the name registry.</td><td>Do not interpret a quiet source filter as no activity. Inspect the diagnostic code: recalibrate for decoder/unavailable failures; verify a registry update for <code>storage_destination_unrecognized</code>; retain a diagnostic PCAP if uncertainty persists.</td></tr>
+          </tbody></table></div>
+        </section>
+
+        <section class="doc-section">
+          <h2 id="live-capture-health/on-diagnostic" class="section-heading" data-anchor="on-diagnostic" data-toc>Receive decoder diagnostics</h2>
+          <p><code>on_diagnostic=</code> registers a synchronous callback on <a href="#capture-functions/replay-pcap"><code>replay_pcap()</code></a>, <a href="#capture-functions/capture-live"><code>capture_live()</code></a>, <a href="#live-capture-session"><code>LiveCaptureSession</code></a>, and <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>. Each <a href="#live-capture-health/decoder-diagnostic"><code>DecoderDiagnostic</code></a> bypasses <a href="#event-filter"><code>EventFilter</code></a> and never enters the event stream. Replay calls the callback on the iterator thread. Live sessions can call it from more than one session-owned thread, so keep it fast and thread-safe; it is never awaited.</p>
+          <div class="signature">on_diagnostic: Callable[[<a href="#live-capture-health/decoder-diagnostic">DecoderDiagnostic</a>], object] | None = None</div>
+          <pre><code>from bdo_toolkit import EventFilter, LiveCaptureSession
+
+
+def report_decoder_problem(diagnostic):
+    print(diagnostic.code, diagnostic.requested_sources)
+    print(diagnostic.message)
+
+
+heidel_deposits = EventFilter(
+    event_types={"storage_delta"},
+    sources={"Heidel"},
+)
+
+session = LiveCaptureSession(
+    opcode_profile="opcodes.local",
+    event_filter=heidel_deposits,
+    on_diagnostic=report_decoder_problem,
+)</code></pre>
+          <p class="example-note">The callback is independent of event delivery: <code>sources={"Heidel"}</code> cannot hide a decoder warning. A diagnostic copies the sorted requested source names for logging context. If the callback must stop an explicit session, call <code>session.request_stop()</code> and let control code finish consuming and shutting down after the callback returns. The <code>capture_live()</code> convenience iterator does not expose its internal session.</p>
+          <div class="callout warning"><strong>Live callbacks cannot block on their own session.</strong> Calling synchronous or asynchronous <code>stop()</code>, <code>poll()</code>, or event iteration from <code>origin_observer</code> or <code>on_diagnostic</code> is rejected, including an async call scheduled onto another thread. Use the non-blocking <code>request_stop()</code> method instead.</div>
+          <p class="supporting-note"><strong>Silence is not a health signal.</strong> No delivered event can mean no matching activity, incomplete acquisition, an unobserved storage profile family, or incompatible decoder configuration. Check both health surfaces and handle <code>on_diagnostic=</code> in production storage consumers.</p>
+
+          <h3 id="live-capture-health/diagnostic-phases" class="subheading" data-anchor="diagnostic-phases" data-search-title="on_diagnostic live execution and failure timing" data-toc>Live execution and failure timing <span class="reading-label">Optional reference</span></h3>
+          <div class="table-wrap"><table><thead><tr><th>Phase</th><th>Callback context</th><th>If it raises</th></tr></thead><tbody>
+            <tr><td>Startup</td><td>The thread performing synchronous startup. Async startup runs on the facade&rsquo;s private worker rather than the event-loop thread.</td><td>The original callback exception becomes the startup failure after bounded rollback runs.</td></tr>
+            <tr><td>Active capture</td><td>A session-owned decoder or monitor thread. Notifications are not guaranteed to arrive from one thread.</td><td>The exception is retained as a background failure. Normal consumption drains buffered and shutdown-finalized events before raising unless bounded cleanup itself cannot finish.</td></tr>
+            <tr><td>Shutdown</td><td>The thread that owns session finalization.</td><td>The same retained-error, event-drain, and bounded-cleanup ordering applies.</td></tr>
           </tbody></table></div>
         </section>
 
@@ -3505,30 +3531,6 @@ if decoder_health.storage_is_compatible is False:
         </section>
 
         <section class="doc-section">
-          <h2 id="live-capture-health/source-filter" class="section-heading" data-anchor="source-filter" data-toc>Monitor a town-filtered consumer</h2>
-          <pre><code>from bdo_toolkit import EventFilter, LiveCaptureSession
-
-
-def report_decoder_problem(diagnostic):
-    print(diagnostic.code, diagnostic.requested_sources)
-    print(diagnostic.message)
-
-
-heidel_deposits = EventFilter(
-    event_types={"storage_delta"},
-    sources={"Heidel"},
-)
-
-session = LiveCaptureSession(
-    opcode_profile="opcodes.local",
-    event_filter=heidel_deposits,
-    on_diagnostic=report_decoder_problem,
-)</code></pre>
-          <p class="example-note">The callback is independent of event delivery: <code>sources={"Heidel"}</code> cannot hide a decoder warning. A diagnostic copies the sorted requested source names for logging context. Keep the callback fast and non-blocking; use <code>session.request_stop()</code> inside it if the application must stop.</p>
-          <div class="callout warning"><strong>Silence is not a health signal.</strong> No delivered event can mean no matching activity, incomplete acquisition, an unobserved storage profile family, or incompatible decoder configuration. Check both health surfaces and handle <code>on_diagnostic=</code> in production storage consumers.</div>
-        </section>
-
-        <section class="doc-section">
           <h2 id="live-capture-health/decoder-health" class="section-heading" data-anchor="decoder-health" data-toc><code>DecoderHealth</code></h2>
           <div class="signature">DecoderHealth(storage_status="not_observed",
               storage_messages_observed=0, storage_messages_decoded=0,
@@ -3552,7 +3554,7 @@ session = LiveCaptureSession(
           <h2 id="live-capture-health/decoder-diagnostic" class="section-heading" data-anchor="decoder-diagnostic" data-toc><code>DecoderDiagnostic</code></h2>
           <div class="signature">DecoderDiagnostic(code, message, severity="warning",
                   subsystem="storage", opcode=None, requested_sources=())</div>
-          <p>One immutable, deduplicated compatibility warning passed to <a href="#capture-functions/opt-on_diagnostic"><code>on_diagnostic=</code></a>. It is deliberately not a <a href="#bdo-event"><code>BDOEvent</code></a> and never passes through <a href="#event-filter"><code>EventFilter</code></a>.</p>
+          <p>One immutable, deduplicated compatibility warning passed to the <a href="#live-capture-health/on-diagnostic"><code>on_diagnostic=</code> callback</a>. It is deliberately not a <a href="#bdo-event"><code>BDOEvent</code></a> and never passes through <a href="#event-filter"><code>EventFilter</code></a>.</p>
           <div class="table-wrap"><table><thead><tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr></thead><tbody>
             <tr><td><code>code</code></td><td class="type">str</td><td><code>storage_decoder_incompatible</code> when required framing fields are missing or contradicted; <code>storage_destination_unavailable</code> when no destination decodes; <code>storage_destination_unrecognized</code> when the authoritative field contains an ID absent from the town registry; or <code>storage_destination_schema_mismatch</code> when strong cross-wrapper evidence proves a different destination column than the active profile. The mismatch diagnostic never auto-relabels events.</td></tr>
             <tr><td><code>message</code></td><td class="type">str</td><td>Actionable explanation, normally requesting inventory-to-storage recalibration with at least two distinct validated record counts and a retained diagnostic PCAP if failure persists.</td></tr>
@@ -3794,17 +3796,17 @@ for event in capture_live(
 
         <section class="doc-section">
           <h2 id="event-types/event-types" class="section-heading" data-anchor="event-types" data-toc>Event types</h2>
-          <p>When the selected profile and classification evidence are sufficient, an item entering inventory from a mob drop or storage withdrawal appears as <code>item_received</code>, and a storage addition proven live appears as <code>storage_delta</code>. Existing records proven to belong to a character-load burst appear as <code>inventory_snapshot</code> or <code>storage_snapshot</code>.</p>
-          <div class="table-wrap"><table><thead><tr><th><code>event_type</code></th><th>Meaning</th><th>Related fields</th></tr></thead><tbody>
-            <tr><td><code>loot_preview</code></td><td>A previewed or offered item record, currently focused on gathering previews.</td><td><code>item_id</code>, <code>quantity</code>, and <code>source</code></td></tr>
-            <tr><td><code>item_received</code></td><td>An inventory receipt or update, including mob drops, gathering, and storage withdrawals.</td><td><code>source</code>, item-instance, and enhancement fields when decoded</td></tr>
-            <tr><td><code>inventory_record</code></td><td>Structurally decoded inventory record whose selected profile has no calibrated context field. Receipt versus character-load hydration is therefore not proven, so the record remains neutral.</td><td>Context-derived <code>source</code> and <code>raw_context</code> are unavailable; item-instance and record fields remain when decoded</td></tr>
-            <tr><td><code>inventory_snapshot</code></td><td>One existing inventory record reported during character-load hydration; state rather than a receipt or acquisition. Complete queries belong to <a href="#item-state-overview">the aggregate API</a>.</td><td><code>source="Character Load"</code>, item instance, and record fields</td></tr>
-            <tr><td><code>storage_delta</code></td><td>A structurally decoded storage record promoted to a confirmed live addition by independent manual or worker origin evidence.</td><td><code>storage_operation="live"</code>, destination fields, and <code>deposit_origin</code></td></tr>
-            <tr><td><code>storage_snapshot</code></td><td>One existing storage record reported during character-load hydration observed on initial login and character switch; not a deposit or delta. Destination-wide queries belong to <a href="#storage-contents">the aggregate storage model</a>.</td><td><code>storage_operation="snapshot"</code>, destination fields, and <code>extra["storage_quantity"]</code></td></tr>
-            <tr><td><code>storage_record</code></td><td>Structurally decoded neutral storage record not proven live by origin evidence or state by hydration-cohort evidence.</td><td><code>storage_operation="unknown"</code>; <code>deposit_origin=None</code></td></tr>
+          <p>Use <code>event_type</code> to distinguish ordinary activity, one record of existing character-load state, and records the toolkit deliberately leaves unclassified. <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> is the default live group. A snapshot event represents one decoded item record, not a complete inventory or town storage.</p>
+          <div class="table-wrap"><table><thead><tr><th><code>event_type</code></th><th>What it means in game</th><th>Delivery and use</th></tr></thead><tbody>
+            <tr><td><code>loot_preview</code></td><td>An item and quantity shown in the game&rsquo;s loot drop preview. It is an offer, not proof that the item was received.</td><td>Default live activity. Use it for gathering-preview telemetry; <code>item_id</code> and <code>quantity</code> describe the offered item and amount.</td></tr>
+            <tr><td><code>item_received</code></td><td>An inventory-side receipt or update reported during play. Common examples include a mob drop, gathering reward, or town-storage withdrawal. It is activity, not a complete inventory snapshot.</td><td>Default live activity. Use it for receipt and drop logs. <code>source</code> describes the gameplay context; <code>quantity</code> is the reported record amount, not a proven resulting stack total.</td></tr>
+            <tr><td><code>storage_delta</code></td><td>A positive item quantity added to a town&rsquo;s storage during the captured session. It is emitted only when manual-transfer or worker evidence proves a live addition. A storage withdrawal appears as <code>item_received</code> instead.</td><td>Default live activity. Use it for transfer and deposit logs. <code>quantity</code> is the amount added, <code>source</code> names the destination, and <code>deposit_origin</code> describes the proven cause.</td></tr>
+            <tr><td><code>inventory_snapshot</code></td><td>One item record that already existed in inventory when the server sent a character-load burst during login or a character switch. It is existing state, not a new acquisition.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#item-state-overview"><code>ItemStateSnapshot</code></a> for assembled inventory queries.</td></tr>
+            <tr><td><code>storage_snapshot</code></td><td>One item record that already existed in a town&rsquo;s storage when the server sent a character-load burst. It is existing state, not a deposit, and does not represent every item in that town by itself.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#storage-contents">the aggregate storage model</a> for assembled town queries.</td></tr>
+            <tr><td><code>inventory_record</code></td><td>A valid inventory item record decoded without the context needed to distinguish a live receipt from character-load state. The toolkit preserves it without guessing.</td><td>Neutral record for diagnosis. Request the exact type or use <a href="#event-filter/presets"><code>EventFilter.all()</code></a> or exhaustive replay. Do not count it as activity or state; context-derived <code>source</code> and <code>raw_context</code> are unavailable.</td></tr>
+            <tr><td><code>storage_record</code></td><td>A valid storage item record that neither live-origin evidence nor character-load evidence classified. It could be a live addition or existing state, so the toolkit preserves it without guessing.</td><td>Neutral record for diagnosis. Request the exact type or use <a href="#event-filter/presets"><code>EventFilter.all()</code></a> or exhaustive replay. Do not count it as a deposit or snapshot; <code>storage_operation="unknown"</code> and <code>deposit_origin=None</code>.</td></tr>
           </tbody></table></div>
-          <p class="supporting-note"><strong>Neutral inventory delivery is exhaustive-only.</strong> <code>inventory_record</code> is a neutral <a href="#bdo-event"><code>BDOEvent</code></a>, not a <a href="#live-capture-health/decoder-diagnostic"><code>DecoderDiagnostic</code></a>. It is excluded from <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> and <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a> because neither activity nor hydration was proven. Use exhaustive replay or <a href="#event-filter/presets"><code>EventFilter.all()</code></a> for profile diagnosis.</p>
+          <p class="supporting-note"><strong>Neutral records are outside both delivery presets.</strong> <code>inventory_record</code> and <code>storage_record</code> are ordinary <a href="#bdo-event"><code>BDOEvent</code></a> values, not <a href="#live-capture-health/decoder-diagnostic"><code>DecoderDiagnostic</code></a> objects. Neither appears in <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> or <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a> because the toolkit could not prove activity or character-load state.</p>
           <p>These are the current normalized decoder outputs and are more stable than the underlying patch-specific opcode names and layouts. <code>event_type</code> remains a string field rather than an enum-enforced constructor value.</p>
         </section>
 
@@ -3816,9 +3818,9 @@ for event in capture_live(
             <li>Storage</li><li>Central Market</li><li>Black Spirit Safe</li>
             <li>Challenges</li><li>In-Game Mail</li><li>Box/Bundle</li>
             <li>NPC Exchange</li><li>NPC Shop</li><li>Choose Your Rewards Box</li>
-            <li>NPC Sell</li><li>Event Adventures</li><li>Magnus Remote Inventory</li>
+            <li>NPC Sell</li><li>Event Adventures</li><li>Remote Inventory</li>
           </ul>
-          <p class="supporting-note"><strong>Observed remote-item contexts:</strong> raw context <code>0x60260000</code> normalizes to <code>Event Adventures</code>. Raw context <code>0x3e010000</code> normalizes to <code>Magnus Remote Inventory</code> for items obtained remotely from another character through the Magnus.</p>
+          <p class="supporting-note"><strong>Observed remote-item contexts:</strong> raw context <code>0x60260000</code> normalizes to <code>Event Adventures</code>. Raw context <code>0x3e010000</code> normalizes to <code>Remote Inventory</code> for items obtained remotely from another character.</p>
           <p>When the authoritative calibrated destination key is present in the location registry, <code>source</code> is the destination town, such as <code>Velia</code>, <code>Heidel</code>, or <code>Yukjo Street</code>. It identifies where the item is stored, not whether the action came from a worker, batch operation, Royal Workshop, or a production node. An unknown numeric key stays authoritative and receives an explicit unknown label; the decoder never substitutes a different, known-looking field. <a href="#storage-locations">Storage locations</a> owns the identity and confidence contract; <a href="#deposit-origin">deposit origin</a> owns cause classification.</p>
           <div class="callout note"><strong>Exact filter values.</strong> Source matching is exact and case-sensitive. For example, use <code>EventFilter(sources={"Mob Drop"})</code>, not a partial label.</div>
         </section>
@@ -6750,7 +6752,7 @@ else:
 
         <section class="doc-section">
           <h2 id="asyncio/execution-model" class="section-heading" data-anchor="execution-model" data-toc>Execution model <span class="reading-label">Optional background</span></h2>
-          <p>The wrappers use Python's standard <code>asyncio</code> support and add no third-party async dependency. Blocking session work runs outside the event-loop thread; a quiet item-event consumer waits efficiently instead of repeatedly submitting timed polls or busy-spinning. Domain callbacks remain synchronous and are never awaited. In particular, item <code>on_diagnostic</code> preflight runs on the facade&rsquo;s private executor, while later diagnostics can run on decoder, monitor, or finalization owners; see the <a href="#capture-functions/diagnostic-phases">phase and failure contract</a>.</p>
+          <p>The wrappers use Python's standard <code>asyncio</code> support and add no third-party async dependency. Blocking session work runs outside the event-loop thread; a quiet item-event consumer waits efficiently instead of repeatedly submitting timed polls or busy-spinning. Domain callbacks remain synchronous and are never awaited. In particular, item <code>on_diagnostic</code> preflight runs on the facade&rsquo;s private executor, while later diagnostics can run on decoder, monitor, or finalization owners; see the <a href="#live-capture-health/diagnostic-phases">phase and failure contract</a>.</p>
         </section>
 
         <div class="page-end"><a class="page-jump" href="#event-tools">&larr; Event writers</a><a class="page-jump" href="#async-live-capture-session">Next: async live capture &rarr;</a></div>
@@ -8612,6 +8614,8 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
     'capture-live/errors': 'capture-functions/live-errors',
     'capture-live/hiccups': 'errors/capture',
     'capture-live/zero-events': 'errors/zero-events',
+    'capture-functions/diagnostic-phases': 'live-capture-health/diagnostic-phases',
+    'live-capture-health/source-filter': 'live-capture-health/on-diagnostic',
     'live-capture-session/lifecycle': 'live-capture-session/example',
     'live-capture-session/polling': 'live-capture-session/example',
     livecapturesession: 'live-capture-session',
