@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import hashlib
+from threading import Lock
 from typing import Callable, Iterable, Optional
 
 from ._framing import FrameCollectorScanner, MessageObserver, TargetMessageScanner
@@ -195,6 +196,7 @@ class PacketEngine:
         self.events_found = 0
         self._on_event = on_event
         self._flow_state_evictions = 0
+        self._diagnostics_lock = Lock()
 
         def build_scanner():
             primary = TargetMessageScanner(
@@ -246,7 +248,8 @@ class PacketEngine:
     def flow_state_evictions(self) -> int:
         """Number of active flow states lost to the defensive resource cap."""
 
-        return self._flow_state_evictions
+        with self._diagnostics_lock:
+            return self._flow_state_evictions
 
     def service_gaps(self, now: float) -> int:
         """Advance TCP gap deadlines even when no new packet arrives."""
@@ -254,7 +257,8 @@ class PacketEngine:
         return self._flow_manager.service_gaps(now)
 
     def _count_flow_state_eviction(self) -> None:
-        self._flow_state_evictions += 1
+        with self._diagnostics_lock:
+            self._flow_state_evictions += 1
 
     def process_tcp_segment(
         self,

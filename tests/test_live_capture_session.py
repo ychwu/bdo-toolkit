@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from threading import Event, Thread
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from bdo_toolkit import (
 )
 from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit import capture as capture_module
+from bdo_toolkit._reassembly import FlowManager
 
 
 def _event(item_id: int) -> BDOEvent:
@@ -30,6 +32,93 @@ def _event(item_id: int) -> BDOEvent:
         item_id=item_id,
         quantity=1,
     )
+
+
+class _HealthFlowRace:
+    """Hold real flow processing while another thread reads session health."""
+
+    def __init__(self, session: LiveCaptureSession) -> None:
+        self.session = session
+        self.scanner_entered = Event()
+        self.health_counter_entered = Event()
+        self.release_scanner = Event()
+        self.decoder_done = Event()
+        self.health_done = Event()
+        self.errors: list[BaseException] = []
+        self.health_results = []
+        race = self
+
+        class BlockingScanner:
+            def feed(self, data, context):
+                del data, context
+                race.scanner_entered.set()
+                race.release_scanner.wait()
+                race.session._enqueue(_event(1))
+
+            def scan_standalone(self, data, context):
+                del data, context
+
+            def reset(self):
+                pass
+
+        self.manager = FlowManager(
+            server_ports={8889},
+            scanner_factory=BlockingScanner,
+        )
+
+        class Engine:
+            @property
+            def tcp_gap_resets(self):
+                race.health_counter_entered.set()
+                return race.manager.tcp_gap_resets
+
+            @property
+            def flow_state_evictions(self):
+                return 0
+
+            def finish(self):
+                race.manager.finish()
+
+        session._collector = SimpleNamespace(
+            engine=Engine(),
+            finalize=lambda: None,
+            flush_stale=lambda _now: None,
+        )
+
+    def start_decoder(self) -> Thread:
+        def decode() -> None:
+            try:
+                self.manager.process_tcp_segment(
+                    source_ip="203.0.113.1",
+                    source_port=8889,
+                    destination_ip="198.51.100.2",
+                    destination_port=50000,
+                    sequence=100,
+                    payload=b"x",
+                    timestamp=1.0,
+                    syn=True,
+                )
+            except BaseException as exc:
+                self.errors.append(exc)
+            finally:
+                self.decoder_done.set()
+
+        thread = Thread(target=decode, daemon=True)
+        thread.start()
+        return thread
+
+    def start_health_reader(self) -> Thread:
+        def read_health() -> None:
+            try:
+                self.health_results.append(self.session.health)
+            except BaseException as exc:
+                self.errors.append(exc)
+            finally:
+                self.health_done.set()
+
+        thread = Thread(target=read_health, daemon=True)
+        thread.start()
+        return thread
 
 
 @pytest.fixture
@@ -723,6 +812,116 @@ def test_session_propagates_capture_thread_errors(live_fakes, monkeypatch):
     assert session.stopped
     assert session.stop_reason == "error"
     assert isinstance(session.error, RuntimeError)
+
+
+def test_health_does_not_wait_for_structural_flow_lock():
+    session = LiveCaptureSession(opcode_profile="unused")
+    race = _HealthFlowRace(session)
+    decoder = race.start_decoder()
+    assert race.scanner_entered.wait(timeout=1.0)
+    reader = race.start_health_reader()
+
+    try:
+        assert race.health_counter_entered.wait(timeout=1.0)
+        assert race.health_done.wait(timeout=1.0), (
+            "health waited for the structural flow lock"
+        )
+    finally:
+        race.release_scanner.set()
+
+    decoder.join(timeout=1.0)
+    reader.join(timeout=1.0)
+    assert race.decoder_done.is_set()
+    assert not decoder.is_alive()
+    assert not reader.is_alive()
+    assert race.errors == []
+    assert len(race.health_results) == 1
+
+
+def test_async_health_keeps_event_loop_responsive_during_flow_processing():
+    facade = AsyncLiveCaptureSession(opcode_profile="unused")
+    race = _HealthFlowRace(facade._session)
+    decoder = race.start_decoder()
+    assert race.scanner_entered.wait(timeout=1.0)
+    loop_started = Event()
+    heartbeat = Event()
+    loop_done = Event()
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        loop.call_soon(heartbeat.set)
+        loop_started.set()
+        race.health_results.append(facade.health)
+        await asyncio.sleep(0)
+
+    def run_scenario() -> None:
+        try:
+            asyncio.run(scenario())
+        except BaseException as exc:
+            race.errors.append(exc)
+        finally:
+            loop_done.set()
+
+    loop_thread = Thread(target=run_scenario, daemon=True)
+    loop_thread.start()
+    try:
+        assert loop_started.wait(timeout=1.0)
+        assert race.health_counter_entered.wait(timeout=1.0)
+        assert loop_done.wait(timeout=1.0), (
+            "health blocked the asyncio event loop on flow processing"
+        )
+        assert heartbeat.is_set()
+    finally:
+        race.release_scanner.set()
+
+    decoder.join(timeout=1.0)
+    loop_thread.join(timeout=1.0)
+    facade._shutdown_executor()
+    assert race.decoder_done.is_set()
+    assert not decoder.is_alive()
+    assert not loop_thread.is_alive()
+    assert race.errors == []
+    assert len(race.health_results) == 1
+
+
+def test_stop_remains_bounded_after_concurrent_health_and_flow_delivery():
+    session = LiveCaptureSession(opcode_profile="unused")
+    race = _HealthFlowRace(session)
+    with session._state_lock:
+        session._started = True
+    decoder = race.start_decoder()
+    session._packet_worker = decoder
+    assert race.scanner_entered.wait(timeout=1.0)
+    reader = race.start_health_reader()
+    assert race.health_counter_entered.wait(timeout=1.0)
+
+    race.release_scanner.set()
+    event = session._queue.get(timeout=1.0)
+    assert event.item_id == 1
+    stop_done = Event()
+
+    def stop_session() -> None:
+        try:
+            session.stop()
+        except BaseException as exc:
+            race.errors.append(exc)
+        finally:
+            stop_done.set()
+
+    stopper = Thread(target=stop_session, daemon=True)
+    stopper.start()
+    assert stop_done.wait(timeout=1.0), "stop became unbounded after health sampling"
+
+    decoder.join(timeout=1.0)
+    reader.join(timeout=1.0)
+    stopper.join(timeout=1.0)
+    assert race.decoder_done.is_set()
+    assert race.health_done.is_set()
+    assert not decoder.is_alive()
+    assert not reader.is_alive()
+    assert not stopper.is_alive()
+    assert race.errors == []
+    assert session.stopped
 
 
 def test_native_callback_hands_slow_decode_to_worker(live_fakes, monkeypatch):

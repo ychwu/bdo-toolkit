@@ -47,4 +47,3 @@ def test_known_town_establishes_column_for_same_opcode_unknown_town():
     assert storage_specs[0].opcode == known.opcode
     assert storage_specs[0].context_offset == 8
     assert int.from_bytes(unknown.message[8:12], "little") == unknown_storage_id
-

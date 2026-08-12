@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from threading import RLock
+from threading import Lock, RLock
 from typing import Callable, Optional, Protocol
 
 from ._protocol import (
@@ -441,6 +441,7 @@ class FlowManager:
         self._next_flow_generation = 0
         self._flows: OrderedDict[FlowKey, TCPFlowState] = OrderedDict()
         self._tcp_gap_resets = 0
+        self._diagnostics_lock = Lock()
         # Packet delivery and an eventual wall-clock service hook may run on
         # different threads. Serialize both paths around the same flow state.
         self._lock = RLock()
@@ -459,12 +460,13 @@ class FlowManager:
         )
 
     def _record_gap_reset(self) -> None:
-        self._tcp_gap_resets += 1
+        with self._diagnostics_lock:
+            self._tcp_gap_resets += 1
 
     @property
     def tcp_gap_resets(self) -> int:
         """Total capture-gap recoveries, including flows already closed."""
-        with self._lock:
+        with self._diagnostics_lock:
             return self._tcp_gap_resets
 
     def service_gaps(self, now: float) -> int:
@@ -477,7 +479,7 @@ class FlowManager:
         cumulative.
         """
         with self._lock:
-            before = self._tcp_gap_resets
+            before = self.tcp_gap_resets
             completed_fin_flows: list[FlowKey] = []
             for flow, state in self._flows.items():
                 state.service_gaps(now)
@@ -498,7 +500,7 @@ class FlowManager:
                     state = self._flows.pop(flow)
                     state.finish()
                     self._notify_flow_close(flow)
-            return self._tcp_gap_resets - before
+            return self.tcp_gap_resets - before
 
     def _notify_flow_close(self, flow: FlowKey) -> None:
         if self._on_flow_close is not None:

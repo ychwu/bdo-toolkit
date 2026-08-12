@@ -944,24 +944,33 @@ class LiveCaptureSession:
                 stats = capture.stats
         collector = self._collector
         engine = collector.engine if collector is not None else None
+        tcp_gap_resets = int(getattr(engine, "tcp_gap_resets", 0))
+        flow_state_evictions = int(getattr(engine, "flow_state_evictions", 0))
+        pcap_received = stats.received
+        pcap_dropped = stats.dropped
+        pcap_interface_dropped = stats.interface_dropped
+        capture_buffer_bytes = stats.capture_buffer_bytes
+        capture_buffer_fallback = (
+            capture is not None and capture.buffer_error is not None
+        )
         with self._state_lock:
-            return LiveCaptureHealth(
-                packets_accepted=self._packets_accepted,
-                packet_queue_peak=self._packet_queue_peak,
-                packet_queue_overflows=self._packet_queue_overflows,
-                event_queue_peak=self._event_queue_peak,
-                tcp_gap_resets=int(getattr(engine, "tcp_gap_resets", 0)),
-                flow_state_evictions=int(
-                    getattr(engine, "flow_state_evictions", 0)
-                ),
-                pcap_received=stats.received,
-                pcap_dropped=stats.dropped,
-                pcap_interface_dropped=stats.interface_dropped,
-                capture_buffer_bytes=stats.capture_buffer_bytes,
-                capture_buffer_fallback=(
-                    capture is not None and capture.buffer_error is not None
-                ),
-            )
+            packets_accepted = self._packets_accepted
+            packet_queue_peak = self._packet_queue_peak
+            packet_queue_overflows = self._packet_queue_overflows
+            event_queue_peak = self._event_queue_peak
+        return LiveCaptureHealth(
+            packets_accepted=packets_accepted,
+            packet_queue_peak=packet_queue_peak,
+            packet_queue_overflows=packet_queue_overflows,
+            event_queue_peak=event_queue_peak,
+            tcp_gap_resets=tcp_gap_resets,
+            flow_state_evictions=flow_state_evictions,
+            pcap_received=pcap_received,
+            pcap_dropped=pcap_dropped,
+            pcap_interface_dropped=pcap_interface_dropped,
+            capture_buffer_bytes=capture_buffer_bytes,
+            capture_buffer_fallback=capture_buffer_fallback,
+        )
 
     @property
     def decoder_health(self) -> DecoderHealth:
