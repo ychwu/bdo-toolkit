@@ -132,7 +132,7 @@ size. This example calibrates item transfers only. An
 variant is provided for asyncio applications.
 
 See the [Calibration guide](https://ychwu.github.io/bdo-toolkit/#calibration-workflow)
-for accepted capture shapes, loot-preview calibration, authority checks,
+for accepted capture shapes, loot-preview calibration, storage-field validation,
 offline calibration, and profile-write behavior. Solare is structurally
 classified and does not use item calibration.
 
