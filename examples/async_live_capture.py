@@ -21,7 +21,9 @@ async def print_events(session: AsyncLiveCaptureSession) -> None:
 
 async def main() -> None:
     if not PROFILE.is_file():
-        raise FileNotFoundError(f"calibrated opcode profile not found: {PROFILE}")
+        raise FileNotFoundError(
+            f"opcode profile not found: {PROFILE}; fetch or calibrate it first"
+        )
 
     async with AsyncLiveCaptureSession(
         opcode_profile=PROFILE,

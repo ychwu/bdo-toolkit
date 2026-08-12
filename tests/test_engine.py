@@ -3,6 +3,7 @@
 import dataclasses
 import random
 
+from fixture_paths import JULY17_OPCODE_PROFILE
 from bdo_toolkit import EventFilter
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit import _engine as engine_module
@@ -516,7 +517,9 @@ def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):
     pcap_path = tmp_path / "synthetic.pcapng"
     wrpcap(str(pcap_path), [packet])
 
-    events = list(replay_pcap(pcap_path))
+    events = list(
+        replay_pcap(pcap_path, opcode_profile=JULY17_OPCODE_PROFILE)
+    )
     assert [(event.event_type, event.item_id, event.quantity) for event in events] == [
         ("loot_preview", 7003, 6)
     ]

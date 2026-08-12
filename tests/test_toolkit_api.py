@@ -2,8 +2,23 @@
 
 import pytest
 
-from fixture_paths import JULY6_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
-from bdo_toolkit import EventFilter, load_opcode_profile, replay_pcap
+from fixture_paths import (
+    JULY6_OPCODE_PROFILE,
+    JULY17_OPCODE_PROFILE,
+    fixture_path,
+    has_fixture_pcaps,
+)
+from bdo_toolkit import (
+    AsyncLiveCaptureSession,
+    EventFilter,
+    LiveCaptureSession,
+    capture_live,
+    load_opcode_profile,
+    replay_pcap,
+)
+from bdo_toolkit import capture as capture_module
+from bdo_toolkit.item_state import CharacterLoadSession, analyze_item_state_pcap
+from bdo_toolkit.solare import LiveSolareSession
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -11,8 +26,8 @@ requires_fixtures = pytest.mark.skipif(
 )
 
 
-def test_default_profile_loads_from_package_data():
-    profile = load_opcode_profile()
+def test_tracked_profile_loads_from_explicit_path():
+    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
 
     assert profile.active
     assert "INVENTORY_TRANSFER" in profile.specs
@@ -20,7 +35,7 @@ def test_default_profile_loads_from_package_data():
 
 
 def test_loaded_profile_is_deeply_immutable_and_serializes_owned_copies():
-    profile = load_opcode_profile()
+    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
     entry = profile.specs["INVENTORY_TRANSFER"][0]
 
     with pytest.raises(TypeError):
@@ -36,6 +51,52 @@ def test_loaded_profile_is_deeply_immutable_and_serializes_owned_copies():
 
     assert profile.specs["INVENTORY_TRANSFER"][0]["opcode"] == "0x194A"
     assert profile.origin_companion_families[0].companion_opcodes[0] == 0x1A59
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: load_opcode_profile(),
+        lambda: replay_pcap("session.pcapng"),
+        lambda: capture_live(),
+        lambda: LiveCaptureSession(),
+        lambda: AsyncLiveCaptureSession(),
+        lambda: analyze_item_state_pcap("character-load.pcapng"),
+        lambda: CharacterLoadSession(),
+    ],
+)
+def test_item_decode_apis_require_an_explicit_profile(call):
+    with pytest.raises(TypeError, match="opcode_profile|path"):
+        call()
+
+
+def test_loaded_profile_object_is_reused_and_pinned_without_reopening(
+    tmp_path,
+    monkeypatch,
+):
+    profile_path = tmp_path / "opcodes.json"
+    profile_path.write_bytes(JULY17_OPCODE_PROFILE.read_bytes())
+    profile = load_opcode_profile(profile_path)
+
+    def unexpected_reload(_path):
+        raise AssertionError("an already-loaded OpcodeProfile must not be reopened")
+
+    monkeypatch.setattr(capture_module, "load_opcode_profile", unexpected_reload)
+    collector = capture_module._EventCollector(
+        server_ports=(8889,), opcode_profile=profile
+    )
+    character_session = CharacterLoadSession(opcode_profile=profile)
+    profile_path.write_text("{}", encoding="utf-8")
+
+    assert collector.profile_source == f"{profile_path} active profile"
+    assert character_session._profile_authority.profile is profile
+    collector.finalize()
+
+
+def test_solare_session_still_requires_no_item_opcode_profile():
+    session = LiveSolareSession()
+
+    assert not session.running
 
 
 @requires_fixtures

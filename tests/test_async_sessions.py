@@ -221,7 +221,7 @@ def test_async_live_poll_before_start_fails_without_starting_worker(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         fake = FakeLiveCaptureSession.instances[-1]
 
         with pytest.raises(RuntimeError, match="not started"):
@@ -238,7 +238,7 @@ def test_async_live_iterator_drains_finalized_tail_after_external_stop(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         received = []
@@ -266,7 +266,7 @@ def test_async_live_events_preserve_ready_event_order(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -288,7 +288,7 @@ def test_async_live_iterator_handoff_to_poll_preserves_ready_events(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -313,7 +313,7 @@ def test_async_live_active_poll_validates_timeout_before_worker_submission(
     invalid_timeout,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -330,7 +330,7 @@ def test_async_live_early_iterator_close_leaves_later_events_available(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -355,7 +355,7 @@ def test_async_live_early_break_leaves_later_events_available_to_poll(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -380,7 +380,7 @@ def test_async_live_consumer_cancellation_after_yield_leaves_later_events(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -414,7 +414,7 @@ def test_async_live_cancelled_iterator_next_preserves_settled_event(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         finalized = _event(9)
@@ -442,7 +442,7 @@ def test_async_live_cancelled_poll_preserves_settled_event(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         finalized = _event(9)
@@ -466,7 +466,7 @@ def test_async_live_stopped_session_drains_before_retained_error(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         expected = [_event(index) for index in range(3)]
@@ -490,7 +490,7 @@ def test_async_live_background_error_surfaces_after_queued_event(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         emitted = _event(5)
@@ -515,7 +515,7 @@ def test_cancelling_quiet_async_poll_stops_and_wakes_session(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -535,7 +535,7 @@ def test_cancelling_quiet_async_poll_stops_and_wakes_session(
 
 def test_async_live_rejects_concurrent_consumers(fake_async_sessions):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -554,7 +554,7 @@ def test_async_live_rejects_poll_while_iterator_fetch_is_active(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         iterator = session.events()
@@ -575,7 +575,7 @@ def test_async_live_concurrent_stop_calls_share_one_shutdown(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         fake.stop_release.clear()
@@ -598,7 +598,7 @@ def test_async_live_second_start_preserves_cleanup_executor(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -620,7 +620,7 @@ def test_async_live_stop_does_not_depend_on_host_default_executor_capacity(
     async def scenario():
         loop = asyncio.get_running_loop()
         loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -636,7 +636,7 @@ def test_async_live_stop_does_not_depend_on_host_default_executor_capacity(
 
 def test_async_live_cancelled_start_cleans_up_late_success(fake_async_sessions):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         fake = FakeLiveCaptureSession.instances[-1]
         fake.start_release.clear()
 
@@ -655,7 +655,7 @@ def test_async_live_cancelled_start_cleans_up_late_success(fake_async_sessions):
 
 def test_async_live_failed_start_closes_wrapper_executor(fake_async_sessions):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         fake = FakeLiveCaptureSession.instances[-1]
         fake.start_error = OSError("adapter unavailable")
 
@@ -671,7 +671,7 @@ def test_cancelled_async_live_stop_keeps_cancellation_on_cleanup_failure(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         fake.stop_release.clear()
@@ -693,7 +693,7 @@ def test_async_live_incomplete_cleanup_can_be_retried(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         cleanup_error = OSError("native capture is still running")
@@ -723,7 +723,7 @@ def test_cancelled_async_live_incomplete_cleanup_retries_on_next_stop(
     fake_async_sessions,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         cleanup_error = OSError("native capture is still running")
@@ -756,7 +756,7 @@ def test_cancelled_async_live_incomplete_cleanup_retries_on_next_stop(
 
 def test_async_live_poll_forwards_timeout(fake_async_sessions):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
 
@@ -773,7 +773,7 @@ def test_async_live_stopped_poll_ignores_timeout_while_draining(
     invalid_timeout,
 ):
     async def scenario():
-        session = AsyncLiveCaptureSession()
+        session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
         await session.start()
         fake = FakeLiveCaptureSession.instances[-1]
         queued = _event(1)

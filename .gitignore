@@ -12,6 +12,7 @@ RELEASING.md
 # that need them skip automatically when absent)
 tests/fixtures/
 tests/baselines/
+private-captures/
 
 # Local tooling and Arena of Solare protocol research
 tools/

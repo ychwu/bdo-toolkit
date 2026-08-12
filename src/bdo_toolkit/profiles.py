@@ -11,6 +11,9 @@ from types import MappingProxyType
 from typing import Any, Optional
 
 
+OPCODE_PROFILE_SCHEMA_VERSION = 1
+
+
 class ProfileError(ValueError):
     """Raised when an opcode profile has an invalid JSON or schema shape."""
 
@@ -55,7 +58,7 @@ class OpcodeProfile:
 
     path: Path
     active: bool
-    version: Optional[int]
+    version: int
     updated_at: Optional[str]
     calibration_item_id: Optional[int]
     specs: Mapping[str, tuple[Mapping[str, Any], ...]]
@@ -92,24 +95,15 @@ class OpcodeProfile:
         }
 
 
-def default_profile_path() -> Path:
-    """Path to the opcode profile bundled with the package.
+def load_opcode_profile(path: str | Path) -> OpcodeProfile:
+    """Load and validate one explicit, app-owned opcode profile."""
 
-    The bundled profile reflects the last calibration performed by the toolkit
-    maintainers and can go stale after a game patch. Pass an explicit path to
-    ``load_opcode_profile``/``replay_pcap``/``capture_live`` to use a locally
-    calibrated profile instead.
-    """
-    return Path(__file__).resolve().parent / "data" / "opcodes.json"
-
-
-def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
-    profile_path = Path(path) if path is not None else default_profile_path()
+    profile_path = Path(path)
     if not profile_path.is_file():
         raise FileNotFoundError(f"Opcode profile does not exist: {profile_path}")
     try:
         data = json.loads(profile_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeError) as exc:
+    except (json.JSONDecodeError, RecursionError, UnicodeError) as exc:
         raise ProfileError(f"Could not parse opcodes JSON {profile_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ProfileError(f"Opcodes JSON {profile_path} must be a top-level object")
@@ -119,12 +113,15 @@ def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
         raise ProfileError(f"profile_active in {profile_path} must be a boolean")
 
     version_value = data.get("version")
-    if version_value is not None and (
+    if (
         isinstance(version_value, bool)
         or not isinstance(version_value, int)
-        or version_value < 1
+        or version_value != OPCODE_PROFILE_SCHEMA_VERSION
     ):
-        raise ProfileError(f"version in {profile_path} must be a positive integer")
+        raise ProfileError(
+            f"version in {profile_path} must be "
+            f"{OPCODE_PROFILE_SCHEMA_VERSION}"
+        )
 
     updated_at_value = data.get("updated_at")
     if updated_at_value is not None and not isinstance(updated_at_value, str):

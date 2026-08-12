@@ -298,6 +298,12 @@ tr:target > td { background: var(--brand-soft); }
   letter-spacing: .01em;
   text-transform: none;
 }
+.nav-domain-label.has-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.nav-domain-label.has-status .nav-status { margin-left: auto; }
 .nav-domain > .nav-group { margin: 2px 0; }
 .nav-domain > .nav-group > .nav-toggle { padding-left: 14px; }
 .nav-group { margin: 8px 0; }
@@ -2556,8 +2562,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-profiles"><span>Profiles</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-profiles">
-          <a class="nav-link" href="#profiles" data-page="profiles" data-search="opcode profile setup connect application bundled local patch active valid current single authority no fallback families event types mapping protocol message layout offset length stride specification LOOT_PREVIEW item_instance_offset overlapping ambiguous lengths"><span>Profile guide</span><em class="nav-kind guide">Guide</em></a>
-          <a class="nav-link" href="#profile-api" data-page="profile-api" data-search="load_opcode_profile default_profile_path load inspect opcode profile bundled local default path metadata class error write update reset"><span><code>load_opcode_profile()</code> / <code>default_profile_path()</code></span><em class="nav-kind">API</em></a>
+          <a class="nav-link" href="#profiles" data-page="profiles" data-search="opcode profile setup explicit local authority fetch remote install stable channel immutable URL application-owned calibrated calibration historical revision matching era default_profile_path removed bundled patch active valid current complete no fallback families event types mapping protocol message layout offset length stride specification LOOT_PREVIEW item_instance_offset overlapping ambiguous lengths"><span>Profile guide</span><em class="nav-kind guide">Guide</em></a>
+          <a class="nav-link" href="#profile-api" data-page="profile-api" data-search="fetch_opcode_profile load_opcode_profile explicit local authority maintained hosted stable channel immutable historical remote installation https redirects credentials no-backup default_profile_path removed bundled revision sha256 digest backup atomic ProfileFetchResult RemoteProfileError ProfileError inspect opcode profile metadata constants OPCODE_PROFILE_SCHEMA_VERSION REMOTE_PROFILE_ENVELOPE_VERSION DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS DEFAULT_REMOTE_PROFILE_MAX_BYTES schema version error"><span><code>fetch_opcode_profile()</code> / <code>load_opcode_profile()</code></span><em class="nav-kind">API</em></a>
         </div>
       </div>
       <div class="nav-group collapsed">
@@ -2600,33 +2606,33 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       </div>
       </div>
       <div class="nav-domain" role="group" aria-labelledby="nav-domain-solare-label">
-        <p class="nav-domain-label" id="nav-domain-solare-label">Arena of Solare</p>
+        <p class="nav-domain-label has-status" id="nav-domain-solare-label"><span class="nav-domain-name">Arena of Solare</span><span class="nav-status">Experimental</span></p>
         <div class="nav-group collapsed">
           <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-solare-start"><span>Start</span><span class="nav-chevron" aria-hidden="true">›</span></button>
           <div class="nav-items" id="nav-solare-start">
-            <a class="nav-link" href="#solare-overview" data-page="solare-overview" data-search="bdo_toolkit.solare arena of solare overview leaderboard rankings snapshot quickstart opcode agnostic aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate"><span>Overview</span><em class="nav-kind guide">Guide</em></a>
+            <a class="nav-link" href="#solare-overview" data-page="solare-overview" data-search="bdo_toolkit.solare experimental arena of solare overview leaderboard rankings snapshot quickstart opcode agnostic aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate"><span>Overview</span><em class="nav-kind guide">Guide</em></a>
           </div>
         </div>
         <div class="nav-group collapsed">
           <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-solare-capture"><span>Capture API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
           <div class="nav-items" id="nav-solare-capture">
-            <a class="nav-link" href="#solare-capture" data-page="solare-capture" data-search="bdo_toolkit.solare bdo_toolkit.solare.replay_solare bdo_toolkit.solare.capture_solare_snapshot arena of solare capture replay offline replay_solare capture_solare_snapshot function api"><span><code>replay_solare()</code> / <code>capture_solare_snapshot()</code></span><em class="nav-kind">API</em></a>
-            <a class="nav-link" href="#solare-live-session" data-page="solare-live-session" data-search="bdo_toolkit.solare bdo_toolkit.solare.LiveSolareSession bdo_toolkit.solare.AsyncLiveSolareSession arena of solare live session async lifecycle progress pending update timeout stop request_stop cleanup_incomplete cleanup_owner callback auto complete classes"><span><code>LiveSolareSession</code> / <code>AsyncLiveSolareSession</code></span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-capture" data-page="solare-capture" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.replay_solare bdo_toolkit.solare.capture_solare_snapshot arena of solare capture replay offline replay_solare capture_solare_snapshot function api"><span><code>replay_solare()</code> / <code>capture_solare_snapshot()</code></span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-live-session" data-page="solare-live-session" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.LiveSolareSession bdo_toolkit.solare.AsyncLiveSolareSession arena of solare live session async lifecycle progress pending update timeout stop request_stop cleanup_incomplete cleanup_owner callback auto complete classes"><span><code>LiveSolareSession</code> / <code>AsyncLiveSolareSession</code></span><em class="nav-kind">API</em></a>
           </div>
         </div>
         <div class="nav-group collapsed">
           <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-solare-results"><span>Result API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
           <div class="nav-items" id="nav-solare-results">
-            <a class="nav-link" href="#solare-progress" data-page="solare-progress" data-search="bdo_toolkit.solare arena of solare result snapshot entry point progress updates kinds detection status capture result partial incomplete schema 2 class_table_capabilities overall_capabilities aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate SolareCaptureResult SolareDetectionStatus SolareUpdate SolareUpdateKind"><span><code>SolareCaptureResult</code> &amp; progress</span><em class="nav-kind">API</em></a>
-            <a class="nav-link" href="#solare-leaderboard-snapshot" data-page="solare-leaderboard-snapshot" data-search="bdo_toolkit.solare arena of solare leaderboard snapshot overall top 100 class leaderboard capabilities class_table_capabilities overall_capabilities intersection source specific serialization schema 2 aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate SolareLeaderboardSnapshot"><span><code>SolareLeaderboardSnapshot</code></span><em class="nav-kind">API</em></a>
-            <a class="nav-link" href="#solare-player-stats" data-page="solare-player-stats" data-search="bdo_toolkit.solare arena of solare player statistics SolareOverallEntry overall top 100 direct overall elo aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate per class performance SolarePlayer SolareClass SolareClassPerformance SolareSpecialization SolareRawSection class_leaderboard get_overall_entry get_player no public player identifier class specialization raw gear addons"><span><code>SolareOverallEntry</code> &amp; player types</span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-progress" data-page="solare-progress" data-search="bdo_toolkit.solare experimental arena of solare result snapshot entry point progress updates kinds detection status capture result partial incomplete schema 2 class_table_capabilities overall_capabilities aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate SolareCaptureResult SolareDetectionStatus SolareUpdate SolareUpdateKind"><span><code>SolareCaptureResult</code> &amp; progress</span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-leaderboard-snapshot" data-page="solare-leaderboard-snapshot" data-search="bdo_toolkit.solare experimental arena of solare leaderboard snapshot overall top 100 class leaderboard capabilities class_table_capabilities overall_capabilities intersection source specific serialization schema 2 aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate SolareLeaderboardSnapshot"><span><code>SolareLeaderboardSnapshot</code></span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-player-stats" data-page="solare-player-stats" data-search="bdo_toolkit.solare experimental arena of solare player statistics SolareOverallEntry overall top 100 direct overall elo aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate per class performance SolarePlayer SolareClass SolareClassPerformance SolareSpecialization SolareRawSection class_leaderboard get_overall_entry get_player no public player identifier class specialization raw gear addons"><span><code>SolareOverallEntry</code> &amp; player types</span><em class="nav-kind">API</em></a>
           </div>
         </div>
         <div class="nav-group collapsed">
           <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-solare-evidence"><span>Diagnostics &amp; protocol</span><span class="nav-chevron" aria-hidden="true">›</span></button>
           <div class="nav-items" id="nav-solare-evidence">
-            <a class="nav-link" href="#solare-evidence" data-page="solare-evidence" data-search="bdo_toolkit.solare arena of solare evidence capture health drops gaps diagnostic rich overall detail layout id opcode message geometry source capabilities SolareEvidence SolareCaptureHealth SolareFamilyLayout"><span><code>SolareEvidence</code> &amp; health</span><em class="nav-kind">API</em></a>
-            <a class="nav-link" href="#solare-layout-discovery" data-page="solare-layout-discovery" data-search="bdo_toolkit.solare arena of solare advanced opcode agnostic structural layout discovery classifier patch resilience class overall independent detail registries validated offsets fail closed ephemeral unknown layout inference learning reassembly 2048 8 MiB candidate idle aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate"><span>Structural discovery</span><em class="nav-kind guide">Guide</em></a>
+            <a class="nav-link" href="#solare-evidence" data-page="solare-evidence" data-search="bdo_toolkit.solare experimental arena of solare evidence capture health drops gaps diagnostic rich overall detail layout id opcode message geometry source capabilities SolareEvidence SolareCaptureHealth SolareFamilyLayout"><span><code>SolareEvidence</code> &amp; health</span><em class="nav-kind">API</em></a>
+            <a class="nav-link" href="#solare-layout-discovery" data-page="solare-layout-discovery" data-search="bdo_toolkit.solare experimental arena of solare advanced opcode agnostic structural layout discovery classifier patch resilience class overall independent detail registries validated offsets fail closed ephemeral unknown layout inference learning reassembly 2048 8 MiB candidate idle aggregate performance aggregate_performance total wins total draws total losses total matches total_win_rate"><span>Structural discovery</span><em class="nav-kind guide">Guide</em></a>
           </div>
         </div>
       </div>
@@ -2635,8 +2641,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-tools"><span>CLI &amp; reliability</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-tools">
-          <a class="nav-link" href="#cli" data-page="cli" data-search="command line cli replay live calibrate per record qty fixed passive reset-profile calibration-item-id 15156 solare leaderboard json raw EventFilter activity default explicit filter snapshot hydration"><span>Command line</span><em class="nav-kind">CLI</em></a>
-          <a class="nav-link" href="#errors" data-page="errors" data-search="errors exceptions reliability CalibrationAuthorityError ambiguous storage count destination DirectionMismatchError hiccup queue packet loss cleanup_incomplete cleanup_owner retry initial TCP reordering SYN FIN 250 ms grace recovery probing solare incomplete inconclusive no traffic"><span>Errors &amp; reliability</span><em class="nav-kind guide">Guide</em></a>
+          <a class="nav-link" href="#cli" data-page="cli" data-search="command line cli profile fetch remote install maintained authority --profile --output --timeout --max-bytes --no-backup replay live calibrate per record qty fixed passive reset-profile calibration-item-id 15156 solare leaderboard json raw EventFilter activity default explicit filter snapshot hydration"><span>Command line</span><em class="nav-kind">CLI</em></a>
+          <a class="nav-link" href="#errors" data-page="errors" data-search="errors exceptions reliability RemoteProfileError ProfileError FileNotFoundError TypeError required opcode_profile explicit profile schema digest profile fetch remote installation CalibrationAuthorityError ambiguous storage count destination DirectionMismatchError hiccup queue packet loss cleanup_incomplete cleanup_owner retry initial TCP reordering SYN FIN 250 ms grace recovery probing solare incomplete inconclusive no traffic"><span>Errors &amp; reliability</span><em class="nav-kind guide">Guide</em></a>
           <a class="nav-link" href="#stability" data-page="stability" data-search="stability safety passive versioning privacy policy solare raw player identifier ephemeral layout learning"><span>Stability &amp; safety</span><em class="nav-kind">REF</em></a>
         </div>
       </div>
@@ -2716,7 +2722,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
                     <span class="package-workflow-result"><strong><code>ItemStateSnapshot</code></strong><small>Finite inventory and town-storage result from captured load traffic</small></span>
                   </a>
                   <a class="package-workflow-card" href="#solare-overview">
-                    <span class="package-workflow-kind">Arena of Solare</span>
+                    <span class="package-workflow-kind">Arena of Solare &middot; Experimental</span>
                     <span class="package-workflow-stage">Opcode-agnostic structural discovery · no item profile</span>
                     <span class="package-workflow-arrow" aria-hidden="true"></span>
                     <span class="package-workflow-result"><strong><code>SolareCaptureResult</code></strong><small>One in-game Leaderboard refresh; snapshot only when complete</small></span>
@@ -2744,8 +2750,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
               <p>Depending on the owning API, absent or contradictory evidence becomes <code>None</code>, unknown, a skipped decode, or a non-complete result. It is not invented or silently treated as zero.</p>
             </div>
             <div class="overview-fact">
-              <h3>Public models outlive wire layouts</h3>
-              <p>Observed opcodes and layouts can change after a game patch. Public models are the supported boundary, but the API is alpha; pin the package version and follow each domain&rsquo;s patch guidance.</p>
+              <h3>Compatibility depends on the surface</h3>
+              <p>The item-event core follows the package alpha contract. Item state and Solare are Experimental; their Python APIs and serialized shapes can change incompatibly before stable promotion. Pin the package version and follow each domain&rsquo;s patch guidance.</p>
             </div>
           </div>
           <div class="callout warning"><strong>Captured data can be sensitive.</strong> PCAPs and serialized results can contain network endpoints, inventory or storage contents, leaderboard names, and performance statistics. Raw captures can also contain identifier-like opaque bytes that the toolkit does not decode or publish. Apply the integration&rsquo;s retention and sharing policy; see <a href="#stability/privacy">Capture privacy</a>.</div>
@@ -2908,7 +2914,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <div class="page-kicker"><span class="kind-badge guide">Guide</span> First item event</div>
         <h1 class="page-title">Quickstart</h1>
         <p class="page-lede">Capture the first live item event as a <a href="#bdo-event"><code>BDOEvent</code></a> with default delivery, or replay a saved recording when live capture is not needed.</p>
-        <p class="route-links"><strong>Prerequisite:</strong> install the published package first. The Live tab also requires <a href="#capture-foundation">Capture setup</a>; Replay requires an existing PCAP or PCAPNG recording.</p>
+        <p class="route-links"><strong>Prerequisites:</strong> install the published package and select an <a href="#profiles/select">explicit item opcode profile</a>. The Live tab also requires <a href="#capture-foundation">Capture setup</a>; Replay requires an existing PCAP or PCAPNG recording plus its matching-era profile.</p>
         <section class="doc-section">
           <h2 id="quickstart/first-event" class="section-heading" data-anchor="first-event" data-toc>1. Decode one event</h2>
           <div class="code-tabs segmented-choice" data-code-tabs>
@@ -2921,7 +2927,10 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
 
 from bdo_toolkit import capture_live
 
-with closing(capture_live(capture_seconds=30)) as events:
+with closing(capture_live(
+    opcode_profile="opcodes.local",
+    capture_seconds=30,
+)) as events:
     for event in events:
         print(event.format_human())
         break</code></pre>
@@ -2931,13 +2940,16 @@ with closing(capture_live(capture_seconds=30)) as events:
 
 from bdo_toolkit import replay_pcap
 
-with closing(replay_pcap("path/to/session.pcapng")) as events:
+with closing(replay_pcap(
+    "path/to/session.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
+)) as events:
     for event in events:
         print(event.format_human())
         break</code></pre>
             </div>
           </div>
-          <p class="example-note"><strong>Live:</strong> this quickstart listens for up to 30 seconds, so a no-event run ends instead of waiting indefinitely. While it is running, gather an item, collect a mob drop, or withdraw an item from town storage. Live capture uses the ordinary activity preset by default. Because the loop stops after its first event, <code>closing()</code> immediately closes the generator and stops the underlying capture session. <strong>Replay:</strong> replace the path with a PCAP or PCAPNG recording. Replay is exhaustive by default, but this shortcut reads only through the first delivered event; <code>closing()</code> releases the reader when the loop exits early. Both inputs yield the same <a href="#bdo-event"><code>BDOEvent</code></a> model.</p>
+          <p class="example-note"><strong>Live:</strong> <code>opcodes.local</code> must be an active profile for the current game patch. This quickstart listens for up to 30 seconds, so a no-event run ends instead of waiting indefinitely. While it is running, gather an item, collect a mob drop, or withdraw an item from town storage. Live capture uses the ordinary activity preset by default. Because the loop stops after its first event, <code>closing()</code> immediately closes the generator and stops the underlying capture session. <strong>Replay:</strong> replace both paths and use the profile saved for the recording's patch. Replay is exhaustive by default, but this shortcut reads only through the first delivered event; <code>closing()</code> releases the reader when the loop exits early. Both inputs yield the same <a href="#bdo-event"><code>BDOEvent</code></a> model.</p>
           <p class="supporting-note"><strong>The live first-event shortcut does not drain the shutdown tail.</strong> Closing finalizes capture but cannot yield events finalized during that close, and the convenience iterator does not expose final capture health. Use <a href="#live-capture-session"><code>LiveCaptureSession</code></a> when the application must drain the complete tail, inspect health, or coordinate shutdown.</p>
           <div class="example-output" aria-label="Example first decoded event">
             <div class="output-label"><span>Example output</span><span><code>format_human()</code></span></div>
@@ -2949,7 +2961,7 @@ with closing(replay_pcap("path/to/session.pcapng")) as events:
         <section class="doc-section">
           <h2 id="quickstart/controls" class="section-heading" data-anchor="controls" data-toc>2. Apply useful controls</h2>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Summary</th></tr></thead><tbody>
-            <tr><td><a href="#capture-functions/opt-opcode_profile"><code>opcode_profile</code></a></td><td class="type">str | Path | None</td><td>Select a current local profile; <code>None</code> uses the bundled snapshot.</td></tr>
+            <tr><td><a href="#capture-functions/opt-opcode_profile"><code>opcode_profile</code></a></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">Required.</span> Select one explicit local authority: current for live traffic, or matching-era for replay.</td></tr>
             <tr><td><a href="#capture-functions/opt-event_filter"><code>event_filter</code></a></td><td class="type"><a href="#event-filter">EventFilter</a> | None</td><td>Deliver only completed events that match reusable criteria.</td></tr>
             <tr><td><a href="#capture-functions/opt-capture_seconds"><code>capture_seconds</code></a></td><td class="type">float | None</td><td>Limit a live capture; <code>None</code> continues until interrupted or closed.</td></tr>
             <tr><td><a href="#capture-functions/opt-live_options"><code>live_options</code></a></td><td class="type"><a href="#live-capture-options">LiveCaptureOptions</a> | None</td><td>Configure the live adapter, network filtering, and event queue.</td></tr>
@@ -2959,7 +2971,10 @@ with closing(replay_pcap("path/to/session.pcapng")) as events:
 
 live_item_activity = EventFilter.activity()
 
-for event in capture_live(event_filter=live_item_activity):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=live_item_activity,
+):
     print(event.format_human())</code></pre>
           <p class="example-note">This explicit <code>EventFilter.activity()</code> is equivalent to the omitted-filter live default. The preset includes <code>loot_preview</code>, inventory receipts and storage withdrawals through <code>item_received</code>, and confirmed <code>storage_delta</code> additions. It excludes <code>inventory_snapshot</code> and <a href="#storage-events/operations"><code>storage_snapshot</code></a> state hydration, neutral <code>inventory_record</code> values whose profile cannot prove receipt versus hydration, and unresolved <code>storage_record</code> events. A neutral storage record proven live by origin evidence is promoted before the filter runs.</p>
           <div class="callout context"><strong>Storage delivery can be deferred.</strong> Live and neutral storage candidates may remain pending while the classifier checks forward worker evidence. The event timestamp remains the decoded message timestamp even when a later non-storage event is delivered first. See the <a href="#storage-events/delivery">storage delivery contract</a> for the exact closure boundaries.</div>
@@ -2982,7 +2997,7 @@ for event in capture_live(event_filter=live_item_activity):
 
         <section class="doc-section">
           <h2 id="item-examples/repository" class="section-heading" data-anchor="repository" data-toc>Runnable repository examples</h2>
-          <p>These scripts are repository resources rather than files installed by <code>pip</code>; they expect a repository-root <code>opcodes.local</code> produced by calibration.</p>
+          <p>These scripts are repository resources rather than files installed by <code>pip</code>; they expect a repository-root <code>opcodes.local</code> installed through an explicit <a href="#profile-api/fetch"><code>fetch_opcode_profile()</code></a> call or produced by <a href="#calibration-workflow">calibration</a>.</p>
           <div class="repository-example-grid">
             <a class="repository-example-card" id="item-examples/mob-drop-logger" data-anchor="mob-drop-logger" data-search-title="Mob Drop Logger" href="https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_mob_drops.py">
               <span class="repository-example-meta">Live &middot; Filtering &middot; Local profile</span>
@@ -3052,9 +3067,9 @@ for event in capture_live(event_filter=live_item_activity):
 
         <section class="doc-section">
           <h2 id="capture-functions/shared-parameters" class="section-heading" data-anchor="shared-parameters" data-toc>Shared parameters</h2>
-          <p>These inputs are accepted by <code>replay_pcap()</code>, <code>capture_live()</code>, <a href="#live-capture-session"><code>LiveCaptureSession</code></a>, and <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>. All four parameters are optional; the <code>event_filter=None</code> delivery default intentionally differs between replay and live capture.</p>
+          <p>These inputs are accepted by <code>replay_pcap()</code>, <code>capture_live()</code>, <a href="#live-capture-session"><code>LiveCaptureSession</code></a>, and <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a>. <code>opcode_profile</code> is required; the other three parameters are optional. The <code>event_filter=None</code> delivery default intentionally differs between replay and live capture.</p>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
-            <tr id="capture-functions/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Local active profile path. <code>None</code> loads the bundled snapshot, which can become stale after a game patch. An explicit file is used on its own; it is not merged with the bundled snapshot, and a missing, invalid, or inactive file fails instead of falling back. See <a href="#profiles">opcode profiles</a>.</td></tr>
+            <tr id="capture-functions/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">required</span></td><td>One explicit local item-decoder authority. Use a current active profile for live traffic and the matching-era profile for saved traffic. A path is loaded when decoding starts; an already loaded immutable <code>OpcodeProfile</code> is pinned directly and avoids a second file read. No capture API searches, merges, downloads, refreshes, or falls back to another profile. See <a href="#profiles">opcode profiles</a>.</td></tr>
             <tr id="capture-functions/opt-event_filter" data-anchor="opt-event_filter"><td><code>event_filter</code></td><td class="type"><a href="#event-filter">EventFilter</a> | None</td><td><code>None</code></td><td>Reusable delivery policy. On replay, <code>None</code> yields every successfully decoded event. On every item-event live API, <code>None</code> applies <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> so character-load hydration and neutral <code>inventory_record</code>/<code>storage_record</code> values do not flood an ordinary activity stream. Any explicitly supplied filter is used exactly as constructed: <code>EventFilter()</code> or <code>EventFilter.all()</code> restores exhaustive live delivery, while a source-only filter remains source-only and can match snapshot records. Filtering happens after storage-origin classification and any evidence-based <code>storage_record</code> promotion.</td></tr>
             <tr id="capture-functions/opt-origin_observer" data-anchor="opt-origin_observer"><td><span class="field-name"><code>origin_observer</code><span class="field-badge">Advanced</span></span></td><td class="type">Callable | None</td><td><code>None</code></td><td>Optional maintainer-facing callback for auditing structurally discovered worker companion chains. Origin classification runs without it. Invocation is synchronous on whichever capture-processing or finalization thread emits the observation, so keep the callback fast and thread-safe. See <a href="#origin-learner"><code>OriginLearner</code></a>.</td></tr>
             <tr id="capture-functions/opt-on_diagnostic" data-anchor="opt-on_diagnostic"><td><code>on_diagnostic</code></td><td class="type">Callable[[<a href="#live-capture-health/decoder-diagnostic">DecoderDiagnostic</a>], object] | None</td><td><code>None</code></td><td>Synchronous, out-of-band storage-compatibility callback that bypasses <a href="#event-filter"><code>EventFilter</code></a>. Replay invokes it on the iterator thread. Live execution and failure timing depend on the lifecycle phase described <a href="#capture-functions/diagnostic-phases">below</a>; the callback is never awaited.</td></tr>
@@ -3067,12 +3082,12 @@ for event in capture_live(event_filter=live_item_activity):
           </tbody></table></div>
           <div class="callout note"><strong>A live session can invoke the callback from more than one thread.</strong> Keep <code>on_diagnostic</code> fast, synchronous, and thread-safe. It is never awaited. Use <code>request_stop()</code> for callback-safe shutdown; the blocking session operations below remain prohibited from either callback.</div>
           <div class="callout warning"><strong>Live callbacks cannot block on their own session.</strong> On an explicit live session, calling synchronous or asynchronous <code>stop()</code>, <code>poll()</code>, or event iteration from <code>origin_observer</code> or <code>on_diagnostic</code> is rejected, including an async call scheduled onto another thread. Those operations can wait for the callback or decoder that is currently invoking them. Call the non-blocking <code>request_stop()</code>; control code can consume events and complete shutdown after the callback returns.</div>
-          <div class="callout note"><strong>Both functions are lazy iterators.</strong> Calling either function only creates an iterator. Configuration, profile, and source validation begin when the iterator is first advanced. <code>replay_pcap()</code> then opens the recording; <code>capture_live()</code> starts the live-capture backend.</div>
+          <div class="callout note"><strong>Both functions are lazy iterators.</strong> Calling either function only creates an iterator. Configuration and the supplied local profile are loaded or validated when the iterator is first advanced. <code>replay_pcap()</code> then opens the recording; <code>capture_live()</code> starts the live-capture backend. Neither path performs a remote request.</div>
         </section>
 
         <section class="doc-section">
           <h2 id="capture-functions/replay-pcap" class="section-heading" data-anchor="replay-pcap" data-toc><code>replay_pcap()</code></h2>
-          <div class="signature">replay_pcap(path, *, opcode_profile=None, ports=(8884, 8885, 8889),
+          <div class="signature">replay_pcap(path, *, opcode_profile, ports=(8884, 8885, 8889),
               event_filter=None, origin_observer=None,
               on_diagnostic=None) -&gt; Iterator[<a href="#bdo-event">BDOEvent</a>]</div>
           <p>Replay a <code>.pcap</code> or <code>.pcapng</code> file incrementally and yield structured events in delivery order.</p>
@@ -3080,9 +3095,12 @@ for event in capture_live(event_filter=live_item_activity):
           <h3 id="capture-functions/replay-example" class="subheading" data-anchor="replay-example" data-toc>Example</h3>
           <pre><code>from bdo_toolkit import replay_pcap
 
-for event in replay_pcap("path/to/session.pcapng"):
+for event in replay_pcap(
+    "path/to/session.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
+):
     print(event.to_dict())</code></pre>
-          <p class="example-note">Replace the placeholder path with the target recording. Each decoded event is printed as its JSON-ready dictionary; optional keys appear only when the decoded message supplies them. The output is abridged for readability: <code>...</code> marks omitted populated fields and is not part of the returned value.</p>
+          <p class="example-note">Replace both placeholder paths. The profile must describe the recording's patch; the current live profile is not a historical-replay fallback. Each decoded event is printed as its JSON-ready dictionary; optional keys appear only when the decoded message supplies them. The output is abridged for readability: <code>...</code> marks omitted populated fields and is not part of the returned value.</p>
           <div class="example-output" aria-label="Example replay dictionary output">
             <div class="output-label"><span>Example output</span><span><code>to_dict()</code> · abridged</span></div>
             <pre class="output-block"><code>{'event_type': 'item_received', 'timestamp': 1783663561.245, 'timestamp_iso': '2026-07-10T06:06:01.245Z', 'flow': {'source_ip': '203.0.113.20', 'source_port': 8889, 'destination_ip': '192.0.2.42', 'destination_port': 51824}, 'item_id': 7003, 'quantity': 6, 'source': 'Gathering', 'confidence': 'observed', ...}</code></pre>
@@ -3103,6 +3121,7 @@ for event in replay_pcap("path/to/session.pcapng"):
 
           <h3 id="capture-functions/replay-errors" class="subheading" data-anchor="replay-errors" data-toc>Raises</h3>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
+            <tr><td><code>TypeError</code></td><td>The required keyword-only <code>opcode_profile</code> argument is omitted.</td><td>Function call</td></tr>
             <tr><td><code>TypeError</code></td><td><code>event_filter</code> is not an <a href="#event-filter"><code>EventFilter</code></a> or <code>None</code>.</td><td>Iteration begins</td></tr>
             <tr><td><code>ValueError</code></td><td>Ports are invalid, or the file cannot be read as PCAP/PCAPNG.</td><td>Iteration begins or reaches the invalid capture data</td></tr>
             <tr><td><code>FileNotFoundError</code></td><td>The capture path or explicitly selected profile does not exist.</td><td>Iteration begins</td></tr>
@@ -3114,7 +3133,7 @@ for event in replay_pcap("path/to/session.pcapng"):
 
         <section class="doc-section">
           <h2 id="capture-functions/capture-live" class="section-heading" data-anchor="capture-live" data-toc><code>capture_live()</code></h2>
-          <div class="signature">capture_live(*, opcode_profile=None, live_options=None,
+          <div class="signature">capture_live(*, opcode_profile, live_options=None,
                event_filter=None, capture_seconds=None,
                origin_observer=None, on_diagnostic=None)
                -&gt; Iterator[<a href="#bdo-event">BDOEvent</a>]</div>
@@ -3136,13 +3155,16 @@ potato_receipts = EventFilter(
     item_ids={7003},
 )
 
-for event in capture_live(event_filter=potato_receipts):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=potato_receipts,
+):
     print(event.event_type, event.source, event.item_id, event.quantity)</code></pre>
             </div>
             <div class="code-tab-panel" id="capture-live-manual-panel" role="tabpanel" aria-labelledby="capture-live-manual-tab" hidden>
               <pre><code>from bdo_toolkit import capture_live
 
-for event in capture_live():
+for event in capture_live(opcode_profile="opcodes.local"):
     if (
         event.item_id == 7003
         and event.event_type == "item_received"
@@ -3174,6 +3196,7 @@ for event in capture_live():
 
           <h3 id="capture-functions/live-errors" class="subheading" data-anchor="live-errors" data-toc>Raises</h3>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
+            <tr><td><code>TypeError</code></td><td>The required keyword-only <code>opcode_profile</code> argument is omitted.</td><td>Function call</td></tr>
             <tr><td><code>TypeError</code></td><td><code>live_options</code> or <code>event_filter</code> has the wrong type.</td><td>Iteration begins</td></tr>
             <tr><td><code>ValueError</code></td><td><code>capture_seconds</code> is boolean, nonnumeric, non-finite, or negative.</td><td>Iteration begins</td></tr>
             <tr><td><code>FileNotFoundError</code></td><td>An explicitly selected profile does not exist.</td><td>Iteration begins</td></tr>
@@ -3190,7 +3213,7 @@ for event in capture_live():
         <div class="page-kicker"><span class="kind-badge class">Class</span> bdo_toolkit · Item events</div>
         <h1 class="page-title"><code>LiveCaptureSession</code></h1>
         <p class="page-lede">Controlled live-capture lifecycle for the continuing item-event API. It yields <a href="#bdo-event"><code>BDOEvent</code></a> records while allowing capture to start and stop independently of incoming events; omitted filters use the activity preset.</p>
-        <div class="signature">LiveCaptureSession(*, opcode_profile=None, live_options=None,
+        <div class="signature">LiveCaptureSession(*, opcode_profile, live_options=None,
                    event_filter=None, origin_observer=None,
                    on_diagnostic=None)</div>
         <p class="route-links"><strong>Asyncio counterpart:</strong> <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a> preserves the same decoder, filter, single-consumer, shutdown-drain, and retained-error contracts with awaitable lifecycle control.</p>
@@ -3243,7 +3266,10 @@ for event in session.events():
 from bdo_toolkit import EventFilter, LiveCaptureSession
 
 mob_drops = EventFilter(sources={"Mob Drop"})
-session = LiveCaptureSession(event_filter=mob_drops)
+session = LiveCaptureSession(
+    opcode_profile="opcodes.local",
+    event_filter=mob_drops,
+)
 worker_errors = []
 
 
@@ -3277,7 +3303,10 @@ def on_stop():
               <pre><code>from bdo_toolkit import EventFilter, LiveCaptureSession
 
 mob_drops = EventFilter(sources={"Mob Drop"})
-session = LiveCaptureSession(event_filter=mob_drops)
+session = LiveCaptureSession(
+    opcode_profile="opcodes.local",
+    event_filter=mob_drops,
+)
 
 def on_start():
     session.start()
@@ -3325,7 +3354,7 @@ Capture stopped: requested</code></pre>
           <h3 class="subheading">Context-manager form</h3>
           <pre><code>from bdo_toolkit import LiveCaptureSession
 
-with LiveCaptureSession() as session:
+with LiveCaptureSession(opcode_profile="opcodes.local") as session:
     for event in session.events():
         print(event.format_human())
         break
@@ -3359,7 +3388,7 @@ print(session.error)        # None</code></pre>
         <section class="doc-section">
           <h2 id="live-capture-session/errors" class="section-heading" data-anchor="errors" data-toc>Raises &amp; lifecycle failures</h2>
           <div class="table-wrap"><table><thead><tr><th>Operation</th><th>Failure</th><th>Contract</th></tr></thead><tbody>
-            <tr><td>Constructor</td><td><code>TypeError</code></td><td><code>live_options</code> or <code>event_filter</code> is not the documented object type or <code>None</code>.</td></tr>
+            <tr><td>Constructor</td><td><code>TypeError</code></td><td>The required <code>opcode_profile</code> argument is omitted, or <code>live_options</code> / <code>event_filter</code> is not the documented object type or <code>None</code>.</td></tr>
             <tr><td><code>start()</code></td><td><code>FileNotFoundError</code>, <a href="#profile-api/profile-error"><code>ProfileError</code></a>, capture-backend exception, or original preflight diagnostic callback exception</td><td>Loads the selected profile, rejects ambiguous same-opcode loot-preview length domains, and opens the adapter synchronously. A preflight diagnostic runs after backend startup; if its callback raises, bounded startup rollback runs before the original exception is re-raised. Verified rollback restores reusable pre-start state; unverified cleanup retains the session for <code>stop()</code> retry.</td></tr>
             <tr><td>Lifecycle or callback-context misuse</td><td><code>RuntimeError</code></td><td>Starting twice; calling <code>stop()</code>, <code>poll()</code>, or <code>events()</code> before <code>start()</code>; or attempting blocking same-session control or consumption from <code>origin_observer</code> or <code>on_diagnostic</code>.</td></tr>
             <tr><td>Overlapping synchronous event consumers</td><td>No dedicated exception</td><td><code>poll()</code> and every <code>events()</code> iterator remove from the same queue. Concurrent consumers silently divide the stream; enforce one consumer and fan out downstream.</td></tr>
@@ -3408,7 +3437,10 @@ network = LiveCaptureOptions(
     packet_queue_size=8192,
 )
 
-for event in capture_live(live_options=network):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    live_options=network,
+):
     print(event.format_human())</code></pre>
           <p class="example-note">Keeps the shared packet-capture defaults while increasing both handoff bounds. The iterator listens until interrupted. To size queues from observed peaks, use an explicit <a href="#live-capture-session"><code>LiveCaptureSession</code></a> or <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a> and inspect <a href="#live-capture-health/health"><code>session.health</code></a>; <code>capture_live()</code> does not expose its internal session. Larger queues increase worst-case memory and do not repair native-interface drops.</p>
           <div class="callout note"><strong>BPF and event filtering are different layers.</strong> <code>use_bpf</code> reduces raw network traffic entering Python. <a href="#event-filter"><code>EventFilter</code></a> selects completed <a href="#bdo-event"><code>BDOEvent</code></a> objects after origin classification and any supported storage-operation promotion.</div>
@@ -3578,7 +3610,7 @@ session = LiveCaptureSession(
           <p>Read attributes directly from each <code>BDOEvent</code>; <code>event.flow</code> is a nested <a href="#bdo-event/flow"><code>Flow</code></a> value.</p>
           <pre><code>from bdo_toolkit import capture_live
 
-for event in capture_live():
+for event in capture_live(opcode_profile="opcodes.local"):
     print(event.event_type, event.source, event.item_id, event.quantity)
     print(event.flow)</code></pre>
           <div class="example-output" aria-label="Example BDOEvent attribute output">
@@ -3670,7 +3702,10 @@ for event in capture_live():
 
 snapshots = EventFilter(event_types={"storage_snapshot"})
 
-for event in capture_live(event_filter=snapshots):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=snapshots,
+):
     print(event.format_human())</code></pre>
               <div class="example-output" aria-label="Example BDOEvent human-readable output">
                 <div class="output-label"><span>Example output</span><span>storage snapshot · host-local time</span></div>
@@ -3684,7 +3719,10 @@ from bdo_toolkit import EventFilter, capture_live
 
 snapshots = EventFilter(event_types={"storage_snapshot"})
 
-for event in capture_live(event_filter=snapshots):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=snapshots,
+):
     print(json.dumps(event.to_dict(), indent=2))</code></pre>
               <div class="example-output" aria-label="Example serialized BDOEvent output">
                 <div class="output-label"><span>Example output</span><span><code>to_dict()</code> encoded as JSON</span></div>
@@ -3840,7 +3878,10 @@ Velia 7702 31 worker</code></pre>
 
 snapshot_state = EventFilter(event_types={"storage_snapshot"})
 
-for event in capture_live(event_filter=snapshot_state):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=snapshot_state,
+):
     print(event.storage_id, event.item_id, event.quantity)</code></pre>
           <div class="example-output" aria-label="Example storage snapshot records">
             <div class="output-label"><span>Example output</span><span>abridged &middot; validated July 17 character-switch capture</span></div>
@@ -3992,7 +4033,10 @@ worker_deposits = EventFilter(
     deposit_origins={"worker"},
 )
 
-for event in capture_live(event_filter=worker_deposits):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=worker_deposits,
+):
     print(event.item_id, event.quantity, event.deposit_origin)</code></pre>
           <div class="example-output" aria-label="Example filtered worker deposits">
             <div class="output-label"><span>Example output</span><span>validated two-record Heidel worker deposit</span></div>
@@ -4048,7 +4092,11 @@ worker_deposits = EventFilter(
     deposit_origins={"worker"},
 )
 
-for event in capture_live(event_filter=worker_deposits, capture_seconds=60):
+for event in capture_live(
+    opcode_profile="opcodes.local",
+    event_filter=worker_deposits,
+    capture_seconds=60,
+):
     print(event.source, event.item_id, event.quantity)</code></pre>
           <div class="example-output" aria-label="Example worker-deposit filter output">
             <div class="output-label"><span>Example output</span><span>one matching worker deposit</span></div>
@@ -4103,7 +4151,10 @@ for event in capture_live(event_filter=worker_deposits, capture_seconds=60):
           </tbody></table></div>
           <pre><code>from bdo_toolkit import EventFilter, LiveCaptureSession
 
-session = LiveCaptureSession(event_filter=EventFilter.snapshot_records())</code></pre>
+session = LiveCaptureSession(
+    opcode_profile="opcodes.local",
+    event_filter=EventFilter.snapshot_records(),
+)</code></pre>
           <div class="callout note"><strong>Presets are ordinary immutable filters.</strong> They do not enable or disable decoders. An explicit <code>EventFilter(sources={"Heidel"})</code> is not intersected with <code>activity()</code>, so it can match both live and snapshot events whose final source is Heidel.</div>
         </section>
 
@@ -4141,7 +4192,10 @@ potato_receipts = EventFilter.from_values(
     item_ids=[7003],
 )
 
-for event in replay_pcap("path/to/session.pcapng"):
+for event in replay_pcap(
+    "path/to/session.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
+):
     if potato_receipts.allows(event):
         print(event.item_id, event.quantity)</code></pre>
           <p class="example-note">Replace the recording path. Because the filter is not passed to <code>replay_pcap()</code>, the loop receives every decoded event and screens each one with <code>allows()</code>. <code>from_values()</code> is a named alternative to the constructor.</p>
@@ -4170,7 +4224,10 @@ for event in replay_pcap("path/to/session.pcapng"):
               <pre><code>from bdo_toolkit import ConsoleEventWriter, replay_pcap
 
 writer = ConsoleEventWriter()
-for event in replay_pcap("path/to/session.pcapng"):
+for event in replay_pcap(
+    "path/to/session.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
+):
     writer.write(event)</code></pre>
               <div class="example-output" aria-label="Example console writer output">
                 <div class="output-label"><span>Example output</span><span>one human-readable line</span></div>
@@ -4181,7 +4238,10 @@ for event in replay_pcap("path/to/session.pcapng"):
               <pre><code>from bdo_toolkit import JsonlEventWriter, replay_pcap
 
 writer = JsonlEventWriter()
-for event in replay_pcap("path/to/session.pcapng"):
+for event in replay_pcap(
+    "path/to/session.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
+):
     writer.write(event)</code></pre>
               <div class="example-output" aria-label="Example JSONL writer output">
                 <div class="output-label"><span>Example output</span><span>one physical JSONL line</span></div>
@@ -4208,7 +4268,10 @@ for event in replay_pcap("path/to/session.pcapng"):
 
 with open("events.jsonl", "w", encoding="utf-8") as stream:
     writer = JsonlEventWriter(stream)
-    for event in replay_pcap("path/to/session.pcapng"):
+    for event in replay_pcap(
+        "path/to/session.pcapng",
+        opcode_profile="path/to/matching-opcodes.json",
+    ):
         writer.write(event)</code></pre>
           <p class="example-note">Replace the recording path. The application owns a supplied stream: the writer does not close it or call <code>flush()</code> explicitly. The <code>with</code> block closes the file, and I/O or JSON-serialization errors propagate to the caller.</p>
         </section>
@@ -4284,7 +4347,7 @@ with open("events.jsonl", "w", encoding="utf-8") as stream:
 
 state = analyze_item_state_pcap(
     "character-load.pcapng",
-    opcode_profile="opcodes.local",
+    opcode_profile="path/to/matching-opcodes.json",
 )
 
 heidel = state.storages.named("Heidel")
@@ -4343,18 +4406,18 @@ Heidel: 183 stacks; capacity=None</code></pre>
         <div class="page-kicker"><span class="kind-badge function">API</span> bdo_toolkit.item_state · Experimental</div>
         <h1 class="page-title">Offline analysis &amp; formatting</h1>
         <p class="page-lede"><code>analyze_item_state_pcap()</code> reads a recording made around initial login or a character switch and assembles the inventory and town-storage evidence it contains; <code>format_item_state()</code> renders the result for a diagnostic console.</p>
-          <p class="supporting-note"><strong>Use the normal active item opcode profile.</strong> Item-state analysis shares the profile selected for ordinary item-event decoding; there is no separate snapshot-profile file or snapshot-only calibration command. A migrated storage entry must contain calibrated <code>context_offset</code> and <code>record_count_offset</code>; runtime derives stride and state classification from structure and cohort evidence. Each analysis loads and converts one immutable profile revision, then uses that exact authority for both decoding and aggregation.</p>
+          <p class="supporting-note"><strong>Use the recording's matching-era item profile.</strong> Item-state analysis shares the explicit profile contract used by ordinary item-event replay; there is no separate snapshot-profile file or snapshot-only calibration command, and the API never fetches authority. A migrated storage entry must contain calibrated <code>context_offset</code> and <code>record_count_offset</code>; runtime derives stride and state classification from structure and cohort evidence. Each analysis loads and converts one immutable profile revision, then uses that exact authority for both decoding and aggregation.</p>
 
         <section class="doc-section">
           <h2 id="item-state-capture/analyze" class="section-heading" data-anchor="analyze" data-toc><code>analyze_item_state_pcap()</code></h2>
-          <div class="signature">analyze_item_state_pcap(path, *, opcode_profile=None,
+          <div class="signature">analyze_item_state_pcap(path, *, opcode_profile,
                         ports=(8884, 8885, 8889), capture_limits=None)
                         -&gt; <a href="#item-state-snapshot">ItemStateSnapshot</a></div>
           <pre><code>from bdo_toolkit.item_state import analyze_item_state_pcap
 
 state = analyze_item_state_pcap(
     "character-load.pcapng",
-    opcode_profile="opcodes.local",
+    opcode_profile="path/to/matching-opcodes.json",
 )
 
 heidel = state.storages.named("Heidel")
@@ -4385,7 +4448,7 @@ Storage decoder: compatible</code></pre>
           <h3 id="item-state-capture/analyze-parameters" class="subheading" data-anchor="analyze-parameters" data-search-title="analyze_item_state_pcap() parameters" data-toc>Parameters</h3>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
             <tr id="item-state-capture/opt-path" data-anchor="opt-path"><td><code>path</code></td><td class="type">str | Path</td><td><span class="required">required</span></td><td>PCAP or PCAPNG recording containing initial-login or character-switch hydration.</td></tr>
-            <tr id="item-state-capture/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Selected active item opcode profile. <code>None</code> uses the bundled snapshot; an explicit file is not merged with it.</td></tr>
+            <tr id="item-state-capture/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">required</span></td><td>Explicit matching-era authority for the hydration recording. A path or already loaded immutable profile is accepted; analysis never fetches, merges, or falls back to another profile.</td></tr>
             <tr id="item-state-capture/opt-ports" data-anchor="opt-ports"><td><code>ports</code></td><td class="type">tuple[int, ...]</td><td><code>(8884, 8885, 8889)</code></td><td>Server source ports admitted during replay, with the same validation as <a href="#capture-functions/opt-ports"><code>replay_pcap()</code></a>.</td></tr>
             <tr id="item-state-capture/opt-capture_limits" data-anchor="opt-capture_limits"><td><span class="field-name"><a href="#item-state-limits"><code>capture_limits</code></a><span class="field-badge">Advanced</span></span></td><td class="type"><a href="#item-state-limits/limits">ItemStateCaptureLimits</a> | None</td><td><code>None</code></td><td>Fail-closed retained-evidence bounds. <code>None</code> constructs the documented defaults.</td></tr>
           </tbody></table></div>
@@ -4402,7 +4465,7 @@ print(format_item_state(state))</code></pre>
           <div class="example-output" aria-label="Example formatted item-state diagnostic">
             <div class="output-label"><span>Example output</span><span>abridged validated diagnostic</span></div>
             <pre class="output-block"><code>CHARACTER LOAD SNAPSHOT DIAGNOSTIC
-Profile: opcodes.local
+Profile: path/to/matching-opcodes.json
 Generic BDO frames observed: 2299
 Storage decoder: compatible (72/72 observed wrappers decoded)
 Hydration packets detected; trigger is unclassified (initial login vs character switch).
@@ -4437,6 +4500,7 @@ LIMITATIONS
         <section class="doc-section">
           <h2 id="item-state-capture/errors" class="section-heading" data-anchor="errors" data-toc>Raises</h2>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
+            <tr><td><code>TypeError</code></td><td>The required keyword-only <code>opcode_profile</code> argument is omitted.</td><td>Function call</td></tr>
             <tr><td><code>FileNotFoundError</code></td><td>The recording or explicit opcode-profile path does not exist.</td><td>Analysis begins</td></tr>
             <tr><td><code>ValueError</code></td><td>Ports are invalid, or the recording cannot be read as PCAP/PCAPNG.</td><td>Analysis begins or reaches invalid capture data</td></tr>
             <tr><td><a href="#profile-api/profile-error"><code>ProfileError</code></a></td><td>The selected profile is malformed, schema-invalid, inactive, runtime-ambiguous, or lacks complete identity/wrapper authority for a present item-state layout: inventory instance plus snapshot context, or storage instance plus destination context plus record count.</td><td>Analysis begins</td></tr>
@@ -4451,7 +4515,7 @@ LIMITATIONS
         <div class="page-kicker"><span class="kind-badge class">Class</span> bdo_toolkit.item_state · Experimental</div>
         <h1 class="page-title"><code>CharacterLoadSession</code></h1>
         <p class="page-lede"><code>CharacterLoadSession</code> is a single-use live capture started before the next login or character switch; <code>stop()</code> returns one finite <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> containing the item state observed during that load.</p>
-        <div class="signature">CharacterLoadSession(*, opcode_profile=None, capture_options=None,
+        <div class="signature">CharacterLoadSession(*, opcode_profile, capture_options=None,
                      save_pcap=None, capture_limits=None)</div>
 
         <section class="doc-section">
@@ -4494,7 +4558,7 @@ Storage decoder: compatible</code></pre>
         <section class="doc-section">
           <h2 id="character-load-session/parameters" class="section-heading" data-anchor="parameters" data-toc>Constructor parameters</h2>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
-            <tr id="character-load-session/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Active item opcode profile loaded, converted, and pinned when the session is constructed. Replacing the file later does not alter this session; construct a new session after recalibration.</td></tr>
+            <tr id="character-load-session/opt-opcode_profile" data-anchor="opt-opcode_profile"><td><code>opcode_profile</code></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">required</span></td><td>Explicit active item opcode profile loaded, converted, and pinned when the session is constructed. Passing an already loaded immutable profile avoids another file read. Replacing the file later does not alter this session; construct a new session after recalibration. No fetch occurs inside this API.</td></tr>
             <tr id="character-load-session/opt-capture_options" data-anchor="opt-capture_options"><td><code>capture_options</code></td><td class="type"><a href="#packet-capture-options">PacketCaptureOptions</a> | None</td><td><code>None</code></td><td>Adapter, address, ports, and packet-filtering configuration. <code>None</code> constructs <a href="#packet-capture-options"><code>PacketCaptureOptions()</code></a>.</td></tr>
             <tr id="character-load-session/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Optional <code>.pcap</code> or <code>.pcapng</code> destination for untouched packets admitted by the session. Parent directories are created; an existing file raises <code>FileExistsError</code>.</td></tr>
             <tr id="character-load-session/opt-capture_limits" data-anchor="opt-capture_limits"><td><span class="field-name"><a href="#item-state-limits"><code>capture_limits</code></a><span class="field-badge">Advanced</span></span></td><td class="type"><a href="#item-state-limits/limits">ItemStateCaptureLimits</a> | None</td><td><code>None</code></td><td>Fail-closed retained-evidence bounds shared with offline analysis. <code>None</code> uses <code>ItemStateCaptureLimits()</code>.</td></tr>
@@ -4523,7 +4587,7 @@ Storage decoder: compatible</code></pre>
         <section class="doc-section">
           <h2 id="character-load-session/failures" class="section-heading" data-anchor="failures" data-toc>Lifecycle failures</h2>
           <div class="table-wrap"><table><thead><tr><th>Condition</th><th>Behavior</th></tr></thead><tbody>
-            <tr><td>Wrong <code>capture_options</code> or <code>capture_limits</code> type, or invalid <code>save_pcap</code> suffix</td><td>Constructor raises <code>TypeError</code> or <code>ValueError</code>.</td></tr>
+            <tr><td>Missing required <code>opcode_profile</code>; wrong <code>capture_options</code> or <code>capture_limits</code> type; or invalid <code>save_pcap</code> suffix</td><td>Constructor raises <code>TypeError</code> or <code>ValueError</code>.</td></tr>
             <tr><td>Explicit item-profile path does not exist</td><td>Constructor raises <code>FileNotFoundError</code>.</td></tr>
             <tr><td>Inactive, malformed, schema-invalid, incomplete, or runtime-ambiguous item profile</td><td>Constructor raises <a href="#profile-api/profile-error"><code>ProfileError</code></a>. A present inventory layout needs item-instance and snapshot-context authority; a present storage layout needs storage-instance, destination-context, and record-count authority. Distinct same-opcode <code>LOOT_PREVIEW</code> layouts cannot accept overlapping message lengths.</td></tr>
             <tr><td>Selected save path already exists</td><td><code>start()</code> raises <code>FileExistsError</code>; existing evidence is never overwritten.</td></tr>
@@ -4557,6 +4621,7 @@ limits = ItemStateCaptureLimits(
 )
 state = analyze_item_state_pcap(
     "character-load.pcapng",
+    opcode_profile="path/to/matching-opcodes.json",
     capture_limits=limits,
 )
 
@@ -5085,14 +5150,19 @@ HEIDEL CONTENTS
 
         <section class="doc-section">
           <h2 id="profiles/select" class="section-heading" data-anchor="select" data-toc>1. Choose a profile</h2>
-          <p>Omitting <code>opcode_profile</code> selects the package-owned snapshot. Passing a local JSON path selects exactly that file: it is not merged with the bundled snapshot, and a missing, invalid, or inactive file fails instead of falling back.</p>
-          <div class="callout note"><strong>Create or refresh a local profile through calibration.</strong> The <a href="#calibration-workflow/run">calibration guide</a> covers the required known actions, replay and live capture modes, result verification, and writing the reviewed JSON file. Pass the written path through <code>opcode_profile=</code> as shown below.</div>
+          <p>Every item decoder requires one explicit local authority. The package contains no bundled profile, and decoding never searches for, downloads, merges, or falls back to another file.</p>
+          <div class="task-grid">
+            <a class="choice-card" href="#profile-api/fetch"><span class="arrow">&rarr;</span><h3>Fetch current NA/EU authority</h3><p>Explicitly verify and install the maintainer channel before decoding current live traffic.</p></a>
+            <a class="choice-card" href="#calibration-workflow/run"><span class="arrow">&rarr;</span><h3>Calibrate locally</h3><p>Produce an application-owned profile from controlled item-transfer traffic.</p></a>
+            <a class="choice-card" href="#profile-api/hosted-channel"><span class="arrow">&rarr;</span><h3>Retain a historical revision</h3><p>Keep the immutable matching-era profile beside saved PCAPs and deterministic fixtures.</p></a>
+          </div>
+          <div class="callout note"><strong>Current live and historical replay use different authority rules.</strong> Live traffic needs a current profile for the target region. A saved recording needs the profile from its own patch; the current stable channel is not a historical compatibility layer.</div>
         </section>
 
         <section class="doc-section">
           <h2 id="profiles/use" class="section-heading" data-anchor="use" data-toc>2. Use a local profile</h2>
-          <p>Pass the same local path to the capture API that owns the decode loop:</p>
-          <div class="callout warning"><strong>Do not edit package data in place.</strong> Installed files can be replaced during upgrades. Local profiles belong in an integration configuration directory or project workspace.</div>
+          <p>Pass the selected local authority to the capture API that owns the decode loop. Saved recordings use their matching-era profile; the live examples below use the installed NA/EU stable profile:</p>
+          <div class="callout warning"><strong>The application owns the selected file.</strong> Keep current and historical profiles in an integration configuration directory or project workspace, serialize writers targeting the same path, and pass the intended file explicitly.</div>
           <div class="code-tabs" data-code-tabs>
             <div class="code-tab-list" role="tablist" aria-label="Select a local profile with each capture API">
               <button class="code-tab" id="profile-replay-tab" type="button" role="tab" aria-selected="true" aria-controls="profile-replay-panel"><code>replay_pcap()</code></button>
@@ -5104,7 +5174,7 @@ HEIDEL CONTENTS
 
 for event in replay_pcap(
     "path/to/session.pcapng",
-    opcode_profile="path/to/opcodes.local.json",
+    opcode_profile="path/to/matching-opcodes.json",
 ):
     print(event.format_human())</code></pre>
             </div>
@@ -5112,7 +5182,7 @@ for event in replay_pcap(
               <pre><code>from bdo_toolkit import capture_live
 
 for event in capture_live(
-    opcode_profile="path/to/opcodes.local.json",
+    opcode_profile="opcodes.local",
 ):
     print(event.format_human())</code></pre>
             </div>
@@ -5120,14 +5190,14 @@ for event in capture_live(
               <pre><code>from bdo_toolkit import LiveCaptureSession
 
 with LiveCaptureSession(
-    opcode_profile="path/to/opcodes.local.json",
+    opcode_profile="opcodes.local",
 ) as session:
     for event in session.events():
         print(event.format_human())
         break</code></pre>
             </div>
           </div>
-          <p class="example-note">Replace the placeholder paths. Profile selection changes decoding, not the public result: all three APIs produce the same <a href="#bdo-event"><code>BDOEvent</code></a> model.</p>
+          <p class="example-note">Replace the recording and matching-era profile placeholders. The live examples use the local destination installed by <a href="#profile-api/fetch"><code>fetch_opcode_profile()</code></a>; a locally calibrated current profile is also accepted. Profile selection changes decoding, not the public result: all three APIs produce the same <a href="#bdo-event"><code>BDOEvent</code></a> model.</p>
         </section>
 
         <section class="doc-section">
@@ -5254,7 +5324,7 @@ with LiveCaptureSession(
 
           <h3 id="profiles/state" class="subheading" data-anchor="state" data-toc>Valid, active, current, and complete are different</h3>
           <div class="table-wrap"><table><thead><tr><th>Question</th><th>What it proves</th><th>What it does not prove</th></tr></thead><tbody>
-            <tr><td><strong>Is it valid?</strong></td><td>The file is readable JSON and passes profile-schema validation.</td><td>That its opcodes match the current game patch.</td></tr>
+            <tr><td><strong>Is it valid?</strong></td><td>The file is readable JSON, has an exact non-Boolean integer <code>version: 1</code>, and passes stored-schema validation.</td><td>That its entries satisfy capture's additional runtime-authority checks or match the current game patch.</td></tr>
             <tr><td><strong>Is it active?</strong></td><td><code>profile_active=true</code>, so capture APIs may use it as their selected authority.</td><td>That it contains any usable decoder entries. An empty reset profile can be valid and active.</td></tr>
             <tr><td><strong>Is it current?</strong></td><td>Known traffic from the target game patch produces the expected events.</td><td>That every event type the application needs is covered. No profile flag establishes currentness; verify it with replay or live traffic.</td></tr>
             <tr><td><strong>Is it complete for this integration?</strong></td><td>The profile contains the runtime-consumed profile families required for the expected events and classification capabilities.</td><td>That unrelated runtime-consumed profile families or optional calibration-evidence profile families are present; completeness is requirement-specific.</td></tr>
@@ -5284,62 +5354,109 @@ with LiveCaptureSession(
           <div class="callout note"><strong>Old profiles need one migration calibration.</strong> A storage spec without both <code>context_offset</code> and <code>record_count_offset</code> is reported incompatible. Re-run controlled inventory-to-storage calibration with at least two distinct validated record counts (single plus multi, or two different multi counts) and write the resulting profile; no version-specific layout is merged behind it.</div>
         </section>
 
-        <div class="page-end"><span></span><a class="page-jump" href="#profile-api">Next: loading &amp; inspection →</a></div>
+        <div class="page-end"><span></span><a class="page-jump" href="#profile-api">Next: fetching &amp; loading →</a></div>
       </article>
 
-      <article class="doc-page" id="profile-api" data-page="profile-api" data-title="Profile loading &amp; inspection" hidden>
+      <article class="doc-page" id="profile-api" data-page="profile-api" data-title="Profile fetching, loading &amp; inspection" hidden>
         <div class="page-kicker"><span class="kind-badge function">API</span> bdo_toolkit</div>
-        <h1 class="page-title">Profile loading &amp; inspection</h1>
-        <p class="page-lede">Loads the bundled or a local profile and exposes its status, metadata, and stored decoder entries without decoding traffic.</p>
-        <div class="signature">load_opcode_profile(path: str | Path | None = None) -&gt; <a href="#profile-api/opcode-profile">OpcodeProfile</a>
-default_profile_path() -&gt; Path</div>
+        <h1 class="page-title">Profile fetching, loading &amp; inspection</h1>
+        <p class="page-lede">Explicitly installs a verified remote item profile or loads one local file for inspection and decoder use.</p>
+        <div class="signature">fetch_opcode_profile(url, destination, *, timeout=10.0,
+                     max_bytes=1_048_576, backup=True)
+                     -&gt; <a href="#profile-api/fetch-result">ProfileFetchResult</a>
+load_opcode_profile(path) -&gt; <a href="#profile-api/opcode-profile">OpcodeProfile</a></div>
         <p class="route-links"><strong>Profile updates:</strong> use <a href="#calibration-functions/calibrate-update"><code>calibrate_and_update()</code></a> for the combined flow, <a href="#profile-updates/update-profile"><code>update_profile()</code></a> after reviewing a <a href="#calibration-types/result"><code>CalibrationResult</code></a>, or <a href="#profile-updates/reset-profile"><code>reset_profile()</code></a> to replace the profile with an empty active state.</p>
 
         <section class="doc-section">
-          <h2 id="profile-api/example" class="section-heading" data-anchor="example" data-toc>Inspect a profile</h2>
-          <div class="code-tabs" data-code-tabs>
-            <div class="code-tab-list" role="tablist" aria-label="Profile selection for inspection">
-              <button class="code-tab" id="profile-inspect-bundled-tab" type="button" role="tab" aria-selected="true" aria-controls="profile-inspect-bundled-panel">Bundled profile</button>
-              <button class="code-tab" id="profile-inspect-local-tab" type="button" role="tab" aria-selected="false" aria-controls="profile-inspect-local-panel" tabindex="-1">Local profile</button>
-            </div>
-            <div class="code-tab-panel" id="profile-inspect-bundled-panel" role="tabpanel" aria-labelledby="profile-inspect-bundled-tab">
-              <pre><code>from bdo_toolkit import load_opcode_profile
+          <h2 id="profile-api/fetch" class="section-heading" data-anchor="fetch" data-toc><code>fetch_opcode_profile()</code></h2>
+          <div class="signature">fetch_opcode_profile(url: str, destination: str | Path, *,
+                     timeout: float = 10.0,
+                     max_bytes: int = 1_048_576,
+                     backup: bool = True)
+                     -&gt; <a href="#profile-api/fetch-result">ProfileFetchResult</a></div>
+          <p>Eagerly retrieve one profile envelope over HTTPS, following only credential-free HTTPS redirects; verify its bounded version-1 envelope and embedded active profile, then atomically install the profile at an application-owned path.</p>
+          <div class="callout warning"><strong>The destination can be replaced.</strong> An existing file is copied to a timestamped entry under <code>opcodes_backups/</code> before atomic replacement by default. Set <code>backup=False</code> only when that recovery copy is not required, and serialize all writers targeting the same destination.</div>
+          <pre><code>from bdo_toolkit import fetch_opcode_profile
 
-profile = load_opcode_profile()
+result = fetch_opcode_profile(
+    "https://ychwu.github.io/bdo-toolkit-profiles/channels/na-eu/stable.json",
+    "opcodes.local",
+)
 
-print(profile.path.name)
-print(profile.active, profile.updated_at)
-print(sorted(profile.specs))</code></pre>
-              <div class="example-output" aria-label="Example bundled profile inspection output">
-                <div class="output-label"><span>Example output</span><span>bundled snapshot</span></div>
-                <pre class="output-block"><code>opcodes.json
-True 2026-07-19T23:38:03Z
-['INVENTORY_TRANSFER', 'LOOT_PREVIEW', 'SOURCE_CONTAINER_DECREMENT', 'SOURCE_ITEM_REFERENCE', 'SOURCE_STACK_DECREMENT', 'STORAGE_ITEM_DELTA']</code></pre>
-              </div>
-            </div>
-            <div class="code-tab-panel" id="profile-inspect-local-panel" role="tabpanel" aria-labelledby="profile-inspect-local-tab" hidden>
-              <pre><code>from bdo_toolkit import load_opcode_profile
-
-profile = load_opcode_profile("path/to/opcodes.local.json")
-
-print(profile.path.name)
-print(profile.active, profile.updated_at)
-print(sorted(profile.specs))</code></pre>
-              <div class="example-output" aria-label="Example local profile inspection output">
-                <div class="output-label"><span>Example output</span><span>local profile</span></div>
-                <pre class="output-block"><code>opcodes.local.json
-True 2026-07-14T19:42:10
-['INVENTORY_TRANSFER', 'STORAGE_ITEM_DELTA']</code></pre>
-              </div>
-            </div>
+print(result.path)
+print(result.revision)
+print(result.profile_sha256)</code></pre>
+          <div class="example-output" aria-label="Example fetched profile installation output">
+            <div class="output-label"><span>Example output</span><span>published August 11, 2026 revision</span></div>
+            <pre class="output-block"><code>opcodes.local
+na-eu-2026-08-11-r1
+b732c674597d9d53afb3090a497320253bb7f0de4ba2b2022b2973f13e16604e</code></pre>
           </div>
-          <p class="example-note">Replace the local placeholder path. The bundled output reflects the profile snapshot included with this release; a local profile reports its own filename, metadata, and profile families. The listed keys are profile contents, not a readiness test, and can include optional calibration evidence.</p>
+          <p class="example-note">This output reflects the profile published on August 11, 2026. The revision and digest change when maintainers promote a new verified profile; use the values returned by the call rather than hard-coding them.</p>
+          <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
+            <tr id="profile-api/opt-url" data-anchor="opt-url"><td><code>url</code></td><td class="type">str</td><td><span class="required">required</span></td><td>Credential-free HTTPS endpoint. Every redirect target must also use HTTPS and contain no URL credentials.</td></tr>
+            <tr id="profile-api/opt-destination" data-anchor="opt-destination"><td><code>destination</code></td><td class="type">str | Path</td><td><span class="required">required</span></td><td>Application-owned local file installed by same-directory atomic replacement. Parent directories are created.</td></tr>
+            <tr id="profile-api/opt-timeout" data-anchor="opt-timeout"><td><code>timeout</code></td><td class="type">float</td><td><code>10.0</code></td><td>Finite positive request timeout in seconds. Boolean and nonnumeric values raise <code>TypeError</code>; nonpositive or non-finite values raise <code>ValueError</code>.</td></tr>
+            <tr id="profile-api/opt-max-bytes" data-anchor="opt-max-bytes"><td><code>max_bytes</code></td><td class="type">int</td><td><code>1_048_576</code></td><td>Positive non-Boolean maximum response size. Declared or observed oversize responses fail before installation.</td></tr>
+            <tr id="profile-api/opt-backup" data-anchor="opt-backup"><td><code>backup</code></td><td class="type">bool</td><td><code>True</code></td><td>Create a timestamped backup when replacing an existing destination. No backup is needed for a new file.</td></tr>
+          </tbody></table></div>
+
+          <h3 id="profile-api/fetch-errors" class="subheading" data-anchor="fetch-errors" data-search-title="fetch_opcode_profile() exceptions" data-toc>Raises</h3>
+          <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
+            <tr><td><a href="#profile-api/remote-profile-error"><code>RemoteProfileError</code></a></td><td>The URL, transport, response size, envelope, digest, embedded profile, or runtime authority is unacceptable. Verification failures leave the destination untouched.</td><td>During fetch or verification</td></tr>
+            <tr><td><code>TypeError</code></td><td>A caller argument has the wrong type, including Boolean numeric limits or a non-Boolean <code>backup</code> value.</td><td>Before network access</td></tr>
+            <tr><td><code>ValueError</code></td><td><code>timeout</code> or <code>max_bytes</code> is nonpositive, or <code>timeout</code> is not finite.</td><td>Before network access</td></tr>
+            <tr><td><code>OSError</code></td><td>The local destination, temporary file, backup, or atomic replacement cannot be accessed or written.</td><td>Before or during local installation</td></tr>
+          </tbody></table></div>
+
+          <h3 id="profile-api/hosted-channel" class="subheading" data-anchor="hosted-channel" data-search-title="Maintained hosted opcode profile channel" data-toc>Hosted channel and historical revisions</h3>
+          <p><code>https://ychwu.github.io/bdo-toolkit-profiles/channels/na-eu/stable.json</code> serves maintainer-verified current NA/EU live authority. It is not evidence of compatibility with another region or a historical PCAP. Each published stable envelope is retained under an immutable revision URL such as <code>https://ychwu.github.io/bdo-toolkit-profiles/profiles/na-eu/REVISION.json</code>.</p>
+          <p>Historical replay and deterministic tests pin the matching-era immutable profile and do not fetch the current stable channel. An application-owned calibrated profile is equivalent decoder authority after validation.</p>
+
+          <h3 id="profile-api/remote-contract" class="subheading" data-anchor="remote-contract" data-search-title="Remote profile verification and installation contract" data-toc>Verification and installation <span class="reading-label">Optional reference</span></h3>
+          <p>The response must be UTF-8 JSON with <code>schema_version: 1</code>, a manifest revision matching <code>[a-z0-9][a-z0-9._-]{0,127}</code>, a 64-hex-character <code>profile_sha256</code>, and an embedded profile object. SHA-256 covers sorted, compact UTF-8 JSON for that object with non-ASCII preserved. The digest binds the manifest to the embedded contents and detects corruption, but it is not an independent publisher signature because both values arrive in the same response. Endpoint HTTPS and repository access controls are the publisher trust boundary.</p>
+          <pre><code>{
+  "schema_version": 1,
+  "manifest": {
+    "revision": "example-revision",
+    "profile_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  "profile": {}
+}</code></pre>
+          <p class="example-note">The digest shown is the canonical SHA-256 of the displayed empty object, so this envelope core is internally consistent but not usable for decoding. A usable embedded <code>profile</code> must contain the ordinary schema-1 fields and runtime layouts.</p>
+          <p>The embedded profile must be active, use exact profile schema 1, and pass the same runtime-authority validation as item capture: event-producing layouts, every present <code>SOURCE_STACK_DECREMENT</code> layout, and promoted <code>origin_companion_families</code>. Optional calibration-only <code>SOURCE_CONTAINER_DECREMENT</code> and <code>SOURCE_ITEM_REFERENCE</code> entries are not runtime layout requirements. Verification failure leaves the destination untouched.</p>
+          <div class="callout note"><strong>Acquisition is explicit and one-shot.</strong> Capture, replay, local loading, and item-state APIs never invoke this function. Envelope version 1 has no polling, automatic refresh, implicit cache, conditional request, or <code>304</code> workflow. A running session pins its original authority and does not hot-reload a replaced file.</div>
+
         </section>
 
         <section class="doc-section">
           <h2 id="profile-api/load" class="section-heading" data-anchor="load" data-toc><code>load_opcode_profile()</code></h2>
-          <p>Read and validate one saved profile. With <code>path=None</code>, the function loads the package-owned file returned by <code>default_profile_path()</code>. An explicit path selects exactly that file; no other profile is merged or used as a fallback.</p>
+          <div class="signature">load_opcode_profile(path: str | Path) -&gt; <a href="#profile-api/opcode-profile">OpcodeProfile</a></div>
+          <p>Read and validate exactly one saved profile. The path is required; the loader does not search, merge, fetch, or fall back to another authority.</p>
           <p class="supporting-note"><strong>Loading is not runtime verification.</strong> An inactive profile can be loaded for inspection, but capture APIs reject it when decoding starts. A structurally valid profile can also be stale or incomplete; verify it against known traffic before relying on its events.</p>
+
+          <h3 id="profile-api/example" class="subheading" data-anchor="example" data-search-title="load_opcode_profile() example">Load and inspect a local profile</h3>
+          <pre><code>from bdo_toolkit import load_opcode_profile
+
+profile = load_opcode_profile("path/to/opcodes.local.json")
+
+print(profile.path.name)
+print(profile.active, profile.version)
+print(sorted(profile.specs))</code></pre>
+          <div class="example-output" aria-label="Example local profile inspection output">
+            <div class="output-label"><span>Example output</span><span>local profile</span></div>
+            <pre class="output-block"><code>opcodes.local.json
+True 1
+['INVENTORY_TRANSFER', 'STORAGE_ITEM_DELTA']</code></pre>
+          </div>
+          <p class="example-note">Replace the placeholder path. The listed keys are profile contents, not a readiness test, and can include optional calibration evidence.</p>
+
+          <h3 id="profile-api/load-parameters" class="subheading" data-anchor="load-parameters" data-search-title="load_opcode_profile() parameters" data-toc>Parameters</h3>
+          <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
+            <tr id="profile-api/opt-path" data-anchor="opt-path"><td><code>path</code></td><td class="type">str | Path</td><td><span class="required">required</span></td><td>One explicit local profile file. The path is read during the call; no directory search or remote acquisition occurs.</td></tr>
+          </tbody></table></div>
+
+          <h3 id="profile-api/load-errors" class="subheading" data-anchor="load-errors" data-search-title="load_opcode_profile() exceptions" data-toc>Raises</h3>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
             <tr><td><code>FileNotFoundError</code></td><td>The selected path does not identify an existing file.</td><td>During the call</td></tr>
             <tr><td><a href="#profile-api/profile-error"><code>ProfileError</code></a></td><td>The file cannot be decoded as profile JSON or violates the stored profile schema.</td><td>During the call</td></tr>
@@ -5347,10 +5464,32 @@ True 2026-07-14T19:42:10
           </tbody></table></div>
         </section>
 
+        <p class="supporting-note" id="profile-api/default-path" data-anchor="default-path" data-search-title="Removed default_profile_path() helper"><strong>Migration from bundled profiles.</strong> <code>default_profile_path()</code> and the packaged opcode snapshot no longer exist. Install current maintainer authority with <a href="#profile-api/fetch"><code>fetch_opcode_profile()</code></a> or use a local file produced by <a href="#calibration-workflow">calibration</a>, then pass that path or a loaded <a href="#profile-api/opcode-profile"><code>OpcodeProfile</code></a> explicitly.</p>
+
         <section class="doc-section">
-          <h2 id="profile-api/default-path" class="section-heading" data-anchor="default-path" data-toc><code>default_profile_path()</code></h2>
-          <p>Return the <code>Path</code> to the profile snapshot installed with <code>bdo_toolkit</code>. The function only locates the package file; it does not open it, validate it, or establish that it matches the current game patch.</p>
-          <p>Package upgrades can replace this file. Treat it as read-only and keep calibrated profiles in an integration-owned location.</p>
+          <h2 id="profile-api/constants" class="section-heading" data-anchor="constants" data-toc>Profile constants</h2>
+          <div class="table-wrap"><table><thead><tr><th>Constant</th><th>Type</th><th>Value</th></tr></thead><tbody>
+            <tr id="profile-api/opcode-profile-schema-version" data-anchor="opcode-profile-schema-version"><td><code>OPCODE_PROFILE_SCHEMA_VERSION</code></td><td class="type">int</td><td><code>1</code></td></tr>
+            <tr id="profile-api/remote-profile-envelope-version" data-anchor="remote-profile-envelope-version"><td><code>REMOTE_PROFILE_ENVELOPE_VERSION</code></td><td class="type">int</td><td><code>1</code></td></tr>
+            <tr id="profile-api/default-remote-profile-timeout-seconds" data-anchor="default-remote-profile-timeout-seconds"><td><code>DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS</code></td><td class="type">float</td><td><code>10.0</code></td></tr>
+            <tr id="profile-api/default-remote-profile-max-bytes" data-anchor="default-remote-profile-max-bytes"><td><code>DEFAULT_REMOTE_PROFILE_MAX_BYTES</code></td><td class="type">int</td><td><code>1_048_576</code></td></tr>
+          </tbody></table></div>
+        </section>
+
+        <section class="doc-section">
+          <h2 id="profile-api/fetch-result" class="section-heading" data-anchor="fetch-result" data-toc><code>ProfileFetchResult</code></h2>
+          <div class="signature"><span class="sig-keyword">class</span> <span class="sig-callable">ProfileFetchResult</span>(path, profile, source_url, revision,
+                         profile_sha256, etag, backup_path)</div>
+          <p>Frozen result returned after one remote envelope has been verified and installed.</p>
+          <div class="table-wrap"><table><thead><tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr></thead><tbody>
+            <tr><td><code>path</code></td><td class="type">Path</td><td>Installed destination.</td></tr>
+            <tr><td><code>profile</code></td><td class="type"><a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td>Validated profile whose <code>path</code> is the installed destination.</td></tr>
+            <tr><td><code>source_url</code></td><td class="type">str</td><td>Final validated HTTPS response URL after redirects.</td></tr>
+            <tr><td><code>revision</code></td><td class="type">str</td><td>Validated publisher revision slug.</td></tr>
+            <tr><td><code>profile_sha256</code></td><td class="type">str</td><td>Verified lowercase digest of the canonical embedded profile.</td></tr>
+            <tr><td><code>etag</code></td><td class="type">str | None</td><td>Untrusted transport metadata available to Python callers. It is not cached automatically and the CLI does not print it.</td></tr>
+            <tr><td><code>backup_path</code></td><td class="type">Path | None</td><td>Backup created for the previous destination, if any.</td></tr>
+          </tbody></table></div>
         </section>
 
         <section class="doc-section">
@@ -5359,7 +5498,7 @@ True 2026-07-14T19:42:10
           <div class="table-wrap"><table><thead><tr><th>Attribute</th><th>Type</th><th>Meaning</th></tr></thead><tbody>
             <tr><td><code>path</code></td><td class="type">Path</td><td>Source file that was loaded.</td></tr>
             <tr><td><code>active</code></td><td class="type">bool</td><td>Stored <code>profile_active</code> flag. Inspection permits <code>False</code>; capture APIs reject an inactive selected profile.</td></tr>
-            <tr><td><code>version</code></td><td class="type">int | None</td><td>Profile format version.</td></tr>
+            <tr><td><code>version</code></td><td class="type">int</td><td>Exact profile schema version, currently <code>1</code>. Missing, Boolean, older, and newer values fail loading.</td></tr>
             <tr><td><code>updated_at</code></td><td class="type">str | None</td><td>Last stored calibration/profile-write timestamp. The loader validates its type but does not interpret it as proof of currentness.</td></tr>
             <tr><td><code>calibration_item_id</code></td><td class="type">int | None</td><td>Stored calibration or maintenance item identifier. Calibration updates normally record the watched item; <code>reset_profile()</code> or an explicit update can establish it independently.</td></tr>
             <tr><td><code>specs</code></td><td class="type">Mapping[str, tuple[Mapping[str, Any], ...]]</td><td>Deeply immutable validated entries grouped by profile family. See the <a href="#profiles/shape">profile file reference</a>.</td></tr>
@@ -5371,10 +5510,17 @@ True 2026-07-14T19:42:10
         </section>
 
         <section class="doc-section">
+          <h2 id="profile-api/remote-profile-error" class="section-heading" data-anchor="remote-profile-error" data-toc><code>RemoteProfileError</code></h2>
+          <div class="signature">class RemoteProfileError(<a href="#profile-api/profile-error">ProfileError</a>)</div>
+          <p>Raised when remote profile acquisition or verification fails: unacceptable URLs, transport or truncated-response failures, oversize content, malformed or excessively deep JSON, invalid envelope metadata, revision or digest failure, or an embedded profile that fails active/schema/runtime-authority validation. Verification failures leave the destination untouched.</p>
+          <p>Invalid caller argument types raise <code>TypeError</code>, invalid numeric limits raise <code>ValueError</code>, and local destination filesystem failures retain their normal <code>OSError</code> subclasses.</p>
+        </section>
+
+        <section class="doc-section">
           <h2 id="profile-api/profile-error" class="section-heading" data-anchor="profile-error" data-toc><code>ProfileError</code></h2>
           <div class="signature">class ProfileError(ValueError)</div>
-          <p>Raised when opcode-profile or origin-candidate JSON cannot be parsed or violates its stored schema, including invalid metadata, profile entries, or companion-family records. A missing path raises <code>FileNotFoundError</code> instead.</p>
-          <p>Capture and replay can also raise <code>ProfileError</code> while converting a loaded profile into runtime decoder layouts. In particular, distinct same-opcode <code>LOOT_PREVIEW</code> layouts cannot accept overlapping message lengths. Base <code>load_opcode_profile()</code> validates the stored schema but does not perform this runtime-layout check.</p>
+          <p>Raised when opcode-profile or origin-candidate JSON cannot be parsed or violates its stored schema, including a missing, Boolean, or non-<code>1</code> profile version; invalid metadata, profile entries, or companion-family records. A missing path raises <code>FileNotFoundError</code> instead.</p>
+          <p>Capture, replay, and remote installation additionally apply shared runtime-authority validation to event-producing layouts, every present <code>SOURCE_STACK_DECREMENT</code> layout, and promoted origin companion families. Distinct same-opcode <code>LOOT_PREVIEW</code> layouts cannot accept overlapping message lengths. Base <code>load_opcode_profile()</code> validates the stored schema but does not require active status or perform every runtime-layout check.</p>
           <p>This exception reports structural invalidity. It does not report that a valid profile is stale; currentness is established by decoding known traffic.</p>
         </section>
 
@@ -5395,6 +5541,7 @@ True 2026-07-14T19:42:10
             <tr><td><code>to_dict()</code></td><td class="type">dict[str, Any]</td><td>JSON-compatible family metadata with hexadecimal opcode strings and array-shaped tuples.</td></tr>
           </tbody></table></div>
         </section>
+        <div class="page-end"><a class="page-jump" href="#profiles">&larr; Profile guide</a><a class="page-jump" href="#calibration-workflow">Next: calibration guide &rarr;</a></div>
       </article>
 
       <article class="doc-page" id="origin-evidence" data-page="origin-evidence" data-title="Origin evidence" hidden>
@@ -5715,7 +5862,6 @@ print(result.written, result.added, result.backup_path)</code></pre>
         <h1 class="page-title">Calibration guide</h1>
         <p class="page-lede">Calibration passively observes controlled in-game item actions&mdash;normally storage deposits and withdrawals&mdash;to create or refresh a local opcode profile for current traffic.</p>
         <div class="callout tip"><strong>Use <code>action="auto"</code> for routine transfer-profile calibration.</strong> It calibrates both transfer directions during one short capture session and is the only transfer mode normal integrations need. Explicit directions are advanced protocol tools; <code>action="loot-preview"</code> is a separate optional workflow.</div>
-        <div class="callout warning"><strong>Live calibration has the same capture prerequisites as live decoding.</strong> Windows requires Npcap, and every platform requires permission to capture on the selected interface; elevation depends on the operating system or Npcap configuration. Offline PCAP calibration requires neither.</div>
         <p class="supporting-note"><strong>When to run it:</strong> recalibrate after a game patch or when a previously working profile stops producing expected events.</p>
 
         <section class="doc-section">
@@ -6577,7 +6723,7 @@ else:
           <div class="task-grid">
             <a class="choice-card" href="#async-live-capture-session"><span class="arrow">&rarr;</span><h3>Consume item events</h3><p><code>AsyncLiveCaptureSession</code> yields a continuing asynchronous item-event stream.</p></a>
             <a class="choice-card" href="#async-calibration-session"><span class="arrow">&rarr;</span><h3>Run interactive calibration</h3><p><code>AsyncCalibrationSession</code> returns one reviewed calibration result.</p></a>
-            <a class="choice-card" href="#solare-live-session/async"><span class="arrow">&rarr;</span><h3>Capture a Solare leaderboard</h3><p><code>AsyncLiveSolareSession</code> yields progress updates and a domain-specific final result.</p></a>
+            <a class="choice-card" href="#solare-live-session/async"><span class="arrow">&rarr;</span><h3>Capture a Solare leaderboard</h3><p><code>AsyncLiveSolareSession</code> is Experimental and yields progress updates plus a domain-specific final result.</p></a>
           </div>
           <p>Use the synchronous APIs when the application does not already own an asyncio event loop. The async item wrappers are lifecycle facades: <code>AsyncLiveCaptureSession</code> reuses the synchronous item decoder, event queue, filter, finalization, and retained-error behavior; <code>AsyncCalibrationSession</code> reuses synchronous frame collection and scoring.</p>
           <div class="callout context"><strong>The returned domain objects do not change.</strong> Async item capture yields <a href="#bdo-event"><code>BDOEvent</code></a> objects, and async calibration returns <a href="#calibration-types/result"><code>CalibrationResult</code></a>. No async replay function, async one-call profile writer, or universal async result type is exposed.</div>
@@ -6621,7 +6767,7 @@ else:
         <h1 class="page-title"><code>AsyncLiveCaptureSession</code></h1>
         <p class="page-lede">Awaitable, single-use item-event capture lifecycle with one asynchronous <a href="#bdo-event"><code>BDOEvent</code></a> consumer; an omitted filter uses <a href="#event-filter/presets"><code>EventFilter.activity()</code></a>.</p>
         <div class="signature"><span class="sig-keyword">class</span> <span class="sig-callable">AsyncLiveCaptureSession</span>(*,
-    <span class="sig-param">opcode_profile</span>: str | Path | None = None,
+    <span class="sig-param">opcode_profile</span>: str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a>,
     <span class="sig-param">live_options</span>: <a href="#live-capture-options">LiveCaptureOptions</a> | None = None,
     <span class="sig-param">event_filter</span>: <a href="#event-filter">EventFilter</a> | None = None,
     <span class="sig-param">origin_observer</span>: Callable[[<a href="#origin-learner/observation">CompanionObservation</a>], object] | None = None,
@@ -6637,7 +6783,9 @@ else:
               <span class="recommended-path-label">Primary consumption path</span>
               <p class="recommended-path-copy">Use <code>async for</code> when an asyncio application can dedicate one task to event consumption. The task waits efficiently while no event is available and resumes when a <a href="#bdo-event"><code>BDOEvent</code></a> arrives; it does not block the event loop or continuously poll.</p>
             </div>
-            <pre><code>async with AsyncLiveCaptureSession() as session:
+            <pre><code>async with AsyncLiveCaptureSession(
+    opcode_profile="opcodes.local",
+) as session:
     async for event in session:
         await process(event)</code></pre>
             <div class="recommended-path-details">
@@ -6651,7 +6799,7 @@ else:
         <section class="doc-section">
           <h2 id="async-live-capture-session/parameters" class="section-heading" data-anchor="parameters" data-search-title="AsyncLiveCaptureSession constructor parameters" data-toc>Constructor parameters</h2>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Summary</th></tr></thead><tbody>
-            <tr><td><a href="#capture-functions/opt-opcode_profile"><code>opcode_profile</code></a></td><td class="type">str | Path | None</td><td>Select one active profile; <code>None</code> loads the bundled snapshot.</td></tr>
+            <tr><td><a href="#capture-functions/opt-opcode_profile"><code>opcode_profile</code></a></td><td class="type">str | Path | <a href="#profile-api/opcode-profile">OpcodeProfile</a></td><td><span class="required">Required.</span> Pin one current local authority; the async facade never downloads or hot-reloads it.</td></tr>
             <tr><td><a href="#live-capture-options"><code>live_options</code></a></td><td class="type"><a href="#live-capture-options">LiveCaptureOptions</a> | None</td><td>Configure packet acquisition plus the bounded raw-packet and decoded-event queues.</td></tr>
             <tr><td><a href="#capture-functions/opt-event_filter"><code>event_filter</code></a></td><td class="type"><a href="#event-filter">EventFilter</a> | None</td><td><code>None</code> uses <a href="#event-filter/presets"><code>EventFilter.activity()</code></a>; pass <a href="#event-filter/presets"><code>EventFilter.all()</code></a> or <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a> explicitly when hydration records are required.</td></tr>
             <tr><td><span class="field-name"><a href="#capture-functions/opt-origin_observer"><code>origin_observer</code></a><span class="field-badge">Advanced</span></span></td><td class="type">Callable[[<a href="#origin-learner/observation">CompanionObservation</a>], object] | None</td><td>Synchronous origin-audit callback invoked by capture processing; it is not awaited.</td></tr>
@@ -6673,6 +6821,7 @@ async def consume(session: AsyncLiveCaptureSession) -&gt; None:
 
 async def main() -&gt; None:
     async with AsyncLiveCaptureSession(
+        opcode_profile="opcodes.local",
         event_filter=EventFilter(
             event_types={"item_received", "storage_delta"},
         ),
@@ -6737,7 +6886,7 @@ asyncio.run(main())</code></pre>
           <div class="callout warning"><strong>Use the method timeout for a nonterminal wait.</strong> Prefer <code>await session.poll(timeout=1.0)</code>. Cancelling a pending poll, including through <code>asyncio.wait_for()</code>, is intentionally terminal and stops this single-consumer session.</div>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
             <tr><td><code>RuntimeError</code></td><td><code>stop()</code>, <code>poll()</code>, or iteration begins before startup; startup is attempted again; an event-consumption call begins while another is blocked fetching an event; or callback code attempts blocking same-session control or consumption.</td><td>Lifecycle or callback-context misuse</td></tr>
-            <tr><td><code>TypeError</code></td><td><code>live_options</code> is not a <a href="#live-capture-options"><code>LiveCaptureOptions</code></a>, or <code>event_filter</code> is not an <a href="#event-filter"><code>EventFilter</code></a>.</td><td>Construction</td></tr>
+            <tr><td><code>TypeError</code></td><td>The required <code>opcode_profile</code> argument is omitted, <code>live_options</code> is not a <a href="#live-capture-options"><code>LiveCaptureOptions</code></a>, or <code>event_filter</code> is not an <a href="#event-filter"><code>EventFilter</code></a>.</td><td>Construction</td></tr>
             <tr><td><code>ValueError</code></td><td>Before completed stop, <code>poll(timeout)</code> receives a boolean, nonnumeric, non-finite, or negative timeout. After completed stop, the argument is ignored while the buffered tail drains without waiting.</td><td>Polling</td></tr>
             <tr><td><code>FileNotFoundError</code> or <a href="#profile-api/profile-error"><code>ProfileError</code></a></td><td>The selected item opcode profile is missing, malformed, schema-invalid, inactive, or contains overlapping accepted lengths for distinct same-opcode <code>LOOT_PREVIEW</code> layouts.</td><td>Startup</td></tr>
             <tr><td>Capture-backend exception</td><td>The adapter, driver, permission, interface, or BPF setup fails.</td><td>Startup</td></tr>
@@ -6891,10 +7040,11 @@ async def persist(result: CalibrationResult) -&gt; None:
       </article>
 
       <article class="doc-page" id="solare-overview" data-page="solare-overview" data-title="Arena of Solare" hidden>
-        <div class="page-kicker"><span class="kind-badge guide">Guide</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge guide">Guide</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Arena of Solare</h1>
         <p class="page-lede">Classify live or recorded traffic from an in-game Arena of Solare Leaderboard refresh and receive one terminal <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a>; confirmed rankings begin at <a href="#solare-leaderboard-snapshot"><code>result.snapshot</code></a> only when <code>result.complete</code> is true.</p>
         <p class="route-links"><strong>First use:</strong> follow the <a href="#solare-overview/quickstart">offline replay</a>. <strong>Need leaderboard or player data:</strong> open the <a href="#solare-leaderboard-snapshot/queries">common queries</a>. Use the <a href="#solare-overview/choose">entry-point table</a> when live or asyncio control is needed.</p>
+        <div class="callout warning"><strong>Experimental class-roster constraint.</strong> Complete snapshots currently require the 31 validated class leaderboards to contain exactly 20 players each (620 records), plus the independent overall top 100. Agent is not yet part of that validated roster; while it contributes no player records, it is structurally absent and the existing 31 &times; 20 response can still pass. A response containing Agent rows&mdash;or fewer than 20 rows for any validated class, as can happen early in a season&mdash;will not be promoted to a complete snapshot until new-season traffic is captured, reviewed, and toolkit support is updated.</div>
 
         <section class="doc-section">
           <h2 id="solare-overview/contract" class="section-heading" data-anchor="contract" data-toc>From capture to data</h2>
@@ -7026,7 +7176,7 @@ for entry in snapshot.overall_top_100[:3]:
       </article>
 
       <article class="doc-page" id="solare-capture" data-page="solare-capture" data-title="Solare capture functions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Solare capture functions</h1>
         <p class="page-lede"><code>replay_solare()</code> classifies a saved capture; <code>capture_solare_snapshot()</code> blocks over one passive live-capture window. Both run eagerly and return one <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a>&mdash;not a <a href="#bdo-event"><code>BDOEvent</code></a> iterator.</p>
 
@@ -7195,7 +7345,7 @@ Player0001 3045 overall=W70/D1/L49 M120 primary-class=Warrior</code></pre>
       </article>
 
       <article class="doc-page" id="solare-live-session" data-page="solare-live-session" data-title="Solare live sessions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Solare live sessions</h1>
         <p class="page-lede"><code>LiveSolareSession</code> and <code>AsyncLiveSolareSession</code> expose the same single-use capture lifecycle and structured update stream to synchronous and asyncio applications. Unlike the blocking convenience function, explicit sessions have no hidden deadline; the caller owns when to request or await shutdown.</p>
 
@@ -7342,7 +7492,7 @@ asyncio.run(main())</code></pre>
       </article>
 
       <article class="doc-page" id="solare-progress" data-page="solare-progress" data-title="Solare result and progress types" hidden>
-        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Result and progress types</h1>
         <p class="page-lede"><code>SolareCaptureResult</code> is the terminal envelope returned by replay and live capture. A complete result's <code>snapshot</code> is the only entry point to confirmed rankings and any available optional details; live <code>SolareUpdate</code> objects report progress before that final result.</p>
 
@@ -7439,7 +7589,7 @@ print(snapshot_payload["capabilities"])</code></pre>
       </article>
 
       <article class="doc-page" id="solare-leaderboard-snapshot" data-page="solare-leaderboard-snapshot" data-title="Leaderboard snapshot" hidden>
-        <div class="page-kicker"><span class="kind-badge class">Class</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge class">Class</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title"><code>SolareLeaderboardSnapshot</code></h1>
         <p class="page-lede">A toolkit-produced complete snapshot is an immutable, atomic leaderboard containing 620 class top-20 player records and a separate authoritative overall top 100 after their overlap relationship and capture health validate. Applications normally receive this model through <code>result.snapshot</code> rather than constructing it.</p>
         <p class="route-links"><strong>Accessed through:</strong> <a href="#solare-progress/capture-result"><code>result.snapshot</code></a> after <code>result.complete</code> is true. Capture and replay never return a partial snapshot.</p>
@@ -7605,7 +7755,7 @@ pprint({
       </article>
 
       <article class="doc-page" id="solare-player-stats" data-page="solare-player-stats" data-title="Player statistics" hidden>
-        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Player statistics</h1>
         <p class="page-lede">Defines the independently decoded overall row, class-table row, and source-neutral class-performance record stored beneath a complete <a href="#solare-leaderboard-snapshot"><code>SolareLeaderboardSnapshot</code></a>.</p>
         <p class="route-links"><strong>Object path:</strong> capture or replay &rarr; <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a> &rarr; when complete, <code>result.snapshot</code> &rarr; <code>overall_top_100[].total_*</code> for overall aggregates, or either collection's <a href="#solare-player-stats/performance"><code>classes_played</code></a> for per-class records.</p>
@@ -7826,7 +7976,7 @@ overall gear=2001 addons=501</code></pre>
       </article>
 
       <article class="doc-page" id="solare-evidence" data-page="solare-evidence" data-title="Solare evidence and health" hidden>
-        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare</div>
+        <div class="page-kicker"><span class="kind-badge class">Types</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Evidence and health</h1>
         <p class="page-lede"><code>SolareEvidence</code> explains why a result received its status; <code>SolareCaptureHealth</code> distinguishes classifier rejection from incomplete packet acquisition.</p>
         <p class="route-links"><strong>Accessed through:</strong> every <a href="#solare-progress/capture-result"><code>result.evidence</code></a> exists, complete or not; <code>result.evidence.health</code> holds acquisition integrity, and a confirmed snapshot retains the same proof at <code>snapshot.evidence</code>.</p>
@@ -7954,7 +8104,7 @@ overall capabilities: ['aggregate_performance', 'elo', 'performance', 'rankings'
       </article>
 
       <article class="doc-page" id="solare-layout-discovery" data-page="solare-layout-discovery" data-title="Structural discovery" hidden>
-        <div class="page-kicker"><span class="kind-badge guide">Guide</span> Arena of Solare <span class="field-badge">Advanced</span></div>
+        <div class="page-kicker"><span class="kind-badge guide">Guide</span> Arena of Solare &middot; Experimental <span class="field-badge">Advanced</span></div>
         <h1 class="page-title">Structural discovery</h1>
           <p class="page-lede">Solare classification derives identity from relationships among complete ranked tables, not from an opcode supplied by a caller or profile. This page uses <em>rich</em> for the 31 class top-20 response, matching public evidence names such as <code>rich_layout</code>.</p>
 
@@ -8079,24 +8229,27 @@ overall capabilities: ['aggregate_performance', 'elo', 'performance', 'rankings'
       <article class="doc-page" id="cli" data-page="cli" data-title="Command line" hidden>
         <div class="page-kicker"><span class="kind-badge function">CLI</span> bdo-toolkit</div>
         <h1 class="page-title">Command line</h1>
-        <p class="page-lede">The <code>bdo-toolkit</code> command exposes item-event workflows and a separate nested Arena of Solare capture/replay surface.</p>
+        <p class="page-lede">The <code>bdo-toolkit</code> command installs explicit item-profile authority, runs item-event workflows, and exposes a separate nested Arena of Solare capture/replay surface.</p>
 
         <section class="doc-section">
           <h2 id="cli/examples" class="section-heading" data-anchor="examples" data-toc>Common workflows</h2>
-          <pre><code># Decode a recording as JSONL
-bdo-toolkit replay path/to/session.pcapng --profile path/to/opcodes.local.json --jsonl
+          <pre><code># Explicitly install current maintainer authority before live item decoding
+bdo-toolkit profile fetch https://ychwu.github.io/bdo-toolkit-profiles/channels/na-eu/stable.json --output opcodes.local
+
+# Decode a recording as JSONL with its matching-era profile
+bdo-toolkit replay path/to/session.pcapng --profile path/to/matching-opcodes.json --jsonl
 
 # Watch live events
-bdo-toolkit live --profile path/to/opcodes.local.json
+bdo-toolkit live --profile opcodes.local
 
 # Watch confirmed live additions to Heidel storage
-bdo-toolkit live --profile path/to/opcodes.local.json --event-type storage_delta --source Heidel
+bdo-toolkit live --profile opcodes.local --event-type storage_delta --source Heidel
 
 # Replay worker additions delivered to Yukjo Street as JSONL
-bdo-toolkit replay path/to/session.pcapng --profile path/to/opcodes.local.json --event-type storage_delta --source "Yukjo Street" --deposit-origin worker --jsonl
+bdo-toolkit replay path/to/session.pcapng --profile path/to/matching-opcodes.json --event-type storage_delta --source "Yukjo Street" --deposit-origin worker --jsonl
 
 # Inspect unresolved storage operations for diagnostics
-bdo-toolkit replay path/to/session.pcapng --profile path/to/opcodes.local.json --event-type storage_record --jsonl
+bdo-toolkit replay path/to/session.pcapng --profile path/to/matching-opcodes.json --event-type storage_record --jsonl
 
 # Pass --qty 1 once; then perform deposit 1, deposit 4, and withdraw 5
 bdo-toolkit calibrate --item-id 15156 --qty 1 --write path/to/opcodes.local.json
@@ -8106,14 +8259,14 @@ bdo-toolkit solare replay path/to/leaderboard.pcapng
 
 # Capture Solare with progress, preserve the PCAP, and auto-stop when complete
 bdo-toolkit solare live --save-pcap path/to/solare-patch-check.pcapng --output path/to/solare-result.json</code></pre>
-          <p class="example-note">Replace the capture, profile, and calibration item values. For the recommended automatic storage calibration, <code>--qty 1</code> is the fixed per-record value for the entire passive capture; the operator deposits 1, deposits the remaining 4, then withdraws all 5 matching unstackables without changing the flag. Follow the <a href="#calibration-workflow/run">guided sequence and calibration-town restriction</a>. On registry-mapped storage events, <code>--source</code> is the exact destination-town name. Use <code>--deposit-origin worker</code> or <code>manual</code> for normal cause filtering; inspect unresolved wrappers with <code>--event-type storage_record</code>. The accepted <code>unknown</code> origin is an already-live compatibility value, not the current neutral-wrapper path.</p>
+          <p class="example-note">Replace the capture, matching-era profile, and calibration item placeholders. The published stable URL installs current NA/EU live authority at <code>opcodes.local</code>; historical replay pins its own matching-era profile. <code>replay</code> and <code>live</code> require <code>--profile</code>, and decoding never fetches automatically. For the recommended automatic storage calibration, <code>--qty 1</code> is the fixed per-record value for the entire passive capture; the operator deposits 1, deposits the remaining 4, then withdraws all 5 matching unstackables without changing the flag. Follow the <a href="#calibration-workflow/run">guided sequence and calibration-town restriction</a>. On registry-mapped storage events, <code>--source</code> is the exact destination-town name. Use <code>--deposit-origin worker</code> or <code>manual</code> for normal cause filtering; inspect unresolved wrappers with <code>--event-type storage_record</code>. The accepted <code>unknown</code> origin is an already-live compatibility value, not the current neutral-wrapper path.</p>
           <div class="callout note" id="cli/item-filter-defaults" data-anchor="item-filter-defaults" data-search-title="CLI item filter defaults"><strong>CLI filter flags replace the live default.</strong> With no decode-filter flags, <code>replay</code> is exhaustive and <code>live</code> uses <code>EventFilter.activity()</code>. Supplying any <code>--event-type</code>, <code>--source</code>, <code>--item-id</code>, or <code>--deposit-origin</code> builds one explicit <a href="#event-filter"><code>EventFilter</code></a> from those flags; omitted criteria remain unrestricted. For example, <code>live --source Heidel</code> can also deliver matching snapshot records. Add <code>--event-type storage_delta</code> when only live storage additions are required. The CLI has no direct <code>EventFilter.all()</code> switch; use the Python API for exhaustive live delivery.</div>
           <div class="callout tip"><strong>Pipe-safe output.</strong> Item events and Solare result JSON use stdout; status, progress, and diagnostics use stderr. Item <code>--jsonl</code> and <code>bdo-toolkit solare ...</code> output can therefore be piped without progress text mixed into the data.</div>
           <div class="callout warning"><strong>Storage warnings and calibration refusals remain visible.</strong> Replay and live commands install the decoder-diagnostic callback automatically and print warnings to stderr even when <code>--source Heidel</code> yields no events. Calibration reports analysis-time ambiguous destination/count authority as a user-facing <a href="#errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a> without a traceback. The incomplete automatic-transfer gate runs only when <code>--write</code> calls <a href="#profile-updates/update-profile"><code>update_profile()</code></a>; it refuses the write before profile read, backup, or creation. Without <code>--write</code>, a partial automatic result remains available in the dry-run output for inspection.</div>
         </section>
 
         <section class="doc-section">
-          <h2 id="cli/solare" class="section-heading" data-anchor="solare" data-toc>Arena of Solare commands</h2>
+          <h2 id="cli/solare" class="section-heading" data-anchor="solare" data-toc>Arena of Solare commands &middot; Experimental</h2>
           <p class="route-links"><strong>Data contract:</strong> stdout or <code>--output</code> receives serialized <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a>. Live progress on stderr corresponds to <a href="#solare-progress/update-kind"><code>SolareUpdateKind</code></a>; it never contaminates piped result JSON.</p>
           <pre><code># Deterministic offline classification; JSON goes to stdout
 bdo-toolkit solare replay leaderboard.pcapng
@@ -8147,10 +8300,16 @@ bdo-toolkit solare live --wait-forever</code></pre>
 
         <section class="doc-section">
           <h2 id="cli/commands" class="section-heading" data-anchor="commands" data-toc>Command reference</h2>
+          <h3 class="subheading">Profile acquisition</h3>
+          <pre><code>bdo-toolkit profile fetch URL --output PATH [--timeout SECONDS] [--max-bytes BYTES] [--no-backup]</code></pre>
+          <p class="example-note">This eager command performs one verified installation. It does not enable automatic refresh, and item decode commands never invoke it implicitly.</p>
+          <div class="table-wrap"><table><thead><tr><th>Command</th><th>Purpose</th><th>Important flags</th></tr></thead><tbody>
+            <tr><td><code>profile fetch URL</code></td><td>Verify and atomically install one remote profile envelope</td><td>Required <code>--output</code>; optional <code>--timeout</code>, <code>--max-bytes</code>, <code>--no-backup</code></td></tr>
+          </tbody></table></div>
           <h3 class="subheading">Decode and calibrate</h3>
           <div class="table-wrap"><table><thead><tr><th>Command</th><th>Purpose</th><th>Important flags</th></tr></thead><tbody>
-            <tr><td><code>replay &lt;pcap&gt;</code></td><td>Decode a saved capture</td><td><code>--jsonl</code>, <code>--profile</code>, filters, ports</td></tr>
-            <tr><td><code>live</code></td><td>Decode live traffic</td><td>Replay flags plus <code>--iface</code>, <code>--capture-seconds</code>, <code>--event-queue-size</code></td></tr>
+            <tr><td><code>replay &lt;pcap&gt;</code></td><td>Decode a saved capture</td><td>Required <code>--profile</code>; optional <code>--jsonl</code>, filters, ports</td></tr>
+            <tr><td><code>live</code></td><td>Decode live traffic</td><td>Required <code>--profile</code>; replay flags plus <code>--iface</code>, <code>--capture-seconds</code>, <code>--event-queue-size</code></td></tr>
             <tr><td><code>calibrate</code></td><td>Discover decoder specs</td><td><code>--item-id</code>, <code>--qty</code>, <code>--action</code>, <code>--write</code>, advanced <code>--merge</code></td></tr>
           </tbody></table></div>
           <h3 class="subheading">Arena of Solare</h3>
@@ -8173,6 +8332,7 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
         <section class="doc-section">
           <h2 id="cli/process-contract" class="section-heading" data-anchor="process-contract" data-toc>Output streams and exit status</h2>
           <div class="table-wrap"><table><thead><tr><th>Surface</th><th>stdout</th><th>stderr</th></tr></thead><tbody>
+            <tr><td><code>profile fetch</code></td><td>None</td><td>Installed revision and profile digest, optional backup path, and errors. ETag is never printed.</td></tr>
             <tr><td><code>replay</code>, <code>live</code></td><td>Decoded events, in console or JSONL form</td><td>Status, diagnostics, and errors</td></tr>
             <tr><td><code>solare replay</code></td><td>One complete or non-complete result JSON object, unless <code>--output</code> is supplied</td><td>Output-path confirmation and errors</td></tr>
             <tr><td><code>solare live</code></td><td>One final result JSON object, unless <code>--output</code> is supplied</td><td>Structured progress (unless <code>--quiet</code>), output-path confirmation, diagnostics, and errors</td></tr>
@@ -8191,11 +8351,12 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
           <h2 id="cli/python-mapping" class="section-heading" data-anchor="python-mapping" data-toc>CLI to Python mapping <span class="reading-label">Optional reference</span></h2>
           <p>The CLI builds the same configuration and callback objects exposed by the library. This crosswalk maps terminal controls to their Python equivalents.</p>
           <div class="table-wrap"><table><thead><tr><th>CLI surface</th><th>Python equivalent</th><th>Mapping detail</th></tr></thead><tbody>
+            <tr><td><code>profile fetch URL --output PATH [--timeout SECONDS] [--max-bytes BYTES] [--no-backup]</code></td><td><a href="#profile-api/fetch"><code>fetch_opcode_profile(URL, PATH, ...)</code></a></td><td><code>--timeout</code> and <code>--max-bytes</code> map directly. Backup remains enabled by default; <code>--no-backup</code> passes <code>backup=False</code>. The command writes no stdout, reports revision, digest, and any backup path on stderr, and omits returned ETag metadata.</td></tr>
             <tr><td><code>replay &lt;pcap&gt;</code></td><td><a href="#capture-functions/replay-pcap"><code>replay_pcap(path, ...)</code></a></td><td>The positional capture path maps to <code>path</code>.</td></tr>
             <tr><td><code>live</code></td><td><a href="#capture-functions/capture-live"><code>capture_live(...)</code></a></td><td><code>--capture-seconds</code> maps to <code>capture_seconds</code>.</td></tr>
             <tr><td><code>solare replay &lt;pcap&gt;</code></td><td><a href="#solare-capture/replay-solare"><code>replay_solare(path, ...)</code></a></td><td>Returns one <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a>, serialized with <code>to_json()</code>.</td></tr>
             <tr><td><code>solare live</code></td><td><a href="#solare-capture/capture-snapshot"><code>capture_solare_snapshot(...)</code></a></td><td>Progress updates are printed from <code>on_update=</code>; <code>--keep-listening</code> maps to <code>stop_on_complete=False</code>, and <code>--wait-forever</code> maps to <code>capture_seconds=None</code>.</td></tr>
-            <tr><td>Decode <code>--profile PATH</code></td><td><code>opcode_profile=Path("PATH")</code></td><td>Applies to <code>replay</code> and <code>live</code>. Omit it to select the packaged active profile; origin commands use the same path as their <code>profile_path</code>.</td></tr>
+            <tr><td>Decode <code>--profile PATH</code></td><td><code>opcode_profile=Path("PATH")</code></td><td>Required for <code>replay</code> and <code>live</code>. The CLI loads only this local authority; origin commands use the same path as their <code>profile_path</code>.</td></tr>
             <tr><td>Decode <code>--ports 8884,8885</code></td><td><code>ports=(8884, 8885)</code></td><td>Pass directly to <code>replay_pcap()</code>; for <code>live</code>, construct <a href="#live-capture-options"><code>LiveCaptureOptions(ports=...)</code></a>. Offline calibration passes ports to <code>calibrate_pcap()</code>; live calibration constructs <a href="#packet-capture-options"><code>PacketCaptureOptions(ports=...)</code></a>.</td></tr>
             <tr><td>Decode <code>--event-type</code>, <code>--source</code>, <code>--item-id</code>, <code>--deposit-origin</code></td><td><a href="#event-filter"><code>EventFilter(...)</code></a></td><td>The first three flags are repeatable; <code>--deposit-origin</code> accepts one value. This <code>--item-id</code> mapping is for <code>replay</code>/<code>live</code>, not calibration’s required known item ID.</td></tr>
             <tr><td><code>live --iface NAME</code></td><td><a href="#live-capture-options"><code>LiveCaptureOptions(interface="NAME")</code></a></td><td>For live calibration, the equivalent is <a href="#packet-capture-options"><code>PacketCaptureOptions(interface="NAME")</code></a> passed through <code>capture_options=</code>. Origin learning keeps its own live-session surface.</td></tr>
@@ -8223,9 +8384,10 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
           <h2 id="errors/exceptions" class="section-heading" data-anchor="exceptions" data-toc>Public exceptions</h2>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Raised when</th></tr></thead><tbody>
             <tr><td><code>FileNotFoundError</code></td><td>A required PCAP or profile path does not exist.</td></tr>
-            <tr><td><code>TypeError</code></td><td>A capture API receives the wrong configuration/filter object type, or <code>update_profile()</code> receives values other than <a href="#calibration-types/message-spec"><code>MessageSpec</code></a> objects.</td></tr>
+            <tr><td><code>TypeError</code></td><td>A required item-decoder <code>opcode_profile</code> argument is omitted, a capture API receives the wrong configuration/filter object type, or <code>update_profile()</code> receives values other than <a href="#calibration-types/message-spec"><code>MessageSpec</code></a> objects.</td></tr>
             <tr><td><code>ValueError</code></td><td>Capture data, options, or numeric ranges are invalid.</td></tr>
-            <tr><td><a href="#profile-api/profile-error"><code>ProfileError</code></a></td><td>An opcode profile or origin-candidate file has invalid JSON/schema; runtime item layout construction finds ambiguous same-opcode loot-preview length domains; or a non-no-op <code>update_profile()</code> would introduce that ambiguity. Subclass of <code>ValueError</code>.</td></tr>
+            <tr><td><a href="#profile-api/profile-error"><code>ProfileError</code></a></td><td>A local opcode profile or origin-candidate file has invalid JSON/schema; an opcode profile lacks exact integer schema <code>version: 1</code>; runtime item authority is inactive or incomplete; runtime layout construction finds ambiguous same-opcode loot-preview length domains; or a non-no-op <code>update_profile()</code> would introduce that ambiguity. Subclass of <code>ValueError</code>.</td></tr>
+            <tr><td><a href="#profile-api/remote-profile-error"><code>RemoteProfileError</code></a></td><td>An explicit remote acquisition fails URL, transport, size, envelope, digest, embedded-profile, or runtime-authority verification. Subclass of <a href="#profile-api/profile-error"><code>ProfileError</code></a>.</td></tr>
             <tr id="errors/direction-mismatch-error" data-anchor="direction-mismatch-error"><td><a href="#errors/direction-mismatch-error"><code>DirectionMismatchError</code></a></td><td>Packet structure contradicts an explicitly declared calibration action.</td></tr>
             <tr id="errors/calibration-authority-error" data-anchor="calibration-authority-error"><td><a href="#errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a></td><td><code>bdo_toolkit.calibration.CalibrationAuthorityError</code>, a <code>ValueError</code> subclass. During analysis, a target storage wrapper was observed but its destination and/or declared-count column was not uniquely proven, so no <code>CalibrationResult</code> is produced. A known destination-field case is a single-destination capture in the five listed <code>0x05xx</code> collision towns; repeat the full workflow in Velia or Heidel as described in the <a href="#calibration-workflow/storage-wrapper-evidence">calibration-town guidance</a>. This is calibration-only&mdash;a profile learned elsewhere supports all five towns normally. During writing, a nonempty automatic transfer <code>CalibrationResult</code> lacks <code>INVENTORY_TRANSFER</code> or <code>STORAGE_ITEM_DELTA</code>; the two-step caller retains the earlier result, while <code>calibrate_and_update()</code> raises before returning its tuple. Both forms leave the profile untouched, and the write-time form runs before profile read, backup, or creation.</td></tr>
             <tr><td><a href="#live-capture-health/integrity-error"><code>CaptureIntegrityError</code></a></td><td>An item live session's bounded raw-packet queue overflows. The session stops rather than continue after known acquisition loss. Subclass of <code>RuntimeError</code>.</td></tr>
@@ -8239,8 +8401,10 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
         <section class="doc-section">
           <h2 id="errors/timing" class="section-heading" data-anchor="timing" data-toc>When failures surface</h2>
           <div class="table-wrap"><table><thead><tr><th>Surface</th><th>Timing</th></tr></thead><tbody>
-            <tr><td><code>replay_pcap()</code></td><td>Returns a lazy iterator. Path, profile, port, filter, decode, and observer failures surface when iteration starts or advances—not when the iterator object is created.</td></tr>
-            <tr><td><code>capture_live()</code></td><td>Also returns a lazy iterator. Option validation and capture startup occur on first iteration. Normal iteration drains buffered events before re-raising a later background failure; an incomplete bounded cleanup can escape first.</td></tr>
+            <tr><td><a href="#profile-api/fetch"><code>fetch_opcode_profile()</code></a></td><td>Eager. URL and numeric argument validation, the HTTPS request, envelope/profile verification, optional backup, and atomic installation all occur before the call returns.</td></tr>
+            <tr><td><a href="#profile-api/load"><code>load_opcode_profile()</code></a></td><td>Eager. The explicit local path is read and its stored schema is validated during the call.</td></tr>
+            <tr><td><code>replay_pcap()</code></td><td>The required <code>opcode_profile</code> argument is bound at the function call. With it supplied, the returned iterator remains lazy: path/profile loading, port/filter validation, decoding, and observer failures surface when iteration starts or advances.</td></tr>
+            <tr><td><code>capture_live()</code></td><td>The required <code>opcode_profile</code> argument is bound at the function call. With it supplied, the returned iterator remains lazy: option/profile validation and capture startup occur on first iteration. Normal iteration drains buffered events before re-raising a later background failure; an incomplete bounded cleanup can escape first.</td></tr>
             <tr><td><a href="#packet-capture-options"><code>PacketCaptureOptions(...)</code></a></td><td>Validates ports, booleans, and an explicit local IPv4 immediately. Interface discovery and capture-backend availability cannot be checked until startup.</td></tr>
             <tr><td><a href="#live-capture-options"><code>LiveCaptureOptions(...)</code></a></td><td>Applies the same packet-setting validation and additionally validates <code>event_queue_size</code> and <code>packet_queue_size</code> immediately.</td></tr>
             <tr><td><a href="#live-capture-session"><code>LiveCaptureSession(...)</code></a></td><td>Validates configuration object types in the constructor; profile loading, interface discovery, and capture setup occur in <code>start()</code>.</td></tr>
@@ -8315,18 +8479,18 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
       </article>
 
       <article class="doc-page" id="stability" data-page="stability" data-title="Stability & safety" hidden>
-        <div class="page-kicker"><span class="kind-badge guide">Policy</span> Alpha contract</div>
+        <div class="page-kicker"><span class="kind-badge guide">Policy</span> Alpha and Experimental contracts</div>
         <h1 class="page-title">Stability &amp; safety</h1>
-        <p class="page-lede">Public item-event and Solare result models are intentionally more stable than the observed wire layouts underneath them.</p>
+        <p class="page-lede">The item-event core follows the package alpha contract. <code>bdo_toolkit.item_state</code> and <code>bdo_toolkit.solare</code> are Experimental public surfaces with weaker compatibility guarantees.</p>
 
         <section class="doc-section">
           <h2 id="stability/contract" class="section-heading" data-anchor="contract" data-toc>Public contract</h2>
           <div class="table-wrap"><table><thead><tr><th>Surface</th><th>Expectation</th></tr></thead><tbody>
-            <tr><td>Documented public APIs</td><td>Public contract described by this reference; changes should be additive where practical during alpha.</td></tr>
-            <tr><td><code>bdo_toolkit.solare</code></td><td>Public alpha domain namespace exported by the root package. Solare classes and functions remain namespaced rather than flattened into <code>bdo_toolkit.__all__</code>; import them from <code>bdo_toolkit.solare</code>. Result/snapshot invariants and documented fields are supported; classifier internals and validated layout fingerprints remain private.</td></tr>
-            <tr><td><a href="#solare-leaderboard-snapshot"><code>SolareLeaderboardSnapshot</code></a> rankings core</td><td>Atomic normalized result: a complete status means clean acquisition, 31 supported class groups × 20 rich players, an authoritative overall 1-through-100 table, at least 20 exact overlaps, and no bidirectional rank/name conflict. New evidence or capabilities should be additive.</td></tr>
-            <tr><td><a href="#solare-player-stats/overall-entry">Solare overall aggregates</a>, <a href="#solare-player-stats/performance">per-class fields</a>, and <a href="#solare-player-stats/raw-section">raw extensions</a></td><td>Overall direct W/D/L and derived helpers are reported under the overall-only <code>aggregate_performance</code> capability. Elo, per-class performance, and raw support remain source-specific. Missing means unavailable, never zero or a synthesized slot sum. Opaque raw names describe suspected regions rather than a stable nested gear/addon schema.</td></tr>
-            <tr><td>Solare detail geometry</td><td>Registered geometries use reviewed decoder-owned fast paths. An unregistered geometry can infer supported groups for that snapshot only; inferred offsets are not persisted. A failing registered geometry does not fall through to learning, and capability sets remain the field authority.</td></tr>
+            <tr><td>Documented public APIs</td><td>Unless marked Experimental, documented APIs follow the package alpha contract; changes should be additive where practical.</td></tr>
+            <tr><td><code>bdo_toolkit.solare</code></td><td>Experimental public domain namespace exported by the root package. Import its symbols from <code>bdo_toolkit.solare</code>; its Python APIs, result models, behavioral contracts, and serialized shapes can change incompatibly before stable promotion. Classifier internals and validated layout fingerprints remain private.</td></tr>
+            <tr><td><a href="#solare-leaderboard-snapshot"><code>SolareLeaderboardSnapshot</code></a> rankings core</td><td>Current completion invariant: a complete status means clean acquisition, 31 supported class groups × 20 rich players, an authoritative overall 1-through-100 table, at least 20 exact overlaps, and no bidirectional rank/name conflict.</td></tr>
+            <tr><td><a href="#solare-player-stats/overall-entry">Solare overall aggregates</a>, <a href="#solare-player-stats/performance">per-class fields</a>, and <a href="#solare-player-stats/raw-section">raw extensions</a></td><td>Current aggregate/detail shape: overall direct W/D/L and derived helpers are reported under the overall-only <code>aggregate_performance</code> capability. Elo, per-class performance, and raw support remain source-specific. Missing means unavailable, never zero or a synthesized slot sum. Opaque raw names describe suspected regions rather than a stable nested gear/addon schema.</td></tr>
+            <tr><td>Solare detail geometry</td><td>Current detail-discovery behavior: registered geometries use reviewed decoder-owned fast paths. An unregistered geometry can infer supported groups for that snapshot only; inferred offsets are not persisted. A failing registered geometry does not fall through to learning, and capability sets remain the field authority.</td></tr>
             <tr><td><code>bdo_toolkit.item_state</code></td><td>Canonical public-experimental inventory/storage aggregate module, intentionally outside package-root exports. Schema version <code>4</code> includes structured coverage, provenance, and top-level decoder health, but the module can still change before stable promotion. <code>bdo_toolkit.character_state</code> remains the implementation and legacy compatibility namespace; <code>bdo_toolkit.item_state</code> re-exports the same objects under the canonical experimental names.</td></tr>
             <tr><td><a href="#bdo-event"><code>BDOEvent</code> required fields</a></td><td>Stable normalized event core.</td></tr>
             <tr><td><a href="#bdo-event/optional-fields">Optional fields</a> and <a href="#bdo-event/extra"><code>extra</code></a></td><td>Additive; provisional evidence graduates only after repeated validation.</td></tr>
@@ -8579,7 +8743,20 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
     var sectionLabel = group && group.querySelector('.nav-toggle span') ? group.querySelector('.nav-toggle span').textContent.trim() : 'Reference';
     var domain = link.closest('.nav-domain');
     var domainLabel = domain ? domain.querySelector('.nav-domain-label') : null;
-    return domainLabel ? domainLabel.textContent.trim() + ' · ' + sectionLabel : sectionLabel;
+    var domainName = domainLabel ? domainLabel.querySelector('.nav-domain-name') : null;
+    var domainStatus = domainLabel ? domainLabel.querySelector('.nav-status') : null;
+    var domainText = domainName ? domainName.textContent.trim() : (domainLabel ? domainLabel.textContent.trim() : '');
+    if (domainStatus) domainText += ' · ' + domainStatus.textContent.trim();
+    return domainLabel ? domainText + ' · ' + sectionLabel : sectionLabel;
+  }
+
+  function navMaturity(link) {
+    var group = link ? link.closest('.nav-group') : null;
+    var sectionStatus = group ? group.querySelector('.nav-toggle .nav-status') : null;
+    var domain = link ? link.closest('.nav-domain') : null;
+    var domainStatus = domain ? domain.querySelector('.nav-domain-label .nav-status') : null;
+    var status = domainStatus || sectionStatus;
+    return status ? status.textContent.trim() : '';
   }
 
   function showRoute(shouldFocus) {
@@ -8680,6 +8857,9 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
     pages.forEach(function (page) {
       var pageId = page.getAttribute('data-page');
       var pageTitle = page.getAttribute('data-title') || 'Reference';
+      var pageNavLink = navLinks.find(function (link) { return link.getAttribute('data-page') === pageId; });
+      var pageMaturity = navMaturity(pageNavLink);
+      var anchorContext = pageMaturity ? pageTitle + ' · ' + pageMaturity : pageTitle;
       Array.prototype.slice.call(page.querySelectorAll('[data-anchor]')).forEach(function (target) {
         var anchor = target.getAttribute('data-anchor');
         var href = '#' + pageId + '/' + anchor;
@@ -8697,8 +8877,8 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
           title: displayTitle,
           titleKey: normalizeSearchText(localTitle || anchor),
           kind: 'anchor',
-          context: pageTitle,
-          haystack: normalizeSearchText(localText + ' ' + pageTitle + ' ' + anchor)
+          context: anchorContext,
+          haystack: normalizeSearchText(localText + ' ' + anchorContext + ' ' + anchor)
         });
         seen.add(href);
       });

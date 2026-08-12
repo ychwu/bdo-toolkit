@@ -27,8 +27,7 @@ from bdo_toolkit._protocol import (
 )
 from bdo_toolkit.events import BDOEvent, Flow
 from bdo_toolkit.diagnostics import DecoderHealth
-from bdo_toolkit.profiles import default_profile_path
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import JULY17_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(), reason="private packet fixtures are not available"
@@ -41,7 +40,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
         capture = fixture_path("fullcapture.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
-    profile = default_profile_path()
+    profile = JULY17_OPCODE_PROFILE
 
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
 
@@ -117,7 +116,7 @@ def test_character_state_formatter_separates_items_currencies_and_capacity():
         capture = fixture_path("fullcapture.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
-    profile = default_profile_path()
+    profile = JULY17_OPCODE_PROFILE
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
 
     output = format_character_state(state)
@@ -148,7 +147,7 @@ def test_july17_character_switch_classifies_exact_inventory_state():
         capture = fixture_path("character-switch-2026-07-17-01.pcapng")
     except FileNotFoundError:
         pytest.skip("July 17 private character-switch fixture not present")
-    profile = default_profile_path()
+    profile = JULY17_OPCODE_PROFILE
 
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
     inventory = state.inventory
@@ -1885,7 +1884,7 @@ def test_offline_character_state_loads_one_profile_revision(monkeypatch):
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
     monkeypatch.setattr(character_state_module, "iter_pcap_file", lambda *args: ())
 
-    profile = default_profile_path()
+    profile = JULY17_OPCODE_PROFILE
     state = analyze_character_load_pcap(
         "unused.pcapng",
         opcode_profile=profile,
@@ -1908,6 +1907,7 @@ def test_live_character_load_pins_profile_revision_at_construction(
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface")
     )
     assert len(calls) == 1
@@ -1919,10 +1919,11 @@ def test_live_character_load_pins_profile_revision_at_construction(
     session.start()
     state = session.stop()
 
-    assert state.profile_source == str(default_profile_path())
+    assert state.profile_source == str(JULY17_OPCODE_PROFILE)
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
     CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface")
     )
     assert len(calls) == 2
@@ -1950,6 +1951,7 @@ def test_live_character_load_can_save_every_filtered_raw_packet(
     )
 
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap=output,
     )
@@ -1976,6 +1978,7 @@ def test_live_character_load_refuses_to_overwrite_an_existing_capture(
     original = b"keep this capture"
     output.write_bytes(original)
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap=output,
     )
@@ -2024,6 +2027,7 @@ def test_live_character_load_saves_packet_before_parser_failure(
 
     monkeypatch.setattr(character_state_module, "make_packet_handler", failing_handler)
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap="failure.pcapng",
     )
@@ -2068,6 +2072,7 @@ def test_live_character_load_surfaces_accumulation_limit_without_partial_result(
 
     monkeypatch.setattr(character_state_module, "make_packet_handler", record_emitter)
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         capture_limits=ItemStateCaptureLimits(
             max_relevant_frames=10,
@@ -2113,6 +2118,7 @@ def test_live_character_load_closes_writer_when_sniffer_start_fails(
     )
     monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FailingSniffer)
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap="startup.pcap",
     )
@@ -2194,6 +2200,7 @@ def test_live_character_load_times_out_and_cleans_every_startup_resource(
         0.01,
     )
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap="timeout.pcapng",
     )
@@ -2277,6 +2284,7 @@ def test_live_character_load_retains_dependencies_until_capture_thread_stops(
         lambda path: writer,
     )
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap="retained-cleanup.pcapng",
     )
@@ -2365,6 +2373,7 @@ def test_character_load_retains_startup_dependencies_when_cleanup_is_incomplete(
         lambda path: writer,
     )
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         save_pcap="retained-startup.pcapng",
     )
@@ -2406,6 +2415,7 @@ def test_live_character_load_successful_session_is_single_use_and_stop_is_cached
         max_relevant_bytes=2_048,
     )
     session = CharacterLoadSession(
+        opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
         capture_limits=limits,
     )
@@ -2446,7 +2456,16 @@ def test_character_load_tool_rejects_save_path_during_offline_replay():
     spec.loader.exec_module(inspect_character_load)
 
     parser = inspect_character_load._parser()
-    args = parser.parse_args(["--pcap", "input.pcapng", "--save-pcap", "output.pcapng"])
+    args = parser.parse_args(
+        [
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--pcap",
+            "input.pcapng",
+            "--save-pcap",
+            "output.pcapng",
+        ]
+    )
 
     with pytest.raises(SystemExit):
         inspect_character_load._validate_args(parser, args)

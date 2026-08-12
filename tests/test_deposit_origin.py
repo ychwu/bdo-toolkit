@@ -20,7 +20,7 @@ from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
-from bdo_toolkit.profiles import OpcodeProfile, OriginCompanionFamily
+from bdo_toolkit.profiles import OpcodeProfile, OriginCompanionFamily, ProfileError
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -527,30 +527,15 @@ def test_malformed_declared_decrement_geometry_is_not_downgraded():
                     "quantity_removed_offset": 27,
                     "source_instance_offset": 45,
                 },
-                {
-                    "opcode": "0x1002",
-                    "length": 47,
-                    "quantity_removed_offset": 27,
-                    "source_instance_offset": 35,
-                    "repeat_stride": 60,
-                },
-                {
-                    "opcode": "0x1003",
-                    "length": 52,
-                    "quantity_removed_offset": 42,
-                    "source_instance_offset": 34,
-                    "repeat_stride": 23,
-                },
             )
         },
     )
 
-    specs = _decrement_specs(profile)
-
-    assert [
-        (spec.opcode, spec.source_instance_offset, spec.repeat_stride)
-        for spec in specs
-    ] == [(0x1000, None, None), (0x1003, 34, 23)]
+    with pytest.raises(
+        ProfileError,
+        match=r"SOURCE_STACK_DECREMENT\[1\].*source instance offset",
+    ):
+        _decrement_specs(profile)
 
 
 def test_no_evidence_yields_unknown():

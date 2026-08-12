@@ -27,6 +27,13 @@ session only observes these user-performed actions: ``quantity=1`` remains the
 expected value in every serialized record and is not changed to the action's
 batch size. The calibration heuristics score every frame containing the watched
 item ID and promote only structurally proven layouts.
+
+The batch sizes are observed evidence, not API arguments or hard-coded values;
+another valid sequence is deposit one, deposit six, then withdraw seven.
+Repeating the same deposit count does not establish storage count authority.
+``action="auto"`` covers transfer directions only. Loot preview requires a
+separate ``action="loot-preview"`` capture; when its quantity is random, watch
+the known item ID and leave ``quantity=None``.
 """
 
 from __future__ import annotations
@@ -67,7 +74,12 @@ from ._protocol import (
 )
 from ._reassembly import FlowManager
 from ._specs import _validate_loot_profile_entries
-from .profiles import ProfileError, _validate_profile_entry, load_opcode_profile
+from .profiles import (
+    OPCODE_PROFILE_SCHEMA_VERSION,
+    ProfileError,
+    _validate_profile_entry,
+    load_opcode_profile,
+)
 
 __all__ = [
     "CALIBRATION_ACTIONS",
@@ -853,6 +865,10 @@ class CalibrationSession:
     guided five-unstackable sequence is deposit one, deposit four, withdraw
     all five. The user performs those actions; the session passively observes
     them, and ``quantity=1`` continues to describe every repeated item record.
+    The values 1, 4, and 5 are a recommended operator workflow rather than
+    constructor arguments; the session learns batch cardinality from traffic.
+    Loot preview is a separate explicit action and may use ``quantity=None``
+    when only the watched item ID is stable.
 
     Live evidence is bounded by both ``max_retained_frames`` and
     ``max_retained_bytes``. The newest contiguous frame tail is retained so a
@@ -1232,6 +1248,9 @@ def calibrate_live(
     deposit one matching unstackable, deposit four, then withdraw all five.
     The toolkit does not perform those actions; ``quantity=1`` matches every
     serialized item record rather than the batch totals 1, 4, or 5.
+    These counts are observed from traffic and are not hard-coded. Loot preview
+    is a separate explicit action; omit ``quantity`` when its displayed amount
+    is random.
     With ``capture_seconds`` the capture stops automatically; without it, the
     capture runs until the user interrupts (Ctrl+C), which is treated as
     "actions performed, calibrate now" rather than as an abort. Apps with
@@ -1559,7 +1578,7 @@ def reset_profile(
         shutil.copy2(profile_path, backup_path)
 
     data = {
-        "version": 1,
+        "version": OPCODE_PROFILE_SCHEMA_VERSION,
         "updated_at": _utc_now_text(),
         "calibration_item_id": calibration_item_id,
         "profile_active": True,
@@ -2845,7 +2864,7 @@ def _discover_storage_context_offset_from_frames(
         }
         messages_seen.add(frame.message)
         if not candidates:
-            # A newly added town can be structurally valid before the bundled
+            # A newly added town can be structurally valid before the toolkit
             # name registry knows its numeric key. Let registered destinations
             # establish the column, then require that same column to contain a
             # nonzero uint32 here. An unknown town must not veto an otherwise
@@ -3095,13 +3114,17 @@ def _load_profile_data(path: Path) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ProfileError(f"Opcodes JSON {path} must be a top-level object")
     else:
-        data = {}
+        data = {"version": OPCODE_PROFILE_SCHEMA_VERSION}
 
     version = data.get("version")
-    if version is None:
-        version = 1
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ProfileError(f"version in {path} must be a positive integer")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != OPCODE_PROFILE_SCHEMA_VERSION
+    ):
+        raise ProfileError(
+            f"version in {path} must be {OPCODE_PROFILE_SCHEMA_VERSION}"
+        )
     active = data.get("profile_active", False)
     if not isinstance(active, bool):
         raise ProfileError(f"profile_active in {path} must be a boolean")

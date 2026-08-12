@@ -30,6 +30,7 @@ from .diagnostics import DecoderDiagnostic, DecoderHealth
 from .events import BDOEvent
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
+from .profiles import OpcodeProfile
 
 
 T = TypeVar("T")
@@ -72,7 +73,7 @@ class AsyncLiveCaptureSession:
     def __init__(
         self,
         *,
-        opcode_profile: str | Path | None = None,
+        opcode_profile: str | Path | OpcodeProfile,
         live_options: Optional[LiveCaptureOptions] = None,
         event_filter: Optional[EventFilter] = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,

@@ -114,6 +114,7 @@ def live_fakes(monkeypatch):
 def test_session_stop_wakes_a_quiet_blocking_consumer(live_fakes):
     _, FakeSniffer = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -183,6 +184,7 @@ def test_incomplete_backend_stop_retains_live_session_owners_for_retry(
 
     monkeypatch.setattr(capture_module, "LivePacketCapture", RetryCapture)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -253,6 +255,7 @@ def test_incomplete_start_cleanup_keeps_live_session_retryable(
 
     monkeypatch.setattr(capture_module, "LivePacketCapture", FailedStartCapture)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -320,6 +323,7 @@ def test_failed_start_retains_a_stuck_decoder_owner_for_retry(
         0.05,
     )
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -356,6 +360,7 @@ def test_decoder_thread_start_failure_rolls_back_to_not_started(
 
     monkeypatch.setattr(capture_module, "Thread", thread_factory)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -392,6 +397,7 @@ def test_stop_monitor_thread_start_failure_stops_native_and_decoder(
 
     monkeypatch.setattr(capture_module, "Thread", thread_factory)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -456,6 +462,7 @@ def test_control_waiting_on_failed_start_rechecks_rolled_back_lifecycle(
 
     monkeypatch.setattr(capture_module, "LivePacketCapture", RacingCapture)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     start_errors = []
@@ -546,6 +553,7 @@ def test_request_stop_cannot_cross_failed_start_rollback_into_retry(
 
     monkeypatch.setattr(capture_module, "LivePacketCapture", RacingCapture)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     original_stop_set = session._stop_requested.set
@@ -605,6 +613,7 @@ def test_live_session_defaults_to_activity_and_preserves_explicit_filters(live_f
     FakeCollector, _ = live_fakes
 
     default_session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     default_session.start()
@@ -613,6 +622,7 @@ def test_live_session_defaults_to_activity_and_preserves_explicit_filters(live_f
 
     explicit_all = EventFilter()
     all_session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         event_filter=explicit_all,
     )
@@ -639,13 +649,18 @@ def test_replay_none_keeps_the_unfiltered_offline_contract(monkeypatch):
     monkeypatch.setattr(capture_module, "_EventCollector", FakeCollector)
     monkeypatch.setattr(capture_module, "iter_pcap_file", lambda path, engine: ())
 
-    assert list(capture_module.replay_pcap("unused.pcapng")) == []
+    assert list(
+        capture_module.replay_pcap(
+            "unused.pcapng", opcode_profile="opcodes.local"
+        )
+    ) == []
     assert observed["event_filter"] is None
 
 
 def test_session_drains_queue_then_shutdown_tail_without_deadlock(live_fakes):
     FakeCollector, _ = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(
             interface="test-interface",
             event_queue_size=1,
@@ -669,6 +684,7 @@ def test_session_drains_queue_then_shutdown_tail_without_deadlock(live_fakes):
 def test_session_poll_supports_nonblocking_app_integration(live_fakes):
     FakeCollector, _ = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -695,6 +711,7 @@ def test_session_propagates_capture_thread_errors(live_fakes, monkeypatch):
 
     monkeypatch.setattr(capture_module, "make_packet_handler", make_failing_handler)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -725,6 +742,7 @@ def test_native_callback_hands_slow_decode_to_worker(live_fakes, monkeypatch):
 
     monkeypatch.setattr(capture_module, "make_packet_handler", make_slow_handler)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -762,6 +780,7 @@ def test_stuck_decoder_stop_is_bounded_and_retryable(live_fakes, monkeypatch):
         0.05,
     )
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -823,6 +842,7 @@ def test_decoder_callback_uses_request_stop_instead_of_recursive_stop(
         make_callback_handler,
     )
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     sessions.append(session)
@@ -857,6 +877,7 @@ def test_origin_observer_from_wall_clock_uses_request_stop_without_deadlock(
         callback_done.set()
 
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=stop_from_observer,
     )
@@ -892,6 +913,7 @@ def test_origin_observer_from_poll_flush_uses_request_stop_without_deadlock(
         callback_done.set()
 
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=stop_from_observer,
     )
@@ -936,7 +958,10 @@ def test_origin_observer_rejects_async_stop_from_another_thread(
             sessions[0].request_stop()
             callback_done.set()
 
-        session = AsyncLiveCaptureSession(origin_observer=stop_from_observer)
+        session = AsyncLiveCaptureSession(
+            opcode_profile="opcodes.local",
+            origin_observer=stop_from_observer,
+        )
         sessions.append(session)
         await session.start()
         collector = FakeCollector.instances[-1]
@@ -968,6 +993,7 @@ def test_origin_observer_cannot_block_on_direct_poll(live_fakes):
         callback_done.set()
 
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=poll_from_observer,
     )
@@ -1004,7 +1030,10 @@ def test_origin_observer_cannot_block_on_async_poll(live_fakes):
             sessions[0].request_stop()
             callback_done.set()
 
-        session = AsyncLiveCaptureSession(origin_observer=poll_from_observer)
+        session = AsyncLiveCaptureSession(
+            opcode_profile="opcodes.local",
+            origin_observer=poll_from_observer,
+        )
         sessions.append(session)
         await session.start()
         collector = FakeCollector.instances[-1]
@@ -1038,10 +1067,12 @@ def test_nested_origin_observers_keep_outer_session_guarded(live_fakes):
             callback_errors.append(exc)
 
     outer = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=outer_observer,
     )
     inner = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=inner_observer,
     )
@@ -1095,6 +1126,7 @@ def test_callback_request_stop_does_not_wait_on_concurrent_control_stop(
         0.5,
     )
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface"),
         origin_observer=request_from_observer,
     )
@@ -1131,6 +1163,7 @@ def test_callback_request_stop_does_not_wait_on_concurrent_control_stop(
 def test_session_services_tcp_gap_clock_while_idle(live_fakes):
     FakeCollector, _ = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -1164,6 +1197,7 @@ def test_packet_queue_overflow_fails_closed_and_reports_health(
 
     monkeypatch.setattr(capture_module, "make_packet_handler", make_blocking_handler)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(
             interface="test-interface",
             packet_queue_size=1,
@@ -1190,6 +1224,7 @@ def test_packet_queue_overflow_fails_closed_and_reports_health(
 def test_session_propagates_sniffer_thread_startup_errors(live_fakes):
     _, FakeSniffer = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
     session.start()
@@ -1225,6 +1260,7 @@ def test_start_raises_async_sniffer_initialization_failure(live_fakes, monkeypat
 
     monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FailingStartupSniffer)
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -1236,6 +1272,7 @@ def test_start_raises_async_sniffer_initialization_failure(live_fakes, monkeypat
 
 def test_session_context_manager_starts_and_stops(live_fakes):
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(interface="test-interface")
     )
 
@@ -1252,6 +1289,7 @@ def test_capture_live_remains_a_timed_blocking_wrapper(live_fakes):
     assert (
         list(
             capture_module.capture_live(
+                opcode_profile="opcodes.local",
                 live_options=LiveCaptureOptions(interface="test-interface"),
                 capture_seconds=0,
             )
@@ -1297,7 +1335,9 @@ def test_capture_live_timer_start_failure_stops_started_session(monkeypatch):
 
     monkeypatch.setattr(capture_module, "LiveCaptureSession", StartedSession)
     monkeypatch.setattr(capture_module, "Timer", FailedTimer)
-    events = capture_module.capture_live(capture_seconds=1.0)
+    events = capture_module.capture_live(
+        opcode_profile="opcodes.local", capture_seconds=1.0
+    )
 
     with pytest.raises(RuntimeError) as started:
         next(events)
@@ -1343,7 +1383,9 @@ def test_capture_live_deadline_stops_while_consumer_is_suspended(monkeypatch):
 
     monkeypatch.setattr(capture_module, "LiveCaptureSession", DeadlineSession)
     started = time.monotonic()
-    events = capture_module.capture_live(capture_seconds=0.05)
+    events = capture_module.capture_live(
+        opcode_profile="opcodes.local", capture_seconds=0.05
+    )
 
     assert next(events) is emitted
     session = DeadlineSession.instances[-1]
@@ -1378,7 +1420,7 @@ def test_closing_capture_live_stops_its_delegated_session(monkeypatch):
             self.stopped = True
 
     monkeypatch.setattr(capture_module, "LiveCaptureSession", FakeSession)
-    events = capture_module.capture_live()
+    events = capture_module.capture_live(opcode_profile="opcodes.local")
 
     assert next(events) is emitted
     events.close()
@@ -1418,7 +1460,7 @@ def test_capture_live_close_exposes_owner_when_cleanup_is_incomplete(
             raise cleanup_failure
 
     monkeypatch.setattr(capture_module, "LiveCaptureSession", IncompleteSession)
-    events = capture_module.capture_live()
+    events = capture_module.capture_live(opcode_profile="opcodes.local")
     assert next(events) is emitted
 
     with pytest.raises(RuntimeError) as closed:
@@ -1450,6 +1492,7 @@ def test_live_options_extend_shared_packet_capture_options():
 def test_live_options_use_positive_backend_controls(live_fakes):
     _, FakeSniffer = live_fakes
     session = LiveCaptureSession(
+        opcode_profile="opcodes.local",
         live_options=LiveCaptureOptions(
             interface="test-interface",
             use_bpf=False,

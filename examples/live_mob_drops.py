@@ -12,7 +12,9 @@ PROFILE = Path(__file__).resolve().parents[1] / "opcodes.local"
 
 def main() -> None:
     if not PROFILE.is_file():
-        raise FileNotFoundError(f"calibrated opcode profile not found: {PROFILE}")
+        raise FileNotFoundError(
+            f"opcode profile not found: {PROFILE}; fetch or calibrate it first"
+        )
 
     writer = ConsoleEventWriter()
     for event in capture_live(

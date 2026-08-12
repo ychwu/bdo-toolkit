@@ -1,4 +1,4 @@
-"""Regression coverage for the reviewed opcode profile shipped to users."""
+"""Regression coverage for the tracked July 17 opcode profile."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import JULY17_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
 from bdo_toolkit import load_opcode_profile, replay_pcap
 from bdo_toolkit.capture import _EventCollector
 
@@ -17,8 +17,8 @@ def _entry_shape(
     return tuple(entry.get(field) for field in fields)
 
 
-def test_bundled_profile_is_the_reviewed_july17_authority() -> None:
-    profile = load_opcode_profile()
+def test_tracked_profile_is_the_reviewed_july17_authority() -> None:
+    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
 
     assert profile.active is True
     assert set(profile.specs) == {
@@ -75,7 +75,7 @@ def test_bundled_profile_is_the_reviewed_july17_authority() -> None:
     ) == ("0x11AD", 47, 35, 27)
 
     # Loot was not part of the July 17 transfer calibration. Keep the last
-    # reviewed bundled loot entry instead of replacing it with local [] data.
+    # reviewed loot entry instead of replacing it with local [] data.
     assert _entry_shape(
         profile.specs["LOOT_PREVIEW"][0],
         "opcode",
@@ -159,8 +159,10 @@ def _manual_decrement(
     return bytes(message)
 
 
-def _collect_with_default_profile(payload: bytes):
-    collector = _EventCollector(server_ports=(8889,))
+def _collect_with_july17_profile(payload: bytes):
+    collector = _EventCollector(
+        server_ports=(8889,), opcode_profile=JULY17_OPCODE_PROFILE
+    )
     collector.engine.process_tcp_segment(
         source_ip="203.0.113.10",
         source_port=8889,
@@ -175,8 +177,8 @@ def _collect_with_default_profile(payload: bytes):
     return list(collector.drain_events())
 
 
-def test_default_profile_decodes_generated_july17_batches() -> None:
-    events = _collect_with_default_profile(
+def test_july17_profile_decodes_generated_batches() -> None:
+    events = _collect_with_july17_profile(
         _inventory_snapshot(((7003, 2), (7004, 3)))
         + _storage_delta(((4802, 1), (4003, 21)))
         + _worker_companions(),
@@ -206,8 +208,8 @@ def test_default_profile_decodes_generated_july17_batches() -> None:
     )
 
 
-def test_default_profile_uses_current_decrement_for_manual_deposit() -> None:
-    events = _collect_with_default_profile(
+def test_july17_profile_uses_current_decrement_for_manual_deposit() -> None:
+    events = _collect_with_july17_profile(
         _manual_decrement(8) + _storage_delta(((7307, 8),), mode=3),
     )
 
@@ -236,13 +238,13 @@ def test_default_profile_uses_current_decrement_for_manual_deposit() -> None:
     }
 
 
-def test_default_profile_does_not_match_the_disproved_offset_19() -> None:
+def test_july17_profile_does_not_match_the_disproved_offset_19() -> None:
     instance = 0x8877665544332211
     decrement = bytearray(_message(0x11AD, 47))
     decrement[19:27] = instance.to_bytes(8, "little")
     decrement[27:31] = (8).to_bytes(4, "little")
     # The capture-proven source field at offset 35 is deliberately empty.
-    events = _collect_with_default_profile(
+    events = _collect_with_july17_profile(
         bytes(decrement) + _storage_delta(((7307, 8),), mode=1),
     )
 
@@ -256,11 +258,12 @@ def test_default_profile_does_not_match_the_disproved_offset_19() -> None:
     not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
-def test_default_profile_uses_exact_current_manual_instance_evidence() -> None:
+def test_july17_profile_uses_exact_manual_instance_evidence() -> None:
     events = [
         event
         for event in replay_pcap(
-            fixture_path("calibration_5_inven_0_storage.pcapng")
+            fixture_path("calibration_5_inven_0_storage.pcapng"),
+            opcode_profile=JULY17_OPCODE_PROFILE,
         )
         if event.event_type == "storage_delta"
         and event.item_id == 7003

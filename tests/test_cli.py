@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from bdo_toolkit import __version__, cli
+from fixture_paths import JULY17_OPCODE_PROFILE
+from bdo_toolkit import (
+    ProfileFetchResult,
+    __version__,
+    cli,
+    load_opcode_profile,
+)
 from bdo_toolkit._protocol import FlowKey
 from bdo_toolkit.calibration import CalibrationResult, MessageSpec
 from bdo_toolkit.origin_learning import CompanionObservation
@@ -28,13 +34,89 @@ def test_replay_invalid_capture_is_a_clean_cli_error(tmp_path, capsys):
     path = tmp_path / "invalid.pcapng"
     path.write_bytes(b"not a capture")
 
-    exit_code = cli.main(["replay", str(path)])
+    exit_code = cli.main(
+        [
+            "replay",
+            str(path),
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+        ]
+    )
 
     captured = capsys.readouterr()
     assert exit_code == 2
     assert captured.out == ""
     assert "error: Could not read capture" in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["replay", "session.pcapng"],
+        ["live", "--capture-seconds", "0"],
+    ],
+)
+def test_item_decode_cli_requires_explicit_profile(argv, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(argv)
+
+    assert exc_info.value.code == 2
+    assert "--profile" in capsys.readouterr().err
+
+
+def test_profile_fetch_cli_forwards_verification_controls(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    destination = tmp_path / "opcodes.json"
+    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
+    observed = {}
+
+    def fake_fetch(url, output, **kwargs):
+        observed.update(url=url, output=output, **kwargs)
+        return ProfileFetchResult(
+            path=destination,
+            profile=profile,
+            source_url=url,
+            revision="naeu-2026-07-17-r1",
+            profile_sha256="a" * 64,
+            etag='"profile-r1"',
+            backup_path=None,
+        )
+
+    monkeypatch.setattr(cli, "fetch_opcode_profile", fake_fetch)
+
+    exit_code = cli.main(
+        [
+            "profile",
+            "fetch",
+            "https://profiles.example.test/current.json",
+            "--output",
+            str(destination),
+            "--timeout",
+            "2.5",
+            "--max-bytes",
+            "4096",
+            "--no-backup",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed == {
+        "url": "https://profiles.example.test/current.json",
+        "output": destination,
+        "timeout": 2.5,
+        "max_bytes": 4096,
+        "backup": False,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "installed opcode profile revision naeu-2026-07-17-r1" in captured.err
+    assert "profile sha256: " + "a" * 64 in captured.err
+    assert "source etag" not in captured.err
+    assert '"profile-r1"' not in captured.err
 
 
 @pytest.mark.parametrize(
@@ -132,8 +214,20 @@ def test_calibrate_cli_writes_mocked_result(
         ["calibrate", "--item-id", "0"],
         ["calibrate", "--item-id", "1", "--qty", "0"],
         ["calibrate", "--item-id", "1", "--min-confidence", "nan"],
-        ["live", "--capture-seconds", "-1"],
-        ["live", "--event-queue-size", "0"],
+        [
+            "live",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--capture-seconds",
+            "-1",
+        ],
+        [
+            "live",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--event-queue-size",
+            "0",
+        ],
         [
             "origin-learn",
             "--profile",

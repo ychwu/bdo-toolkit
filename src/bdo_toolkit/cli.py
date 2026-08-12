@@ -28,6 +28,11 @@ from .origin_learning import (
     OriginLearner,
     promote_origin_candidates,
 )
+from .remote_profiles import (
+    DEFAULT_REMOTE_PROFILE_MAX_BYTES,
+    DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS,
+    fetch_opcode_profile,
+)
 from .filters import EventFilter
 from .writers import ConsoleEventWriter, JsonlEventWriter
 from .solare import (
@@ -60,6 +65,13 @@ def _nonnegative_float(value: str) -> float:
     return number
 
 
+def _positive_float(value: str) -> float:
+    number = _nonnegative_float(value)
+    if number == 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
+    return number
+
+
 def _probability(value: str) -> float:
     number = _nonnegative_float(value)
     if number > 1:
@@ -89,8 +101,8 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--profile",
         type=Path,
-        default=None,
-        help="path to a local opcodes.json (default: bundled profile)",
+        required=True,
+        help="path to the active opcode profile",
     )
     parser.add_argument(
         "--ports",
@@ -195,6 +207,24 @@ def _run_live(args: argparse.Namespace) -> int:
             writer.write(event)
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def _run_profile_fetch(args: argparse.Namespace) -> int:
+    result = fetch_opcode_profile(
+        args.url,
+        args.output,
+        timeout=args.timeout,
+        max_bytes=args.max_bytes,
+        backup=args.backup,
+    )
+    print(
+        f"installed opcode profile revision {result.revision} at {result.path}",
+        file=sys.stderr,
+    )
+    print(f"profile sha256: {result.profile_sha256}", file=sys.stderr)
+    if result.backup_path is not None:
+        print(f"backup at {result.backup_path}", file=sys.stderr)
     return 0
 
 
@@ -510,6 +540,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    profile = subparsers.add_parser(
+        "profile",
+        help="retrieve and manage explicit opcode profiles",
+    )
+    profile_subparsers = profile.add_subparsers(
+        dest="profile_command",
+        required=True,
+    )
+    profile_fetch = profile_subparsers.add_parser(
+        "fetch",
+        help="fetch, verify, and atomically install a remote opcode profile",
+        description=(
+            "Fetch, verify, and atomically install a remote opcode profile. "
+            "Use only one writer per output path; cross-process locking is "
+            "the caller's responsibility."
+        ),
+    )
+    profile_fetch.add_argument("url", help="HTTPS URL of a profile envelope")
+    profile_fetch.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="local profile path to create or replace",
+    )
+    profile_fetch.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "network timeout in seconds "
+            f"(default: {DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS:g})"
+        ),
+    )
+    profile_fetch.add_argument(
+        "--max-bytes",
+        type=_positive_int,
+        default=DEFAULT_REMOTE_PROFILE_MAX_BYTES,
+        metavar="BYTES",
+        help=(
+            "maximum accepted response size "
+            f"(default: {DEFAULT_REMOTE_PROFILE_MAX_BYTES})"
+        ),
+    )
+    profile_fetch.add_argument(
+        "--no-backup",
+        dest="backup",
+        action="store_false",
+        help="replace an existing output without preserving a backup",
+    )
+    profile_fetch.set_defaults(func=_run_profile_fetch, backup=True)
+
     replay = subparsers.add_parser(
         "replay", help="decode a .pcap/.pcapng file into events"
     )
@@ -540,7 +623,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     solare = subparsers.add_parser(
         "solare",
-        help="capture or replay an opcode-agnostic Arena of Solare snapshot",
+        help="capture or replay an experimental Arena of Solare snapshot",
+        description="Experimental Arena of Solare leaderboard capture and replay.",
     )
     solare_subparsers = solare.add_subparsers(
         dest="solare_command",
@@ -550,6 +634,7 @@ def build_parser() -> argparse.ArgumentParser:
     solare_replay = solare_subparsers.add_parser(
         "replay",
         help="discover a Solare leaderboard in a .pcap/.pcapng file",
+        description="Replay a capture with the Experimental Arena of Solare API.",
     )
     solare_replay.add_argument("pcap", type=Path, help="capture file to inspect")
     solare_replay.add_argument(
@@ -578,6 +663,7 @@ def build_parser() -> argparse.ArgumentParser:
     solare_live = solare_subparsers.add_parser(
         "live",
         help="listen until a complete Solare snapshot is confirmed",
+        description="Capture one result with the Experimental Arena of Solare API.",
     )
     solare_live.add_argument(
         "--ports",
@@ -682,7 +768,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--qty",
         type=_positive_int,
         default=None,
-        help="expected per-record quantity (normally 1 for unstackables)",
+        help=(
+            "expected per-record quantity (normally 1 for unstackables); "
+            "omit for a loot-preview item whose displayed quantity is random"
+        ),
     )
     calibrate.add_argument(
         "--action",
@@ -696,7 +785,8 @@ def build_parser() -> argparse.ArgumentParser:
             "the batch size. "
             "Explicit directions are strict and refuse a capture whose structure "
             "contradicts the declared action. loot-preview is a separate optional "
-            "gathering calibration."
+            "gathering calibration; watch a known item id and omit --qty when its "
+            "preview quantity is random."
         ),
     )
     calibrate.add_argument(

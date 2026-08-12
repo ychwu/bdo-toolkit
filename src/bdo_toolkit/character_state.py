@@ -40,7 +40,7 @@ from ._protocol import (
 from .diagnostics import DecoderHealth
 from .events import BDOEvent
 from .filters import EventFilter
-from .profiles import ProfileError, default_profile_path
+from .profiles import OpcodeProfile, ProfileError
 
 _INVENTORY_GENERATION_GAP_SECONDS = 1.0
 _INVENTORY_TRAILING_DISCOVERY_BYTES = 12
@@ -2917,12 +2917,9 @@ def _validate_item_state_identity_specs(specs: Iterable[EventSpec]) -> None:
 
 
 def _active_profile_authority(
-    opcode_profile: str | Path | None,
+    opcode_profile: str | Path | OpcodeProfile,
 ) -> _ProfileAuthority:
-    profile_path = (
-        Path(opcode_profile) if opcode_profile is not None else default_profile_path()
-    )
-    authority = _load_profile_authority(profile_path)
+    authority = _load_profile_authority(opcode_profile)
     _validate_item_state_identity_specs(authority.loaded_specs.specs)
     return authority
 
@@ -2930,7 +2927,7 @@ def _active_profile_authority(
 def analyze_character_load_pcap(
     path: str | Path,
     *,
-    opcode_profile: str | Path | None = None,
+    opcode_profile: str | Path | OpcodeProfile,
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
     capture_limits: Optional[ItemStateCaptureLimits] = None,
 ) -> CharacterStateSnapshot:
@@ -2999,7 +2996,7 @@ class CharacterLoadSession:
     def __init__(
         self,
         *,
-        opcode_profile: str | Path | None = None,
+        opcode_profile: str | Path | OpcodeProfile,
         capture_options: Optional[PacketCaptureOptions] = None,
         save_pcap: str | Path | None = None,
         capture_limits: Optional[ItemStateCaptureLimits] = None,

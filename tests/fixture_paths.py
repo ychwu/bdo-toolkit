@@ -6,10 +6,19 @@ FIXTURE_DIR = TEST_DIR / "fixtures"
 BASELINE_DIR = TEST_DIR / "baselines"
 HISTORICAL_PROFILE_DIR = TEST_DIR / "profiles"
 JULY6_OPCODE_PROFILE = HISTORICAL_PROFILE_DIR / "opcodes-2026-07-06.json"
+JULY17_OPCODE_PROFILE = HISTORICAL_PROFILE_DIR / "opcodes-2026-07-17.json"
+GENERIC_FIXTURE_EXCLUDED_DIRECTORIES = frozenset({"combat"})
 
 
 def all_fixture_pcaps() -> list[Path]:
-    return sorted(FIXTURE_DIR.rglob("*.pcapng"))
+    return sorted(
+        path
+        for path in FIXTURE_DIR.rglob("*.pcapng")
+        if not (
+            GENERIC_FIXTURE_EXCLUDED_DIRECTORIES
+            & {part.casefold() for part in path.relative_to(FIXTURE_DIR).parts[:-1]}
+        )
+    )
 
 
 def all_baseline_jsonl() -> list[Path]:

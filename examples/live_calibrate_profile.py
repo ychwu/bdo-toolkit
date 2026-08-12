@@ -5,6 +5,9 @@ one session, deposit one matching unstackable, deposit the remaining four,
 then withdraw all five. The deposits prove manual-origin and storage-wrapper
 geometry; the withdrawal proves the reverse transfer family. These are
 user-performed actions while the session passively captures traffic.
+
+This example updates transfer-profile families only; it does not calibrate
+LOOT_PREVIEW. Default profile updates preserve unrelated existing families.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ def main() -> None:
     session.start()
     print("Listening in the background.")
     print("Perform the following in-game actions yourself while capture remains open.")
+    print("Use Velia or Heidel as the controlled storage destination.")
     print(f"Using unstackable item {ITEM_ID} (per-record quantity {QUANTITY}):")
     print("deposit one item, then deposit the remaining four,")
     print("then withdraw all five matching items in one action.")

@@ -26,6 +26,7 @@ from ._capture_runtime import (
 )
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
+from ._profile_runtime import validate_runtime_profile
 from ._protocol import (
     BDOFrame,
     CHARACTER_LOAD_CONTEXT,
@@ -37,15 +38,13 @@ from ._protocol import (
 from ._storage_destination_validation import StorageDestinationValidator
 from ._storage_hydration import StorageHydrationTracker
 from .diagnostics import DecoderDiagnostic, DecoderHealth
-from ._specs import LoadedSpecProfile, _parse_opcode, event_specs_from_profile
+from ._specs import LoadedSpecProfile
 from .events import BDOEvent, Flow
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
 from .profiles import (
     OpcodeProfile,
     OriginCompanionFamily,
-    ProfileError,
-    default_profile_path,
     load_opcode_profile,
 )
 
@@ -142,83 +141,33 @@ class _ProfileAuthority:
 
     profile: OpcodeProfile
     loaded_specs: LoadedSpecProfile
+    decrement_specs: tuple[DecrementSpec, ...]
 
 
-def _load_profile_authority(path: Path) -> _ProfileAuthority:
-    if not path.is_file():
-        raise FileNotFoundError(f"Opcode profile does not exist: {path}")
-    profile = load_opcode_profile(path)
-    if not profile.active:
-        raise ProfileError(
-            f"Opcode profile is inactive: {path}. Activate or recalibrate it "
-            "instead of silently falling back to another opcode authority."
-        )
+def _load_profile_authority(
+    source: str | Path | OpcodeProfile,
+) -> _ProfileAuthority:
+    if isinstance(source, OpcodeProfile):
+        profile = source
+    else:
+        path = Path(source)
+        if not path.is_file():
+            raise FileNotFoundError(f"Opcode profile does not exist: {path}")
+        profile = load_opcode_profile(path)
+    runtime = validate_runtime_profile(profile)
     return _ProfileAuthority(
         profile=profile,
-        loaded_specs=event_specs_from_profile(profile),
+        loaded_specs=runtime.loaded_specs,
+        decrement_specs=runtime.decrement_specs,
     )
 
 
 def _decrement_specs(
     profile: OpcodeProfile,
 ) -> tuple[DecrementSpec, ...]:
-    """Position-exact source-stack-decrement shapes from the active profile.
+    """Compatibility shim for the shared fail-closed runtime validator."""
 
-    Missing optional geometry deliberately remains a lower-confidence
-    quantity-only shape. Malformed declared geometry is different: skip that
-    entry instead of silently degrading it to the collision-prone heuristic.
-    """
-    specs: list[DecrementSpec] = []
-    for entry in profile.specs.get("SOURCE_STACK_DECREMENT", []):
-        opcode = _parse_opcode(entry.get("opcode"))
-        length = entry.get("length")
-        offset = entry.get("quantity_removed_offset")
-        source_instance_offset = entry.get("source_instance_offset")
-        repeat_stride = entry.get("repeat_stride")
-        if (
-            opcode is not None
-            and isinstance(length, int)
-            and not isinstance(length, bool)
-            and length >= 5
-            and isinstance(offset, int)
-            and not isinstance(offset, bool)
-            and offset >= 0
-            and offset + 4 <= length
-        ):
-            if source_instance_offset is not None and not (
-                isinstance(source_instance_offset, int)
-                and not isinstance(source_instance_offset, bool)
-                and source_instance_offset >= 0
-                and source_instance_offset + 8 <= length
-            ):
-                continue
-            if repeat_stride is not None and not (
-                isinstance(repeat_stride, int)
-                and not isinstance(repeat_stride, bool)
-                and repeat_stride > 0
-            ):
-                continue
-            if repeat_stride is not None:
-                prefix_length = length - repeat_stride
-                if (
-                    prefix_length < 5
-                    or offset < prefix_length
-                    or (
-                        source_instance_offset is not None
-                        and source_instance_offset < prefix_length
-                    )
-                ):
-                    continue
-            specs.append(
-                DecrementSpec(
-                    opcode,
-                    length,
-                    offset,
-                    source_instance_offset=source_instance_offset,
-                    repeat_stride=repeat_stride,
-                )
-            )
-    return tuple(specs)
+    return validate_runtime_profile(profile).decrement_specs
 
 
 def _origin_companion_families(
@@ -257,22 +206,23 @@ class _EventCollector:
         server_ports: tuple[int, ...],
         event_filter: Optional[EventFilter] = None,
         on_event: Optional[Callable[[BDOEvent], None]] = None,
-        opcode_profile: str | Path | None = None,
+        opcode_profile: str | Path | OpcodeProfile | None = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
         frame_observer: Optional[Callable[[BDOFrame], object]] = None,
         on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
         preflight: bool = True,
         _profile_authority: Optional[_ProfileAuthority] = None,
     ) -> None:
-        if _profile_authority is None:
-            profile_path = (
-                Path(opcode_profile)
-                if opcode_profile is not None
-                else default_profile_path()
-            )
-            authority = _load_profile_authority(profile_path)
-        else:
+        if _profile_authority is not None:
+            if opcode_profile is not None:
+                raise TypeError(
+                    "provide opcode_profile or _profile_authority, not both"
+                )
             authority = _profile_authority
+        elif opcode_profile is not None:
+            authority = _load_profile_authority(opcode_profile)
+        else:
+            raise TypeError("opcode_profile is required")
         profile = authority.profile
         loaded_specs = authority.loaded_specs
         self._events: deque[BDOEvent] = deque()
@@ -319,7 +269,7 @@ class _EventCollector:
         self._tracker: Optional[DepositOriginTracker] = None
         if _needs_origin_tracking(event_filter, origin_observer):
             self._tracker = DepositOriginTracker(
-                decrement_specs=_decrement_specs(profile),
+                decrement_specs=authority.decrement_specs,
                 emit=self._after_origin,
                 origin_observer=origin_observer,
                 known_companion_families=_origin_companion_families(profile),
@@ -835,7 +785,7 @@ class _EventCollector:
 def replay_pcap(
     path: str | Path,
     *,
-    opcode_profile: str | Path | None = None,
+    opcode_profile: str | Path | OpcodeProfile,
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
     event_filter: Optional[EventFilter] = None,
     origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
@@ -884,7 +834,7 @@ class LiveCaptureSession:
     def __init__(
         self,
         *,
-        opcode_profile: str | Path | None = None,
+        opcode_profile: str | Path | OpcodeProfile,
         live_options: Optional[LiveCaptureOptions] = None,
         event_filter: Optional[EventFilter] = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
@@ -1631,7 +1581,7 @@ class LiveCaptureSession:
 
 def capture_live(
     *,
-    opcode_profile: str | Path | None = None,
+    opcode_profile: str | Path | OpcodeProfile,
     live_options: Optional[LiveCaptureOptions] = None,
     event_filter: Optional[EventFilter] = None,
     capture_seconds: Optional[float] = None,

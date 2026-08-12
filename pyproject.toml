@@ -48,7 +48,7 @@ where = ["src"]
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-bdo_toolkit = ["py.typed", "data/*.json"]
+bdo_toolkit = ["py.typed"]
 
 [tool.setuptools.dynamic]
 version = { attr = "bdo_toolkit._version.__version__" }

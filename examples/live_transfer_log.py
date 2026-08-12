@@ -1,4 +1,4 @@
-"""Live listener: print every detected item transfer/storage action.
+"""Live listener: print confirmed item receipts and storage deltas.
 
 The event filter intentionally excludes ``inventory_snapshot`` and
 ``storage_snapshot`` records emitted while existing character state hydrates.
@@ -30,7 +30,9 @@ def main() -> None:
     writer = ConsoleEventWriter()
     local_profile = Path(__file__).resolve().parents[1] / "opcodes.local"
     if not local_profile.is_file():
-        raise FileNotFoundError(f"calibrated opcode profile not found: {local_profile}")
+        raise FileNotFoundError(
+            f"opcode profile not found: {local_profile}; fetch or calibrate it first"
+        )
     print(f"Using opcode profile: {local_profile}", flush=True)
     for event in capture_live(
         opcode_profile=local_profile,

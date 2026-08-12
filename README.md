@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
 ![Tested on NA/EU](https://img.shields.io/badge/tested-NA%2FEU-5b61a8?style=flat-square)
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-d97706?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
+[![Package: Alpha](https://img.shields.io/badge/package-alpha-d97706?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a?style=flat-square)](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE)
 
 Passive, read-only Python tooling that turns live or recorded Black Desert
@@ -24,7 +24,7 @@ traffic into structured, application-ready data.
 | --- | --- | --- | --- |
 | Collect loot, gather items, or add items to town storage | A continuing `BDOEvent` stream describing supported item activity as it happens | Alpha | [Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) |
 | Log in or switch characters | One `ItemStateSnapshot` assembled from the existing inventory, currency balances, and town-storage records observed while the character loads | Experimental | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
-| Opening the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains the overall top 100 and all 31 class-specific top-20 lists | Alpha | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
+| Opening the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains the overall top 100 and all 31 class-specific top-20 lists | Experimental | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
 
 The domains share passive packet capture, TCP reassembly, and framing while
 keeping their app-facing models separate. Only the selected API runs its
@@ -51,21 +51,37 @@ PCAP and PCAPNG replay does not require Npcap or an elevated shell.
 ## Quick start: log mob drops live
 
 ```python
+from pathlib import Path
+
 from bdo_toolkit import EventFilter, capture_live
+
+PROFILE = Path("opcodes.local")
 
 mob_drops = EventFilter(
     event_types={"item_received"},
     sources={"Mob Drop"},
 )
 
-for event in capture_live(event_filter=mob_drops):
+for event in capture_live(opcode_profile=PROFILE, event_filter=mob_drops):
     print(event.format_human())
 ```
 
 Start the program before collecting a mob drop, and press Ctrl+C to stop.
-Source matching is exact and case-sensitive. Item decoding uses one selected
-opcode profile, which must match the captured game patch; the bundled profile
-is used when no local path is supplied.
+Source matching is exact and case-sensitive. Item decoding requires one
+explicit local opcode profile matching the captured game patch; the wheel does
+not contain a default profile and capture never downloads one implicitly.
+
+For current NA/EU live traffic, install a maintainer-verified profile from a
+trusted endpoint as an explicit setup step:
+
+```powershell
+bdo-toolkit profile fetch https://ychwu.github.io/bdo-toolkit-profiles/channels/na-eu/stable.json --output opcodes.local
+```
+
+The maintained channel is for the current NA/EU patch only. Historical replay
+needs a saved matching-era profile. Capture and replay never fetch profiles
+implicitly; see [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-api)
+for the Python API, validation, trust, and installation contract.
 
 For app-controlled start and stop, background workers, or complete shutdown
 health, use [`LiveCaptureSession`](https://ychwu.github.io/bdo-toolkit/#live-capture-session).
@@ -75,8 +91,9 @@ page routes from common application goals to the appropriate API.
 ## Runnable repository examples
 
 These complete scripts live in the repository rather than the installed wheel.
-The live item examples expect a calibrated `opcodes.local` in the repository
-root; Solare uses structural classification and does not use that profile.
+The live item examples expect an explicit `opcodes.local` in the repository
+root, installed through the opt-in profile fetch or produced by calibration.
+Solare uses structural classification and does not use that profile.
 
 | Example | What it does | Notes |
 | --- | --- | --- |
@@ -93,7 +110,7 @@ A game patch can make an item opcode profile stale. The normal recovery path
 for item-transfer decoding is automatic calibration: the toolkit listens while
 the operator performs three controlled in-game moves.
 
-The repository includes a complete
+The repository includes a complete item-transfer calibration
 [`live_calibrate_profile.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibrate_profile.py)
 example:
 
@@ -110,23 +127,27 @@ example:
    all 5 in one action, and then press Enter.
 
 `QUANTITY = 1` is the quantity in each serialized item record, not the batch
-size. The example writes repository-root `opcodes.local` only after the three
-families it requires are present: `INVENTORY_TRANSFER`, `STORAGE_ITEM_DELTA`,
-and `SOURCE_STACK_DECREMENT` for manual-origin evidence. An
+size. This example calibrates item transfers only. An
 [`async_calibrate_profile.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibrate_profile.py)
 variant is provided for asyncio applications.
 
 See the [Calibration guide](https://ychwu.github.io/bdo-toolkit/#calibration-workflow)
-for the full authority checks, CLI workflow, offline calibration, profile-write
-behavior, and advanced modes. Solare is structurally classified and does not
-use item calibration.
+for accepted capture shapes, loot-preview calibration, authority checks,
+offline calibration, and profile-write behavior. Solare is structurally
+classified and does not use item calibration.
 
 ## Important operating boundaries
 
 - **Passive only:** the toolkit never sends, modifies, delays, or injects game
   traffic.
 - **Patch-specific item profiles:** use one profile matching the captured game
-  patch. Recalibrate instead of combining opcode generations.
+  patch. Every item capture, replay, and character-state API requires an
+  explicit local profile; those decode APIs never fetch or refresh one.
+  Recalibrate instead of combining opcode generations.
+- **Remote stable channel is current-only:** fetching the maintainer-verified
+  NA/EU stable profile is an explicit network and file-write operation. Pin a saved
+  immutable matching-era profile for historical replay and deterministic
+  tests.
 - **Region compatibility:** testing and validation currently cover NA/EU only.
   Other regional services are unverified, may use different packet layouts,
   and have unknown compatibility.
@@ -136,8 +157,9 @@ use item calibration.
 - **Finite state is observational:** `ItemStateSnapshot` can be partial and
   reports coverage, provenance, warnings, and decoder health rather than
   claiming complete account state.
-- **Solare is fail-closed:** consume `result.snapshot` only when
-  `result.complete` is true.
+- **Solare is Experimental and fail-closed:** its Python APIs and serialized
+  results can change before stable promotion. Consume `result.snapshot` only
+  when `result.complete` is true.
 - **Captures can be sensitive:** PCAPs can contain character names, gameplay
   history, item state, leaderboard data, and opaque identifier-like bytes that
   the toolkit does not decode or publish. Keep raw recordings out of source
@@ -156,7 +178,8 @@ integration contracts, failure behavior, examples, and patch guidance.
 | Integrate with asyncio | [Asyncio integration](https://ychwu.github.io/bdo-toolkit/#asyncio) |
 | Query character-load inventory and storage | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
 | Capture or replay Arena of Solare | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
-| Recover item decoding after a patch | [Profiles](https://ychwu.github.io/bdo-toolkit/#profiles) and [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) |
+| Install, inspect, or pin an item profile | [Profiles](https://ychwu.github.io/bdo-toolkit/#profiles) and [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-api) |
+| Recover item decoding after a patch | [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) |
 | Diagnose failures or review compatibility | [Errors](https://ychwu.github.io/bdo-toolkit/#errors) and [Stability](https://ychwu.github.io/bdo-toolkit/#stability) |
 
 ## Development

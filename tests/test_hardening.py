@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from fixture_paths import JULY17_OPCODE_PROFILE
+
 from bdo_toolkit import (
     BDOEvent,
     EventFilter,
@@ -146,7 +148,9 @@ def test_replay_yields_before_processing_the_next_packet(monkeypatch):
         engine.finish()
 
     monkeypatch.setattr(capture_module, "iter_pcap_file", fake_iter)
-    events = replay_pcap("unused.pcapng")
+    events = replay_pcap(
+        "unused.pcapng", opcode_profile=JULY17_OPCODE_PROFILE
+    )
     assert next(events).item_id == 7003
     assert progress == ["first"]
     events.close()
@@ -156,6 +160,7 @@ def test_callback_collector_does_not_retain_delivered_events():
     delivered: list[BDOEvent] = []
     collector = capture_module._EventCollector(
         server_ports=(8889,),
+        opcode_profile=JULY17_OPCODE_PROFILE,
         on_event=delivered.append,
     )
     event = BDOEvent("test", 0.0, Flow("a", 1, "b", 2), 1, 1)
@@ -225,7 +230,7 @@ def test_invalid_capture_is_value_error_and_does_not_remain_locked(tmp_path):
     capture.write_bytes(b"not a capture")
 
     with pytest.raises(ValueError, match="Could not read capture"):
-        list(replay_pcap(capture))
+        list(replay_pcap(capture, opcode_profile=JULY17_OPCODE_PROFILE))
 
     capture.unlink()
     assert not capture.exists()
@@ -958,7 +963,7 @@ def test_missing_explicit_profile_does_not_silently_fall_back(tmp_path):
 def test_inactive_explicit_profile_fails_instead_of_mixing_authorities(tmp_path):
     profile_path = tmp_path / "inactive.json"
     profile_path.write_text(
-        json.dumps({"profile_active": False, "specs": {}}),
+        json.dumps({"version": 1, "profile_active": False, "specs": {}}),
         encoding="utf-8",
     )
 
@@ -977,7 +982,9 @@ def test_event_collector_loads_profile_once(monkeypatch):
         return real_load(path)
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
-    capture_module._EventCollector(server_ports=(8889,))
+    capture_module._EventCollector(
+        server_ports=(8889,), opcode_profile=JULY17_OPCODE_PROFILE
+    )
 
     assert len(calls) == 1
 
@@ -985,6 +992,7 @@ def test_event_collector_loads_profile_once(monkeypatch):
 def test_event_collector_skips_origin_graph_for_nonstorage_filter():
     collector = capture_module._EventCollector(
         server_ports=(8889,),
+        opcode_profile=JULY17_OPCODE_PROFILE,
         event_filter=EventFilter(event_types={"item_received"}),
     )
 
@@ -996,6 +1004,7 @@ def test_event_collector_skips_origin_graph_for_nonstorage_filter():
 def test_origin_observer_keeps_origin_graph_for_nonstorage_filter():
     collector = capture_module._EventCollector(
         server_ports=(8889,),
+        opcode_profile=JULY17_OPCODE_PROFILE,
         event_filter=EventFilter(event_types={"item_received"}),
         origin_observer=lambda _observation: None,
     )
@@ -1129,6 +1138,7 @@ def test_runtime_profile_preserves_distinct_same_opcode_layouts(tmp_path):
 def test_runtime_loot_profile_preserves_disjoint_length_variants(tmp_path):
     profile_path = tmp_path / "opcodes.json"
     payload = {
+        "version": 1,
         "profile_active": True,
         "specs": {
             "LOOT_PREVIEW": [
@@ -1195,6 +1205,7 @@ def test_runtime_loot_profile_rejects_overlapping_instance_only_variants(
 ):
     profile_path = tmp_path / "opcodes.json"
     payload = {
+        "version": 1,
         "profile_active": True,
         "specs": {
             "LOOT_PREVIEW": [
@@ -1255,6 +1266,7 @@ def test_runtime_loot_profile_rejects_every_overlapping_opcode_layout(
         **second_layout,
     }
     payload = {
+        "version": 1,
         "profile_active": True,
         "specs": {
             "LOOT_PREVIEW": [
@@ -1332,7 +1344,10 @@ def test_profile_update_does_not_runtime_validate_incomplete_nonloot_specs(tmp_p
 
 def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
     path = tmp_path / "opcodes.json"
-    path.write_text("{}", encoding="utf-8")
+    path.write_text(
+        json.dumps({"version": 1, "profile_active": True, "specs": {}}),
+        encoding="utf-8",
+    )
     first_result = CalibrationResult(
         (MessageSpec("LOOT_PREVIEW", 1, 50, item_id_offset=5, quantity_offset=9),),
         (),
@@ -1357,10 +1372,11 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
     "payload",
     [
         [],
-        {"profile_active": "false", "specs": {}},
+        {"version": 1, "profile_active": "false", "specs": {}},
         {"version": "one", "specs": {}},
-        {"specs": {"INVENTORY_TRANSFER": {}}},
+        {"version": 1, "specs": {"INVENTORY_TRANSFER": {}}},
         {
+            "version": 1,
             "specs": {
                 "INVENTORY_TRANSFER": [
                     {"event": "LOOT_PREVIEW", "opcode": "0x1234"}
@@ -1368,6 +1384,7 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
             }
         },
         {
+            "version": 1,
             "specs": {},
             "origin_companion_families": [
                 {
@@ -1380,6 +1397,7 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
             ],
         },
         {
+            "version": 1,
             "specs": {
                 "STORAGE_ITEM_DELTA": [
                     {
@@ -1396,6 +1414,7 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
             }
         },
         {
+            "version": 1,
             "specs": {
                 "STORAGE_ITEM_DELTA": [
                     {
@@ -1418,6 +1437,22 @@ def test_malformed_profiles_raise_public_profile_error(tmp_path, payload):
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ProfileError):
+        load_opcode_profile(path)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"profile_active": True, "specs": {}},
+        {"version": 2, "profile_active": True, "specs": {}},
+    ],
+    ids=("missing-version", "unsupported-version"),
+)
+def test_profile_requires_exact_schema_version_one(tmp_path, payload):
+    path = tmp_path / "unsupported-version.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ProfileError, match=r"version.*must be 1"):
         load_opcode_profile(path)
 
 
