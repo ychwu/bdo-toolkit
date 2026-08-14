@@ -127,6 +127,10 @@ STORAGE_LOCATIONS: dict[int, StorageLocation] = {
     # carried the expected numeric destination key and normalized town name.
     0x0590: StorageLocation("Godu Village", "observed"),
     0x05A4: StorageLocation("Bukpo", "observed"),
+    # Confirmed by the operator-labeled 2026-08-13 Angavu Outpost character
+    # hydration capture. The newly observed destination key carried the one
+    # occupied stack deliberately left in that storage.
+    0x06C5: StorageLocation("Angavu Outpost", "observed"),
     # The capture fixes each key to an equal-count group; the exact name in
     # each group follows the established region-key ordering and is inferred.
     0x006B: StorageLocation("Keplan", "inferred"),

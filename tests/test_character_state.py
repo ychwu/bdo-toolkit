@@ -126,9 +126,9 @@ def test_character_state_formatter_separates_items_currencies_and_capacity():
         in output
     )
     assert "6 populated, 2 empty" in output
-    assert "33/33 known destinations observed" in output
-    assert "29 non-empty, 4 explicitly empty, 0 not observed" in output
-    assert "known destinations not observed" not in output
+    assert "33/34 known destinations observed" in output
+    assert "29 non-empty, 4 explicitly empty, 1 not observed" in output
+    assert "known destinations not observed: Angavu Outpost" in output
     assert "Heidel: 184 occupied item stacks detected" in output
     assert "capacity: unavailable" in output
     assert "Main Inventory [0x00, provisional]: 74 item stacks" in output
@@ -1800,8 +1800,8 @@ def test_multiple_character_loads_report_only_the_latest_generation():
     assert any("only the latest generation" in warning for warning in state.warnings)
 
     output = format_character_state(state)
-    assert "1/33 known destinations observed" in output
-    assert "1 non-empty, 0 explicitly empty, 32 not observed" in output
+    assert "1/34 known destinations observed" in output
+    assert "1 non-empty, 0 explicitly empty, 33 not observed" in output
     assert "known destinations not observed:" in output
     missing_line = next(
         line

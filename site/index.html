@@ -2841,7 +2841,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <div class="page-kicker"><span class="kind-badge guide">Guide</span> Item events</div>
         <h1 class="page-title">Item events</h1>
         <p class="page-lede">Decode live or recorded Black Desert traffic into immutable <a href="#bdo-event"><code>BDOEvent</code></a> objects for filtering, serialization, storage, and testing.</p>
-        <p>Normal live delivery reports item activity&mdash;offers, inventory receipts, storage withdrawals, and confirmed storage additions. Explicit snapshot filters can expose individual state records; assembled inventory and town-storage queries belong to the <a href="#item-state-overview">item-state API</a>.</p>
+        <p>Normal live delivery reports item activity&mdash;offers, inventory receipts, storage withdrawals, and confirmed storage additions. Explicit snapshot filters can expose individual state records; assembled inventory and town-storage queries belong to the <a href="#item-state-overview">item-state API</a>. The <a href="#event-types">Event types &amp; sources reference</a> lists every normalized event value and explains what each means in game.</p>
         <p class="route-links"><strong>First use:</strong> <a href="#capture-foundation">Capture setup</a> &rarr; <a href="#profiles">Opcode profile setup</a> &rarr; <a href="#quickstart">Quickstart</a>.</p>
 
         <section class="doc-section">
@@ -2955,6 +2955,7 @@ with closing(replay_pcap(
             <div class="output-label"><span>Example output</span><span><code>format_human()</code></span></div>
             <pre class="output-block"><code>[23:06:01.245] ITEM_RECEIVED source='Gathering' item_id=7003 quantity=6 item_instance=0x6f105b8a3d7294c1</code></pre>
           </div>
+          <p class="example-note"><strong>Reading the output:</strong> <code>ITEM_RECEIVED</code> is the uppercase display form of <code>event.event_type == "item_received"</code>; <code>Gathering</code> is the decoded <code>event.source</code>. See <a href="#event-types/event-types">every event type and its meaning</a> or the <a href="#event-types/source-labels">known source labels</a>.</p>
         </section>
 
         <section class="doc-section">
@@ -3165,7 +3166,7 @@ for event in capture_live(opcode_profile="opcodes.local"):
         print(event.event_type, event.source, event.item_id, event.quantity)</code></pre>
             </div>
           </div>
-          <p class="example-note">Both versions apply the same item ID, event type, and source criteria. The application-side form still receives <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> because omitting <code>event_filter</code> is the live activity default; it merely performs the narrower check after delivery. Source matching is exact and case-sensitive. Quantity is printed but not constrained, so its value varies with the captured event.</p>
+          <p class="example-note">Both versions apply the same item ID, <a href="#event-types/event-types">event type</a>, and <a href="#event-types/source-labels">source</a> criteria. The application-side form still receives <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> because omitting <code>event_filter</code> is the live activity default; it merely performs the narrower check after delivery. Source matching is exact and case-sensitive. Quantity is printed but not constrained, so its value varies with the captured event.</p>
           <p class="supporting-note"><strong>Omitting a live filter is not exhaustive.</strong> Pass <a href="#event-filter/presets"><code>EventFilter.all()</code></a> explicitly when snapshot and neutral records are required.</p>
           <div class="example-output" aria-label="Example Potato gathering output">
             <div class="output-label"><span>Example output</span><span>captured quantity shown</span></div>
@@ -3606,6 +3607,7 @@ session = LiveCaptureSession(
          storage_name: str | None = None,
          storage_name_confidence: str | None = None,
          storage_operation: str | None = None)</div>
+        <p class="route-links"><strong>Value reference:</strong> <a href="#event-types/event-types">event types and meanings</a> &middot; <a href="#event-types/source-labels">source labels</a>.</p>
 
         <section class="doc-section">
           <h2 id="bdo-event/example" class="section-heading" data-anchor="example" data-toc>Read an event</h2>
@@ -3787,6 +3789,8 @@ for event in capture_live(
             <tr><td><code>event.extra["deposit_origin_evidence"].get(<wbr>"matching_decrement_record_indexes")</code></td><td>Promoted neutral multi-record groups with decrement matches</td><td>One-based record indexes whose quantities matched calibrated decrement evidence. Worker evidence can still take precedence. The frozen event stores a tuple; <code>to_dict()</code> returns a JSON array.</td></tr>
           </tbody></table></div>
         </section>
+
+        <div class="page-end"><a class="page-jump" href="#live-capture-health">&larr; Capture diagnostics</a><a class="page-jump" href="#event-types">Next: event types &amp; sources &rarr;</a></div>
       </article>
 
       <article class="doc-page" id="event-types" data-page="event-types" data-title="Event types & sources" hidden>
@@ -3975,8 +3979,8 @@ None</code></pre>
 
         <section class="doc-section">
           <h2 id="storage-locations/registry" class="section-heading" data-anchor="registry" data-toc>Built-in registry <span class="reading-label">Optional reference</span></h2>
-          <p>The current registry contains 33 keys: 23 observed names, 8 inferred names, and 2 probable names. It is compiled semantic metadata, independent of the selected opcode profile and calibration workflow. Calibration discovers where the destination key lives; the registry supplies a human-readable town name for a decoded numeric value. A genuinely new key therefore needs a registry update, not an offset guess.</p>
-          <p>Controlled manual deposits directly confirmed the <code>Glish</code>, <code>Godu Village</code>, and <code>Bukpo</code> mappings; they therefore carry <code>observed</code> confidence rather than an inferred or probable label.</p>
+          <p>The current registry contains 34 keys: 24 observed names, 8 inferred names, and 2 probable names. It is compiled semantic metadata, independent of the selected opcode profile and calibration workflow. Calibration discovers where the destination key lives; the registry supplies a human-readable town name for a decoded numeric value. A genuinely new key therefore needs a registry update, not an offset guess.</p>
+          <p>Controlled actions or operator-labeled hydration evidence directly confirmed the <code>Glish</code>, <code>Godu Village</code>, <code>Bukpo</code>, and <code>Angavu Outpost</code> mappings; they therefore carry <code>observed</code> confidence rather than an inferred or probable label.</p>
           <div class="table-wrap"><table><thead><tr><th><code>storage_id</code></th><th>Name</th><th>Confidence</th></tr></thead><tbody>
             <tr><td><code>0x0005</code></td><td>Velia</td><td><code>observed</code></td></tr>
             <tr><td><code>0x0020</code></td><td>Heidel</td><td><code>observed</code></td></tr>
@@ -4001,6 +4005,7 @@ None</code></pre>
             <tr><td><code>0x058C</code></td><td>Yukjo Street</td><td><code>observed</code></td></tr>
             <tr><td><code>0x0590</code></td><td>Godu Village</td><td><code>observed</code></td></tr>
             <tr><td><code>0x05A4</code></td><td>Bukpo</td><td><code>observed</code></td></tr>
+            <tr><td><code>0x06C5</code></td><td>Angavu Outpost</td><td><code>observed</code></td></tr>
             <tr><td><code>0x006B</code></td><td>Keplan</td><td><code>inferred</code></td></tr>
             <tr><td><code>0x007E</code></td><td>Trent</td><td><code>inferred</code></td></tr>
             <tr><td><code>0x00B6</code></td><td>Iliya Island</td><td><code>inferred</code></td></tr>
@@ -4367,10 +4372,10 @@ if heidel is not None:
           <div class="example-output" aria-label="Example item-state quickstart output">
             <div class="output-label"><span>Example output</span><span>validated July 17 character-switch capture</span></div>
             <pre class="output-block"><code>Inventory: 242 occupied stacks + 4 currency balances
-Storage coverage: 33/33 registered destinations
+Storage coverage: 33/34 registered destinations
 Heidel: 183 stacks; capacity=None</code></pre>
           </div>
-          <p class="example-note">Replace both paths. The output is one validated example, not a fixed account or protocol total. Use <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> to decide whether the evidence meets an application-defined operational threshold; neither <code>33/33</code> nor any other current coverage result makes absence protocol-authoritative.</p>
+          <p class="example-note">Replace both paths. This July 17 capture predates Angavu Outpost, so the current 34-key registry reports 33 observed destinations. The output is one validated example, not a fixed account or protocol total. Use <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> to decide whether the evidence meets an application-defined operational threshold; neither full registry coverage nor any other current coverage result makes absence protocol-authoritative.</p>
           <p class="route-links"><a href="#item-state-capture/analyze">Complete replay parameters and failures</a> · <a href="#character-load-session">capture the next load live</a> · <a href="#item-state-snapshot">understand the returned aggregate</a>.</p>
         </section>
 
@@ -4435,13 +4440,13 @@ print(f"Completion: {coverage.completion_status}")
 print(f"Storage decoder: {state.decoder_health.storage_status}")</code></pre>
           <div class="example-output" aria-label="Example item-state replay output">
             <div class="output-label"><span>Example output</span><span>validated July 17 character-switch capture</span></div>
-            <pre class="output-block"><code>Storage coverage: 33/33
+            <pre class="output-block"><code>Storage coverage: 33/34
 Inventory records: 246
 Heidel stacks: 183
 Completion: unknown
 Storage decoder: compatible</code></pre>
           </div>
-          <p class="example-note">Replace both paths with the saved hydration capture and the active profile for its game patch. The function incrementally replays the file and returns one immutable aggregate after end-of-file finalization. Counts vary by account and capture; even <code>33/33</code> does not change <code>completion_status</code> from <code>"unknown"</code>.</p>
+          <p class="example-note">Replace both paths with the saved hydration capture and the active profile for its game patch. The function incrementally replays the file and returns one immutable aggregate after end-of-file finalization. This July 17 capture predates Angavu Outpost, so the current 34-key registry reports 33 observed destinations. Counts vary by account and capture; even full registry coverage does not change <code>completion_status</code> from <code>"unknown"</code>.</p>
           <a class="yield-contract" href="#item-state-snapshot" aria-label="Returns ItemStateSnapshot; open the full aggregate reference">
             <span class="yield-kind">Returns</span>
             <span class="yield-copy"><strong><code>ItemStateSnapshot</code></strong><small>Inventory, storage destinations, machine-readable observation coverage, provenance, final decoder health, and warnings for the latest inferred inventory generation; all observed storage evidence with an explicit warning when no inventory-derived generation start exists; or an empty diagnostic when no hydration is recognized.</small></span>
@@ -4481,8 +4486,9 @@ INVENTORY SNAPSHOT
   ...
 
 STORAGE SNAPSHOT
-  33/33 known destinations observed
-  29 non-empty, 4 explicitly empty, 0 not observed
+  33/34 known destinations observed
+  29 non-empty, 4 explicitly empty, 1 not observed
+  known destinations not observed: Angavu Outpost
   1242 unique occupied item stacks from 2484 decoded snapshot records
   capacity: unavailable (not present in the decoded item wrappers)
   selected inferred storage sweep 2/2
@@ -4546,7 +4552,7 @@ print(f"Storage decoder: {state.decoder_health.storage_status}")</code></pre>
           <div class="example-output" aria-label="Example CharacterLoadSession output">
             <div class="output-label"><span>Example output</span><span>representative operator-stopped character-switch capture</span></div>
             <pre class="output-block"><code>Hydration detected: True
-Storage coverage: 33/33
+Storage coverage: 34/34
 Inventory stacks: 242
 Completion: unknown
 Storage decoder: compatible</code></pre>
@@ -4690,7 +4696,7 @@ print(f"storage_decoder={state.decoder_health.storage_status}")</code></pre>
             <div class="output-label"><span>Example output</span><span>validated July 17 character-switch capture</span></div>
             <pre class="output-block"><code>hydration_detected=True
 inventory_records=246
-storage_coverage=33/33
+storage_coverage=33/34
 identity_complete=True
 storage_sweep=2/2
 completion=unknown
@@ -4756,7 +4762,7 @@ storage_decoder=compatible</code></pre>
             <tr><td><code>storage_records_decoded</code></td><td class="type">int</td><td>Raw decoded storage snapshot observations.</td></tr>
             <tr><td><code>storage_locations_observed</code></td><td class="type">int</td><td>All numeric destinations represented, registered or unknown.</td></tr>
             <tr><td><code>registered_storage_locations_observed</code></td><td class="type">int</td><td>Observed IDs present in the built-in storage registry across every retained sweep.</td></tr>
-            <tr><td><code>registered_storage_locations_total</code></td><td class="type">int</td><td>Size of the installed toolkit&rsquo;s <a href="#storage-locations/registry">built-in storage-location registry</a>; this is the denominator in output such as <code>33/33</code>.</td></tr>
+            <tr><td><code>registered_storage_locations_total</code></td><td class="type">int</td><td>Size of the installed toolkit&rsquo;s <a href="#storage-locations/registry">built-in storage-location registry</a>; this is the denominator in output such as <code>34/34</code>.</td></tr>
             <tr><td><code>registered_storage_ids_not_observed</code></td><td class="type">tuple[int, ...]</td><td>Registered destinations absent from this evidence; absence does not prove empty.</td></tr>
             <tr><td><code>unregistered_storage_ids_observed</code></td><td class="type">tuple[int, ...]</td><td>Observed numeric destination IDs without registry metadata.</td></tr>
             <tr><td><code>explicitly_empty_storage_locations_observed</code></td><td class="type">int</td><td>Destinations selected in the latest inferred sweep with validated count-zero envelope evidence and zero occupied stacks.</td></tr>
@@ -4771,7 +4777,7 @@ storage_decoder=compatible</code></pre>
             <tr><td><code>relevant_frames_retained</code>, <code>relevant_bytes_retained</code>, <code>snapshot_records_retained</code></td><td class="type">int | None</td><td>Retained accumulation counters. <code>snapshot_records_retained</code> counts <code>inventory_snapshot</code>, <code>storage_snapshot</code>, and neutral <code>storage_record</code> observations admitted for aggregate assembly; it excludes live <code>storage_delta</code> boundary markers even though those markers consume the hard evidence budget.</td></tr>
             <tr><td><code>max_relevant_frames</code>, <code>max_snapshot_records</code>, <code>max_relevant_bytes</code></td><td class="type">int | None</td><td>Applied hard bounds; serialized together under <code>coverage.accumulation_limits</code>.</td></tr>
           </tbody></table></div>
-          <div class="callout warning"><strong>Do not poll <code>completion_status</code>.</strong> First reject or retry when <code>hydration_detected</code> is false. Then evaluate <code>identity_complete</code>, selected-versus-observed storage counts, warnings, missing registered IDs, unregistered IDs, unclassified inventory records, and requirement-specific minimums. Even with no obvious gaps and <code>33/33</code> registered destinations, <code>completion_status</code> remains <code>"unknown"</code>; that result can be operationally acceptable, but it is never protocol-authoritative proof of completeness.</div>
+          <div class="callout warning"><strong>Do not poll <code>completion_status</code>.</strong> First reject or retry when <code>hydration_detected</code> is false. Then evaluate <code>identity_complete</code>, selected-versus-observed storage counts, warnings, missing registered IDs, unregistered IDs, unclassified inventory records, and requirement-specific minimums. Even with no obvious gaps and full registered-destination coverage, <code>completion_status</code> remains <code>"unknown"</code>; that result can be operationally acceptable, but it is never protocol-authoritative proof of completeness.</div>
         </section>
 
         <section class="doc-section">
@@ -5137,7 +5143,7 @@ HEIDEL CONTENTS
 
         <section class="doc-section">
           <h2 id="storage-contents/observed" class="section-heading" data-anchor="observed" data-toc>Validated capture examples <span class="reading-label">Optional background</span></h2>
-          <p>The July 17 initial-login evidence decoded 2,480 storage record observations into 1,240 distinct occupied stacks. The separate character-switch evidence decoded 2,484 observations into 1,242 distinct occupied stacks. Both represented all 33 registered destinations: 29 nonempty and four explicit empty envelopes. Repeated sweeps and multi-wrapper towns account for raw-record totals larger than unique occupied stacks. These counts validate aggregation behavior; they are not protocol constants or capacities.</p>
+          <p>The July 17 initial-login evidence decoded 2,480 storage record observations into 1,240 distinct occupied stacks. The separate character-switch evidence decoded 2,484 observations into 1,242 distinct occupied stacks. Both represented all 33 destinations registered at that time: 29 nonempty and four explicit empty envelopes. The current registry also includes Angavu Outpost, introduced later, so replaying either historical capture reports 33/34. Repeated sweeps and multi-wrapper towns account for raw-record totals larger than unique occupied stacks. These counts validate aggregation behavior; they are not protocol constants or capacities.</p>
         </section>
       </article>
 

@@ -45,6 +45,8 @@ def test_storage_location_metadata_preserves_mapping_confidence():
     assert storage_location(0x0590).confidence == "observed"
     assert storage_location(0x05A4).name == "Bukpo"
     assert storage_location(0x05A4).confidence == "observed"
+    assert storage_location(0x06C5).name == "Angavu Outpost"
+    assert storage_location(0x06C5).confidence == "observed"
     assert storage_location(0x02B6).name == "Muiquun"
     assert storage_location(0x02B6).confidence == "probable"
     assert storage_location(0xDEADBEEF) is None
@@ -64,6 +66,23 @@ def test_live_storage_delta_exposes_destination_fields_and_legacy_context():
     assert event.storage_operation == "live"
     assert event.deposit_origin is None
     assert event.to_dict()["extra"]["storage_delta"] == 1
+
+
+def test_angavu_storage_delta_uses_registered_town_name():
+    event = toolkit_event_from_record(
+        _storage_record(
+            context=bytes.fromhex("c5060000"),
+            operation="live",
+            storage_id=0x06C5,
+        )
+    )
+
+    assert event.event_type == "storage_delta"
+    assert event.source == "Angavu Outpost"
+    assert event.storage_id == 0x06C5
+    assert event.storage_name == "Angavu Outpost"
+    assert event.storage_name_confidence == "observed"
+    assert EventFilter(event_types={"storage_delta"}).allows(event)
 
 
 def test_initial_load_snapshot_is_not_a_deposit_event():
