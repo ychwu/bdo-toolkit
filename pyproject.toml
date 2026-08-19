@@ -13,7 +13,7 @@ dependencies = [
 ]
 license = { text = "MIT" }
 authors = [
-  { name = "BDO Toolkit contributors" },
+  { name = "bdo-toolkit contributors" },
 ]
 keywords = ["bdo", "packets", "parse", "pcap", "passive"]
 classifiers = [

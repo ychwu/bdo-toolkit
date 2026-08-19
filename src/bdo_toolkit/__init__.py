@@ -1,4 +1,4 @@
-"""Public API for the passive BDO Toolkit."""
+"""Public API for the passive bdo-toolkit."""
 
 from ._async_sessions import AsyncCalibrationSession, AsyncLiveCaptureSession
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions

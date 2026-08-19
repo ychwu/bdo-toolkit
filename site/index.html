@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="API reference and task guides for bdo-toolkit: passive, read-only Python capture and replay for BDO item events, item state, calibration, and Arena of Solare.">
-<title>BDO Toolkit · API Reference</title>
+<title>bdo-toolkit · API Reference</title>
 <style>
 :root {
   color-scheme: light;
@@ -384,10 +384,10 @@ tr:target > td { background: var(--brand-soft); }
   text-transform: uppercase;
 }
 .nav-subitems {
-  margin: 0 0 0 7px;
-  padding: 0 0 0 6px;
-  border-left: 1px solid var(--line);
+  margin: 0;
+  padding: 0;
 }
+.nav-subitems .nav-link { padding-left: 14px; }
 .nav-link {
   min-width: 0;
   min-height: 29px;
@@ -412,6 +412,36 @@ tr:target > td { background: var(--brand-soft); }
 }
 .nav-link > span { min-width: 0; overflow-wrap: anywhere; }
 .nav-link code { padding: 0; border: 0; background: none; color: inherit; font-size: 11.5px; }
+.nav-page-cluster { margin: 1px 0 3px; }
+.nav-page-cluster > .nav-link { margin: 0; }
+.nav-symbol-list {
+  margin: 1px 0 2px 13px;
+  padding: 1px 0 1px 9px;
+  border-left: 1px solid color-mix(in srgb, var(--line-strong) 78%, transparent);
+  list-style: none;
+}
+.nav-symbol-list li { margin: 0; }
+.nav-symbol-link {
+  min-width: 0;
+  min-height: 27px;
+  display: flex;
+  align-items: center;
+  margin: 1px 0;
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: var(--ink-faint);
+  text-decoration: none;
+  font-size: 11.5px;
+  transition: background-color .12s ease, color .12s ease, box-shadow .12s ease;
+}
+.nav-symbol-link:hover { color: var(--ink); background: var(--surface-2); }
+.nav-symbol-link.active {
+  color: var(--brand-strong);
+  background: transparent;
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--brand) 74%, transparent);
+  font-weight: 650;
+}
+.nav-symbol-link code { padding: 0; border: 0; background: none; color: inherit; font-size: inherit; overflow-wrap: anywhere; }
 .nav-badges {
   flex: 0 0 auto;
   display: inline-flex;
@@ -529,7 +559,9 @@ body.show-all .page-end { display: none; }
   text-transform: uppercase;
 }
 .kind-badge.class { color: var(--teal); background: var(--teal-chip-soft); border-color: color-mix(in srgb, var(--teal) 28%, var(--line)); }
-.kind-badge.function { color: var(--brand-strong); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 30%, var(--line)); }
+.kind-badge.function,
+.kind-badge.api,
+.kind-badge.cli { color: var(--brand-strong); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 30%, var(--line)); }
 .kind-badge.guide { color: var(--sky); background: var(--sky-soft); border-color: color-mix(in srgb, var(--sky) 28%, var(--line)); }
 .kind-badge.reference { color: var(--amber); background: var(--amber-chip-soft); border-color: color-mix(in srgb, var(--amber) 30%, var(--line)); }
 .page-title {
@@ -2147,6 +2179,59 @@ pre.output-block {
   color: var(--ink-soft);
   font: 12px/1.4 var(--mono);
 }
+.source-family-card {
+  display: grid;
+  grid-template-columns: minmax(170px, .72fr) minmax(0, 1.8fr);
+  max-width: 850px;
+  margin: 20px 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+}
+.source-family-example {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px;
+  border-right: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.source-family-label {
+  color: var(--ink-soft);
+  font: 650 11px/1.4 var(--mono);
+}
+.source-family-example code {
+  color: var(--brand);
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.source-family-body { padding: 16px 18px; }
+.source-family-title {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font: 650 16px/1.35 var(--sans);
+}
+.source-family-body p { margin: 0 0 10px; max-width: none; }
+.source-family-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+.source-family-values li {
+  margin: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font: 11px/1.35 var(--mono);
+}
+.source-family-route { display: inline-block; font-weight: 650; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th {
   padding: 9px 13px;
@@ -2308,7 +2393,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
   .sidebar { position: fixed; left: 0; transform: translateX(-104%); width: min(88vw, 320px); padding-top: calc(66px + env(safe-area-inset-top)); padding-bottom: calc(30px + env(safe-area-inset-bottom)); box-shadow: 8px 0 24px rgba(0, 0, 0, .16); transition: transform .2s ease; }
   body.menu-open .sidebar { transform: translateX(0); }
   .sidebar-close { display: grid; width: 44px; height: 44px; }
-  .nav-toggle, .nav-link { min-height: 44px; }
+  .nav-toggle, .nav-link, .nav-symbol-link { min-height: 44px; }
   .copy-button { min-height: 36px; padding-right: 11px; padding-left: 11px; }
   .mobile-overlay { position: fixed; inset: 0; z-index: 25; display: none; background: rgba(10, 12, 18, .45); }
   body.menu-open .mobile-overlay { display: block; }
@@ -2431,6 +2516,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
   .crumbs span { display: none; }
   td, th { padding-left: 10px; padding-right: 10px; }
   .token-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .source-family-card { grid-template-columns: minmax(0, 1fr); }
+  .source-family-example { border-right: 0; border-bottom: 1px solid var(--line); }
 }
 @media print {
   :root, :root[data-theme="dark"] {
@@ -2467,7 +2554,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
   .doc-page[hidden] { display: block !important; }
   .doc-page + .doc-page, body.show-all .doc-page + .doc-page { margin-top: 0; padding-top: 0; border-top: 0; break-before: page; }
   .calibration-sequence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  pre, .signature, .table-wrap, .callout, .yield-contract, .overview-pipeline, .domain-map, .type-relationship-map, .filter-logic-map, .starter-example, .repository-example-card, .calibration-sequence, .calibration-sequence-card { break-inside: avoid; }
+  pre, .signature, .table-wrap, .callout, .yield-contract, .overview-pipeline, .domain-map, .type-relationship-map, .filter-logic-map, .starter-example, .repository-example-card, .calibration-sequence, .calibration-sequence-card, .source-family-card { break-inside: avoid; }
   a { color: inherit; text-decoration: none; }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2532,7 +2619,13 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-capture"><span>Capture API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-capture">
-          <a class="nav-link" href="#capture-functions" data-page="capture-functions" data-search="capture api replay functions replay_pcap capture_live pcap offline live blocking iterator shared parameters opcode_profile item profile required setup current matching era"><span><code>replay_pcap()</code> / <code>capture_live()</code></span><em class="nav-kind">API</em></a>
+          <div class="nav-page-cluster">
+            <a class="nav-link" href="#capture-functions" data-page="capture-functions" data-search="capture api replay functions replay_pcap capture_live pcap offline live blocking iterator shared parameters opcode_profile item profile required setup current matching era"><span id="nav-capture-functions-label">Capture &amp; replay functions</span><em class="nav-kind">API</em></a>
+            <ul class="nav-symbol-list" aria-labelledby="nav-capture-functions-label">
+              <li><a class="nav-symbol-link" href="#capture-functions/replay-pcap" data-page="capture-functions" data-anchor="replay-pcap"><code>replay_pcap()</code></a></li>
+              <li><a class="nav-symbol-link" href="#capture-functions/capture-live" data-page="capture-functions" data-anchor="capture-live"><code>capture_live()</code></a></li>
+            </ul>
+          </div>
           <a class="nav-link" href="#live-capture-session" data-page="live-capture-session" data-search="live capture session start stop request_stop cleanup_incomplete cleanup_owner origin observer callback events blocking iterator worker thread service stream single consumer shutdown drain poll ui timer timeout class lifecycle opcode_profile item profile required setup current"><span><code>LiveCaptureSession</code></span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#live-capture-options" data-page="live-capture-options" data-search="LiveCaptureOptions bdo_toolkit.LiveCaptureOptions bdo_toolkit item live capture interface local_ip ports use_bpf auto_local_ip event_queue_size packet_queue_size queue backpressure"><span><code>LiveCaptureOptions</code></span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#live-capture-health" data-page="live-capture-health" data-search="LiveCaptureHealth DecoderHealth DecoderDiagnostic on_diagnostic callback synchronous thread safe request_stop replay live failure timing CaptureIntegrityError CaptureEndpoint bdo_toolkit capture health decoder compatibility source filter destination warning endpoint packet queue overflow TCP gap flow eviction native drops capture buffer fallback diagnostics clean integrity"><span>Capture diagnostics</span><em class="nav-kind">API</em></a>
@@ -2542,14 +2635,20 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-item-events"><span>Event API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-item-events">
           <a class="nav-link" href="#bdo-event" data-page="bdo-event" data-search="bdo event item events attributes fields object class dataclass inventory_record storage_id storage_name storage_name_confidence storage_operation storage_instance deposit_origin"><span><code>BDOEvent</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#event-types" data-page="event-types" data-search="item event reference event types sources labels loot preview item received inventory record inventory snapshot storage delta snapshot record inventory_record inventory_snapshot storage_delta storage_snapshot storage_record neutral unknown raw context filters"><span>Event types &amp; sources</span><em class="nav-kind">REF</em></a>
+          <a class="nav-link" href="#event-types" data-page="event-types" data-search="item event reference event types sources labels loot preview item received inventory record inventory snapshot storage delta snapshot record inventory_record inventory_snapshot storage_delta storage_snapshot storage_record neutral unclassified safety fallback troubleshooting unknown raw context filters"><span>Event types &amp; sources</span><em class="nav-kind">REF</em></a>
         </div>
       </div>
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-event-output"><span>Filtering &amp; output</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-event-output">
           <a class="nav-link" href="#event-filter" data-page="event-filter" data-search="EventFilter bdo_toolkit.EventFilter EventFilter.activity EventFilter.snapshot_records EventFilter.all event filter immutable allows from_values activity snapshot_records all presets live default event types sources item ids deposit origins inventory_record neutral exhaustive class"><span><code>EventFilter</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#event-tools" data-page="event-tools" data-search="event writers ConsoleEventWriter JsonlEventWriter console jsonl stdout text stream file format_human to_dict structured logs output"><span><code>ConsoleEventWriter</code> / <code>JsonlEventWriter</code></span><em class="nav-kind">API</em></a>
+          <div class="nav-page-cluster">
+            <a class="nav-link" href="#event-tools" data-page="event-tools" data-search="event writers ConsoleEventWriter JsonlEventWriter console jsonl stdout text stream file format_human to_dict structured logs output"><span id="nav-event-tools-label">Event writers</span><em class="nav-kind">API</em></a>
+            <ul class="nav-symbol-list" aria-labelledby="nav-event-tools-label">
+              <li><a class="nav-symbol-link" href="#event-tools/console-event-writer" data-page="event-tools" data-anchor="console-event-writer"><code>ConsoleEventWriter</code></a></li>
+              <li><a class="nav-symbol-link" href="#event-tools/jsonl-event-writer" data-page="event-tools" data-anchor="jsonl-event-writer"><code>JsonlEventWriter</code></a></li>
+            </ul>
+          </div>
         </div>
       </div>
       <div class="nav-group collapsed">
@@ -2563,7 +2662,13 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-profiles"><span>Profile API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-profiles">
-          <a class="nav-link" href="#profile-api" data-page="profile-api" data-search="fetch_opcode_profile load_opcode_profile explicit local profile maintained hosted stable channel github pages latest promoted may lag stale immutable historical remote installation https redirects credentials no-backup default_profile_path removed bundled revision sha256 digest backup atomic ProfileFetchResult RemoteProfileError ProfileError manifest publisher metadata region patch_label verified_at verification minimum_toolkit_version profile_schema_version inspect opcode profile metadata constants OPCODE_PROFILE_SCHEMA_VERSION REMOTE_PROFILE_ENVELOPE_VERSION DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS DEFAULT_REMOTE_PROFILE_MAX_BYTES schema version error"><span><code>fetch_opcode_profile()</code> / <code>load_opcode_profile()</code></span><em class="nav-kind">API</em></a>
+          <div class="nav-page-cluster">
+            <a class="nav-link" href="#profile-api" data-page="profile-api" data-search="fetch_opcode_profile load_opcode_profile explicit local profile maintained hosted stable channel github pages latest promoted may lag stale immutable historical remote installation https redirects credentials no-backup default_profile_path removed bundled revision sha256 digest backup atomic ProfileFetchResult RemoteProfileError ProfileError manifest publisher metadata region patch_label verified_at verification minimum_toolkit_version profile_schema_version inspect opcode profile metadata constants OPCODE_PROFILE_SCHEMA_VERSION REMOTE_PROFILE_ENVELOPE_VERSION DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS DEFAULT_REMOTE_PROFILE_MAX_BYTES schema version error"><span id="nav-profile-api-label">Profile fetch &amp; load</span><em class="nav-kind">API</em></a>
+            <ul class="nav-symbol-list" aria-labelledby="nav-profile-api-label">
+              <li><a class="nav-symbol-link" href="#profile-api/fetch" data-page="profile-api" data-anchor="fetch"><code>fetch_opcode_profile()</code></a></li>
+              <li><a class="nav-symbol-link" href="#profile-api/load" data-page="profile-api" data-anchor="load"><code>load_opcode_profile()</code></a></li>
+            </ul>
+          </div>
         </div>
       </div>
       <div class="nav-group collapsed">
@@ -2572,7 +2677,13 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
           <a class="nav-link" href="#calibration-workflow" data-page="calibration-workflow" data-search="calibration guide how workflow auto automatic completeness primary profile families inventory transfer storage item delta deposit 1 deposit 4 withdraw 5 per record quantity fixed whole session passive capture save profile runtime coverage four consumed five discovered calibration evidence loot preview patch resilience town restriction Velia Heidel Muzgar Velandir Yukjo Street Godu Village Bukpo 0x05xx collision Magic Crystal of Infinity Skill 15156 in game sequence"><span>Calibration guide</span><em class="nav-kind guide">Guide</em></a>
           <a class="nav-link" href="#calibration-functions" data-page="calibration-functions" data-search="calibration api functions calibrate_and_update calibrate_pcap calibrate_live choose update pcap offline live blocking passive per record quantity fixed advanced helpers BDOFrame PacketContext flow_generation TCP lifetime"><span><code>calibrate_and_update()</code> &amp; analysis</span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#calibration-session" data-page="calibration-session" data-search="calibration session start stop finish passive per record quantity fixed cleanup_incomplete cleanup_owner retry controlled app ui class frames collected flow bound context manager result npcap"><span><code>CalibrationSession</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#profile-updates" data-page="profile-updates" data-search="calibration profile updates update_profile reset_profile update reset 15156 calibration item metadata merge replace backup atomic deduplicate no op file automatic completeness primary families CalibrationAuthorityError incomplete transfer LOOT_PREVIEW overlapping layouts ProfileError"><span><code>update_profile()</code> / <code>reset_profile()</code></span><em class="nav-kind">API</em></a>
+          <div class="nav-page-cluster">
+            <a class="nav-link" href="#profile-updates" data-page="profile-updates" data-search="calibration profile updates update_profile reset_profile update reset 15156 calibration item metadata merge replace backup atomic deduplicate no op file automatic completeness primary families CalibrationAuthorityError incomplete transfer LOOT_PREVIEW overlapping layouts ProfileError"><span id="nav-profile-updates-label">Profile updates</span><em class="nav-kind">API</em></a>
+            <ul class="nav-symbol-list" aria-labelledby="nav-profile-updates-label">
+              <li><a class="nav-symbol-link" href="#profile-updates/update-profile" data-page="profile-updates" data-anchor="update-profile"><code>update_profile()</code></a></li>
+              <li><a class="nav-symbol-link" href="#profile-updates/reset-profile" data-page="profile-updates" data-anchor="reset-profile"><code>reset_profile()</code></a></li>
+            </ul>
+          </div>
           <a class="nav-link" href="#calibration-types" data-page="calibration-types" data-search="CalibrationResult ProfileUpdate MessageSpec calibration result types events found specs by event summary json direction evidence profile update attributes context_offset record_count_offset prefix validation first item boundary source stack decrement phase geometry repeat stride alias cardinality"><span><code>CalibrationResult</code> &amp; related types</span><em class="nav-kind">API</em></a>
         </div>
       </div>
@@ -2580,20 +2691,43 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-storage-events"><span>Storage API</span><span class="nav-status">Experimental</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-storage-events">
           <a class="nav-link" href="#storage-events" data-page="storage-events" data-search="storage events character load initial login switch snapshot state hydration live delta neutral record operation activity filter promotion guide storage_delta storage_snapshot storage_record storage_operation"><span>Storage events</span><em class="nav-kind guide">Guide</em></a>
-          <a class="nav-link" href="#storage-contents" data-page="storage-contents" data-search="bdo_toolkit.item_state storage contents StorageContents StorageSnapshotSummary capacity destinations named by id find item total quantity locations query"><span><code>StorageContents</code> &amp; summaries</span><em class="nav-kind">API</em></a>
           <a class="nav-link" href="#storage-locations" data-page="storage-locations" data-search="storage locations identity destination town storage id name confidence observed inferred probable unknown helper reference StorageLocation storage_location storage_id storage_name storage_name_confidence storage_instance"><span>Storage locations</span><em class="nav-kind">REF</em></a>
-          <a class="nav-link" href="#deposit-origin" data-page="deposit-origin" data-search="storage deposit origins worker manual unknown none filter classification promotion lookahead item events deposit_origin"><span>Storage deposit origins</span><em class="nav-kind">REF</em></a>
+          <a class="nav-link" href="#deposit-origin" data-page="deposit-origin" data-search="storage deposit origins worker manual unknown none filter classification promotion lookahead item events deposit_origin"><span>Worker vs manual deposits</span><em class="nav-kind">REF</em></a>
         </div>
       </div>
       <div class="nav-group collapsed">
         <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-item-state"><span>Item-state API</span><span class="nav-status">Experimental</span><span class="nav-chevron" aria-hidden="true">›</span></button>
         <div class="nav-items" id="nav-item-state">
-          <a class="nav-link" href="#item-state-overview" data-page="item-state-overview" data-search="bdo_toolkit.item_state items inventory storage state snapshot aggregate overview character load hydration one shot query experimental snapshot records message envelopes count zero inferred generation complete profile validation context record count instance"><span>State overview</span><em class="nav-kind guide">Guide</em></a>
-          <a class="nav-link" href="#item-state-capture" data-page="item-state-capture" data-search="bdo_toolkit.item_state bdo_toolkit.item_state.analyze_item_state_pcap bdo_toolkit.item_state.format_item_state item state capture replay analyze_item_state_pcap format_item_state show_items pcap offline analysis formatting functions experimental opcode_profile item profile required setup matching era"><span><code>analyze_item_state_pcap()</code> / <code>format_item_state()</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#character-load-session" data-page="character-load-session" data-search="bdo_toolkit.item_state bdo_toolkit.item_state.CharacterLoadSession CharacterLoadSession live item state capture start stop cleanup_incomplete cleanup_owner retry save pcap capture limits class experimental opcode_profile item profile required setup current"><span><code>CharacterLoadSession</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#item-state-limits" data-page="item-state-limits" data-search="bdo_toolkit.item_state ItemStateCaptureLimits ItemStateCaptureLimitError relevant frames bytes snapshot records storage delta boundary marker attempted bounded fail closed accumulation experimental"><span>Capture limits</span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#item-state-snapshot" data-page="item-state-snapshot" data-search="ItemStateSnapshot CharacterStateSnapshot bdo_toolkit.item_state bdo_toolkit.character_state coverage provenance decoder health schema version 4 identity accumulation capture_mode input_path saved_capture_path to_dict generation selection storage sweep chronology result aggregate completeness experimental"><span><code>ItemStateSnapshot</code></span><em class="nav-kind">API</em></a>
-          <a class="nav-link" href="#inventory-contents" data-page="inventory-contents" data-search="bdo_toolkit.item_state inventory contents InventorySnapshotSummary InventoryContainerSummary SnapshotItem currency balances currency_balance_records containers tabs records query"><span>Inventory contents</span><em class="nav-kind">API</em></a>
+          <a class="nav-link" href="#item-state-overview" data-page="item-state-overview" data-search="bdo_toolkit.item_state items inventory storage state snapshot aggregate overview character load hydration one shot query experimental snapshot records message envelopes count zero inferred generation complete profile validation context record count instance exact item id item names catalog observed evidence absence json recipe"><span>Inventory &amp; storage state</span><em class="nav-kind guide">Guide</em></a>
+          <div class="nav-subgroup" role="group" aria-labelledby="nav-item-state-get-label">
+            <p class="nav-sublabel" id="nav-item-state-get-label">Get snapshot</p>
+            <div class="nav-subitems">
+              <a class="nav-link" href="#character-load-session" data-page="character-load-session" data-search="bdo_toolkit.item_state bdo_toolkit.item_state.CharacterLoadSession CharacterLoadSession live character load normal live path next login character switch item state capture get snapshot start stop cleanup_incomplete cleanup_owner retry optional save pcap no recording required capture limits class experimental opcode_profile item profile required setup current"><span><code>CharacterLoadSession</code></span><em class="nav-kind">API</em></a>
+              <a class="nav-link" href="#item-state-capture" data-page="item-state-capture" data-search="bdo_toolkit.item_state bdo_toolkit.item_state.analyze_item_state_pcap item state saved capture analysis existing recording replay analyze_item_state_pcap get snapshot pcap pcapng offline analysis deterministic experimental opcode_profile item profile required setup matching era not live does not record traffic"><span><code>analyze_item_state_pcap()</code></span><em class="nav-kind">API</em></a>
+              <a class="nav-link" href="#item-state-limits" data-page="item-state-limits" data-search="bdo_toolkit.item_state ItemStateCaptureLimits ItemStateCaptureLimitError get snapshot relevant frames bytes snapshot records storage delta boundary marker attempted bounded fail closed accumulation experimental"><span><code>ItemStateCaptureLimits</code></span><em class="nav-kind">API</em></a>
+            </div>
+          </div>
+          <div class="nav-subgroup" role="group" aria-labelledby="nav-item-state-use-label">
+            <p class="nav-sublabel" id="nav-item-state-use-label">Use snapshot</p>
+            <div class="nav-subitems">
+              <a class="nav-link" href="#item-state-snapshot" data-page="item-state-snapshot" data-search="ItemStateSnapshot CharacterStateSnapshot bdo_toolkit.item_state bdo_toolkit.character_state use snapshot root result coverage provenance decoder health schema version 4 identity accumulation capture_mode input_path saved_capture_path to_dict generation selection storage sweep chronology result aggregate completeness experimental"><span><code>ItemStateSnapshot</code></span><em class="nav-kind">API</em></a>
+              <a class="nav-link" href="#inventory-contents" data-page="inventory-contents" data-search="bdo_toolkit.item_state ItemStateSnapshot child inventory snapshot contents summary items InventorySnapshotSummary InventoryContainerSummary SnapshotItem currency balances currency_balance_records containers tabs records query"><span><code>InventorySnapshotSummary</code> &amp; item types</span><em class="nav-kind">API</em></a>
+              <div class="nav-page-cluster">
+                <a class="nav-link" href="#storage-contents" data-page="storage-contents" data-search="bdo_toolkit.item_state ItemStateSnapshot child storage snapshot contents summaries StorageContents StorageSnapshotSummary capacity destinations named by id find item total quantity locations query"><span id="nav-storage-contents-label">Storage snapshot contents</span><em class="nav-kind">API</em></a>
+                <ul class="nav-symbol-list" aria-labelledby="nav-storage-contents-label">
+                  <li><a class="nav-symbol-link" href="#storage-contents/collection" data-page="storage-contents" data-anchor="collection"><code>StorageContents</code></a></li>
+                  <li><a class="nav-symbol-link" href="#storage-contents/destination" data-page="storage-contents" data-anchor="destination"><code>StorageSnapshotSummary</code></a></li>
+                </ul>
+              </div>
+              <div class="nav-page-cluster">
+                <a class="nav-link" href="#item-state-output" data-page="item-state-output" data-search="bdo_toolkit.item_state format_item_state ItemStateSnapshot to_dict use snapshot output formatting diagnostic show_items human readable JSON json-ready serialization persistence schema version 4 live offline replay experimental"><span id="nav-item-state-output-label">Output &amp; serialization</span><em class="nav-kind">API</em></a>
+                <ul class="nav-symbol-list" aria-labelledby="nav-item-state-output-label">
+                  <li><a class="nav-symbol-link" href="#item-state-output/format" data-page="item-state-output" data-anchor="format"><code>format_item_state()</code></a></li>
+                  <li><a class="nav-symbol-link" href="#item-state-output/serialization" data-page="item-state-output" data-anchor="serialization"><code>ItemStateSnapshot.to_dict()</code></a></li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="nav-group collapsed">
@@ -2616,8 +2750,20 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <div class="nav-group collapsed">
           <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-solare-capture"><span>Capture API</span><span class="nav-chevron" aria-hidden="true">›</span></button>
           <div class="nav-items" id="nav-solare-capture">
-            <a class="nav-link" href="#solare-capture" data-page="solare-capture" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.replay_solare bdo_toolkit.solare.capture_solare_snapshot arena of solare capture replay offline replay_solare capture_solare_snapshot function api"><span><code>replay_solare()</code> / <code>capture_solare_snapshot()</code></span><em class="nav-kind">API</em></a>
-            <a class="nav-link" href="#solare-live-session" data-page="solare-live-session" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.LiveSolareSession bdo_toolkit.solare.AsyncLiveSolareSession arena of solare live session async lifecycle progress pending update timeout stop request_stop cleanup_incomplete cleanup_owner callback auto complete classes"><span><code>LiveSolareSession</code> / <code>AsyncLiveSolareSession</code></span><em class="nav-kind">API</em></a>
+            <div class="nav-page-cluster">
+              <a class="nav-link" href="#solare-capture" data-page="solare-capture" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.replay_solare bdo_toolkit.solare.capture_solare_snapshot arena of solare capture replay offline replay_solare capture_solare_snapshot function api"><span id="nav-solare-capture-label">Solare capture functions</span><em class="nav-kind">API</em></a>
+              <ul class="nav-symbol-list" aria-labelledby="nav-solare-capture-label">
+                <li><a class="nav-symbol-link" href="#solare-capture/replay-solare" data-page="solare-capture" data-anchor="replay-solare"><code>replay_solare()</code></a></li>
+                <li><a class="nav-symbol-link" href="#solare-capture/capture-snapshot" data-page="solare-capture" data-anchor="capture-snapshot"><code>capture_solare_snapshot()</code></a></li>
+              </ul>
+            </div>
+            <div class="nav-page-cluster">
+              <a class="nav-link" href="#solare-live-session" data-page="solare-live-session" data-search="bdo_toolkit.solare experimental bdo_toolkit.solare.LiveSolareSession bdo_toolkit.solare.AsyncLiveSolareSession arena of solare live session async lifecycle progress pending update timeout stop request_stop cleanup_incomplete cleanup_owner callback auto complete classes"><span id="nav-solare-live-session-label">Solare live sessions</span><em class="nav-kind">API</em></a>
+              <ul class="nav-symbol-list" aria-labelledby="nav-solare-live-session-label">
+                <li><a class="nav-symbol-link" href="#solare-live-session/sync" data-page="solare-live-session" data-anchor="sync"><code>LiveSolareSession</code></a></li>
+                <li><a class="nav-symbol-link" href="#solare-live-session/async" data-page="solare-live-session" data-anchor="async"><code>AsyncLiveSolareSession</code></a></li>
+              </ul>
+            </div>
           </div>
         </div>
         <div class="nav-group collapsed">
@@ -2655,7 +2801,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
   <div class="workspace">
     <header class="topbar">
       <button class="menu-button" id="menuButton" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
-      <div class="crumbs"><span>BDO Toolkit&nbsp; / &nbsp;</span><span class="crumb-category" id="currentCategory">Getting started</span><span>&nbsp; / &nbsp;</span><strong id="currentCrumb">Overview</strong></div>
+      <div class="crumbs"><span>bdo-toolkit&nbsp; / &nbsp;</span><span class="crumb-category" id="currentCategory">Getting started</span><span>&nbsp; / &nbsp;</span><strong id="currentCrumb">Overview</strong></div>
       <div class="top-actions">
         <button class="view-button" id="viewModeButton" type="button" aria-pressed="false" title="Show every page for browser find and continuous reading">Show all</button>
         <button class="icon-button" id="themeButton" type="button" aria-label="Toggle color theme" title="Toggle theme">◐</button>
@@ -2671,8 +2817,8 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
       </details>
       <article class="doc-page" id="overview" data-page="overview" data-title="Overview">
         <div class="page-kicker"><span class="kind-badge guide">Guide</span> Start here</div>
-        <h1 class="page-title">BDO Toolkit</h1>
-        <p class="page-lede">BDO Toolkit passively reads live or recorded Black Desert traffic and returns structured Python objects for item events, inventory and storage state, and Arena of Solare rankings.</p>
+        <h1 class="page-title">bdo-toolkit</h1>
+        <p class="page-lede">Passively decodes supported live or recorded Black Desert Online traffic into structured Python objects.</p>
         <div class="meta-row"><span class="meta-pill">v0.1.0 · alpha</span><span class="meta-pill">Python ≥ 3.10</span><span class="meta-pill">passive · read-only</span></div>
 
         <div class="callout warning"><strong>Region validation currently covers NA/EU only.</strong> Other regional services are unverified, may use different network traffic or packet layouts, and have unknown compatibility.</div>
@@ -2682,7 +2828,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
         <section class="doc-section">
           <h2 id="overview/architecture" class="section-heading" data-anchor="architecture" data-toc>Shared transport, separate workflows</h2>
           <p>Every public workflow begins with the same transport vocabulary: captured packets are reassembled into a TCP stream and framed into BDO messages. After framing, only the selected workflow runs. Shared transport does not create one universal event or result type.</p>
-          <figure class="hero-panel overview-pipeline package-architecture" aria-label="BDO Toolkit shared transport and separate public result contracts">
+          <figure class="hero-panel overview-pipeline package-architecture" aria-label="bdo-toolkit shared transport and separate public result contracts">
             <figcaption class="sr-only">PCAP replay and passive live traffic share packet acquisition, TCP reassembly, and BDO message framing. The selected public API activates one independent workflow: profile-driven item activity returns a BDOEvent stream, character-load state assembly returns an ItemStateSnapshot, or opcode-agnostic Solare discovery returns a SolareCaptureResult.</figcaption>
             <div class="package-architecture-map">
               <div class="package-shared-row">
@@ -2795,7 +2941,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
             <li><strong>Permissions:</strong> run with permission to capture traffic. Elevation is required only when the installed driver or local security policy requires it.</li>
             <li><strong>Timing:</strong> start capture before the relevant game action&mdash;for example, before collecting or moving an item, logging in or switching characters, or opening or refreshing the Solare Leaderboard.</li>
           </ul>
-          <div class="callout note"><strong>Capture remains passive.</strong> The toolkit observes inbound server traffic. It does not send, inject, modify, delay, or automate game traffic.</div>
+          <p class="supporting-note">Live capture observes inbound server traffic only; it does not send, inject, modify, delay, or automate game traffic.</p>
           <p class="route-links"><strong>Network configuration:</strong> <a href="#packet-capture-options"><code>PacketCaptureOptions</code></a>. <strong>Adapter troubleshooting:</strong> <a href="#errors/capture">capture errors</a>.</p>
         </section>
 
@@ -2892,7 +3038,7 @@ td:first-child code { white-space: nowrap; overflow-wrap: normal; }
 
         <section class="doc-section">
           <h2 id="item-overview/before-you-build" class="section-heading" data-anchor="before-you-build" data-toc>Item decoding after patches</h2>
-          <div class="callout warning"><strong>Profiles can go stale.</strong> There is no published protocol specification; game patches can change item opcodes or byte offsets and leave decoding quiet without an exception. Return to <a href="#profiles">Opcode profile setup</a> to select and verify a current profile; if verification fails or no current profile is available, <a href="#calibration-workflow">calibration</a> rebuilds one from known traffic.</div>
+          <p class="supporting-note">Item decoding is patch-specific. If known actions stop producing events, return to <a href="#profiles">Opcode profile setup</a> to select and verify a current profile; if verification fails or no current profile is available, <a href="#calibration-workflow">calibration</a> rebuilds one from known traffic.</p>
           <p class="supporting-note"><code>BDOEvent</code> exposes raw item IDs and does not include an item-name or marketplace catalog. See the <a href="#bdo-event">event fields</a> and <a href="#stability">stability contract</a>.</p>
         </section>
 
@@ -3051,7 +3197,7 @@ for event in capture_live(
       </article>
 
       <article class="doc-page" id="capture-functions" data-page="capture-functions" data-title="Capture and replay functions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> bdo_toolkit</div>
+        <div class="page-kicker"><span class="kind-badge function">Functions</span> bdo_toolkit</div>
         <h1 class="page-title">Capture and replay functions</h1>
         <p class="page-lede"><code>replay_pcap()</code> and <code>capture_live()</code> decode recorded or live traffic through one selected profile and return the same <a href="#bdo-event"><code>BDOEvent</code></a> model.</p>
         <p class="route-links"><strong>Required setup:</strong> <a href="#profiles">install or create an item opcode profile</a> before calling either function.</p>
@@ -3131,7 +3277,7 @@ for event in replay_pcap(
                origin_observer=None, on_diagnostic=None)
                -&gt; Iterator[<a href="#bdo-event">BDOEvent</a>]</div>
           <p>The smallest live-capture API: a blocking iterator for scripts and command-line tools. With <code>event_filter=None</code>, it delivers the activity preset rather than character-load snapshot records.</p>
-          <div class="callout warning"><strong>Windows requires Npcap.</strong> Install Npcap and run with capture permissions before starting live capture. Offline replay requires neither.</div>
+          <p class="supporting-note"><strong>Before live capture:</strong> Windows requires Npcap, and the process must have permission to capture on the selected interface. Offline replay requires neither. See the <a href="#capture-foundation/live-prerequisites">live-capture prerequisites</a>.</p>
 
           <h3 id="capture-functions/live-example" class="subheading" data-anchor="live-example" data-toc>Example</h3>
           <div class="code-tabs" data-code-tabs>
@@ -3363,7 +3509,7 @@ session.raise_if_failed()</code></pre>
             <tr><td><code>stopped</code></td><td class="type">bool</td><td>True after shutdown finalization completes.</td></tr>
             <tr><td><code>stop_reason</code></td><td class="type">str | None</td><td><code>requested</code>, <code>capture-ended</code>, or <code>error</code> after stop.</td></tr>
             <tr><td><code>error</code></td><td class="type">BaseException | None</td><td>First retained startup, capture, decoder, callback, or cleanup failure, if any.</td></tr>
-            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid.</td></tr>
+            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. If <code>stop()</code> raises while this is <code>True</code>, retain the same session and retry <code>stop()</code>; cleanup does not retry in the background. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid. See <a href="#errors/timing">error timing and cleanup ownership</a>.</td></tr>
             <tr><td><code>endpoint</code></td><td class="type"><a href="#live-capture-health/endpoint">CaptureEndpoint</a> | None</td><td>Resolved interface, local IPv4 restriction, and BPF expression after successful startup.</td></tr>
             <tr><td><code>health</code></td><td class="type"><a href="#live-capture-health/health">LiveCaptureHealth</a></td><td>Stable snapshot of packet-queue, event-queue, TCP-reassembly, flow-eviction, and best-effort native drop diagnostics.</td></tr>
             <tr><td><code>decoder_health</code></td><td class="type"><a href="#live-capture-health/decoder-health">DecoderHealth</a></td><td>Point-in-time storage schema/destination compatibility, separate from packet acquisition integrity.</td></tr>
@@ -3390,7 +3536,6 @@ print(session.error)        # None</code></pre>
             <tr><td>Raw-packet queue overflow</td><td><a href="#live-capture-health/integrity-error"><code>CaptureIntegrityError</code></a></td><td>The session requests fail-closed shutdown. On the completed-cleanup path, normal <code>poll()</code>/<code>events()</code> draining delivers buffered events first; <code>raise_if_failed()</code> can raise immediately, and an incomplete cleanup can escape first.</td></tr>
           </tbody></table></div>
           <p class="supporting-note"><strong>The asyncio facade has a stricter start boundary.</strong> <a href="#async-live-capture-session"><code>AsyncLiveCaptureSession</code></a> is terminal after any start attempt, even when the underlying synchronous startup rollback was fully verified; create a new facade after a failed <code>await start()</code>.</p>
-          <div class="callout warning"><strong>Retain the session when cleanup is incomplete.</strong> If <code>stop()</code> raises with <code>cleanup_incomplete=True</code>, retry <code>stop()</code> on this same object; cleanup does not retry in the background. A later successful cleanup does not validate the failed capture. See <a href="#errors/timing">error timing and cleanup ownership</a>.</div>
         </section>
 
       </article>
@@ -3800,23 +3945,23 @@ for event in capture_live(
 
         <section class="doc-section">
           <h2 id="event-types/event-types" class="section-heading" data-anchor="event-types" data-toc>Event types</h2>
-          <p>Use <code>event_type</code> to distinguish ordinary activity, one record of existing character-load state, and records the toolkit deliberately leaves unclassified. <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> is the default live group. A snapshot event represents one decoded item record, not a complete inventory or town storage.</p>
+          <p>Use <code>event_type</code> to distinguish ordinary activity, one record of existing character-load state, and unclassified safety records. <code>inventory_record</code> and <code>storage_record</code> are not additional gameplay actions: item data decoded, but the toolkit refused to guess whether it represented live activity or existing state. <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> is the default live group. A snapshot event represents one decoded stack or balance entry, not one physical item or a complete inventory or town storage; <code>quantity</code> is the amount reported for that entry.</p>
           <div class="table-wrap"><table><thead><tr><th><code>event_type</code></th><th>What it means in game</th><th>Delivery and use</th></tr></thead><tbody>
             <tr><td><code>loot_preview</code></td><td>An item and quantity shown in the game&rsquo;s loot drop preview. It is an offer, not proof that the item was received.</td><td>Default live activity. Use it for gathering-preview telemetry; <code>item_id</code> and <code>quantity</code> describe the offered item and amount.</td></tr>
             <tr><td><code>item_received</code></td><td>An inventory-side receipt or update reported during play. Common examples include a mob drop, gathering reward, or town-storage withdrawal. It is activity, not a complete inventory snapshot.</td><td>Default live activity. Use it for receipt and drop logs. <code>source</code> describes the gameplay context; <code>quantity</code> is the reported record amount, not a proven resulting stack total.</td></tr>
             <tr><td><code>storage_delta</code></td><td>A positive item quantity added to a town&rsquo;s storage during the captured session. It is emitted only when manual-transfer or worker evidence proves a live addition. A storage withdrawal appears as <code>item_received</code> instead.</td><td>Default live activity. Use it for transfer and deposit logs. <code>quantity</code> is the amount added, <code>source</code> names the destination, and <code>deposit_origin</code> describes the proven cause.</td></tr>
-            <tr><td><code>inventory_snapshot</code></td><td>One item record that already existed in inventory when the server sent a character-load burst during login or a character switch. It is existing state, not a new acquisition.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#item-state-overview"><code>ItemStateSnapshot</code></a> for assembled inventory queries.</td></tr>
-            <tr><td><code>storage_snapshot</code></td><td>One item record that already existed in a town&rsquo;s storage when the server sent a character-load burst. It is existing state, not a deposit, and does not represent every item in that town by itself.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#storage-contents">the aggregate storage model</a> for assembled town queries.</td></tr>
-            <tr><td><code>inventory_record</code></td><td>A valid inventory item record decoded without the context needed to distinguish a live receipt from character-load state. The toolkit preserves it without guessing.</td><td>Neutral record for diagnosis. Request the exact type or use <a href="#event-filter/presets"><code>EventFilter.all()</code></a> or exhaustive replay. Do not count it as activity or state; context-derived <code>source</code> and <code>raw_context</code> are unavailable.</td></tr>
-            <tr><td><code>storage_record</code></td><td>A valid storage item record that neither live-origin evidence nor character-load evidence classified. It could be a live addition or existing state, so the toolkit preserves it without guessing.</td><td>Neutral record for diagnosis. Request the exact type or use <a href="#event-filter/presets"><code>EventFilter.all()</code></a> or exhaustive replay. Do not count it as a deposit or snapshot; <code>storage_operation="unknown"</code> and <code>deposit_origin=None</code>.</td></tr>
+            <tr><td><code>inventory_snapshot</code></td><td>An inventory entry reporting the quantity held when the server sent character-load state during login or a character switch. It is existing state, not a new acquisition or the complete inventory.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#item-state-overview"><code>ItemStateSnapshot</code></a> for assembled inventory queries.</td></tr>
+            <tr><td><code>storage_snapshot</code></td><td>A town-storage entry reporting the quantity held when the server sent character-load state. It is existing state, not a deposit or the complete contents of that town.</td><td>Character-load state. Request individual records with <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a>; use <a href="#storage-contents">the aggregate storage model</a> for assembled town queries.</td></tr>
+            <tr><td><code>inventory_record</code></td><td>The inventory item decoded, but the selected profile is missing the context field needed to distinguish a new receipt from inventory contents sent during login or a character switch.</td><td>Profile troubleshooting. <a href="#profiles/troubleshooting">Update or recalibrate the profile</a> before using this traffic as activity or state. Decoded item and record fields remain available, but <code>source</code> and <code>raw_context</code> are unavailable. Never count it as a receipt or inventory state.</td></tr>
+            <tr><td><code>storage_record</code></td><td>A storage item record decoded, but the surrounding traffic proved neither that it was added during play nor that it belonged to an existing-state storage burst.</td><td>Capture and classification troubleshooting. If an expected deposit or storage snapshot is missing, follow the <a href="#errors/storage-zero-events">storage-event checks</a>; a proven record would already be <code>storage_delta</code> or <code>storage_snapshot</code>. Never count it as either.</td></tr>
           </tbody></table></div>
-          <p class="supporting-note"><strong>Neutral records are outside both delivery presets.</strong> <code>inventory_record</code> and <code>storage_record</code> are ordinary <a href="#bdo-event"><code>BDOEvent</code></a> values, not <a href="#live-capture-health/decoder-diagnostic"><code>DecoderDiagnostic</code></a> objects. Neither appears in <a href="#event-filter/presets"><code>EventFilter.activity()</code></a> or <a href="#event-filter/presets"><code>EventFilter.snapshot_records()</code></a> because the toolkit could not prove activity or character-load state.</p>
+          <p class="supporting-note"><strong>Unclassified safety records stay available for inspection.</strong> They remain ordinary <a href="#bdo-event"><code>BDOEvent</code></a> values, not <a href="#live-capture-health/decoder-diagnostic"><code>DecoderDiagnostic</code></a> objects. They are excluded from both normal presets; request the exact type or use <a href="#event-filter/presets"><code>EventFilter.all()</code></a>. Most applications can ignore them.</p>
           <p>These are the current normalized decoder outputs and are more stable than the underlying patch-specific opcode names and layouts. <code>event_type</code> remains a string field rather than an enum-enforced constructor value.</p>
         </section>
 
         <section class="doc-section">
           <h2 id="event-types/source-labels" class="section-heading" data-anchor="source-labels" data-toc>Known source labels</h2>
-          <p>Known non-destination <code>source</code> labels decoded from message context include:</p>
+          <p><code>source</code> gives an event a game-facing label, such as the context attached to an item receipt or the town storage a storage record belongs to. Common non-destination labels include:</p>
           <ul class="token-grid" aria-label="Observed source labels">
             <li>Character Load</li><li>Gathering</li><li>Mob Drop</li>
             <li>Storage</li><li>Central Market</li><li>Black Spirit Safe</li>
@@ -3824,9 +3969,22 @@ for event in capture_live(
             <li>NPC Exchange</li><li>NPC Shop</li><li>Choose Your Rewards Box</li>
             <li>NPC Sell</li><li>Event Adventures</li><li>Remote Inventory</li>
           </ul>
-          <p class="supporting-note"><strong>Observed remote-item contexts:</strong> raw context <code>0x60260000</code> normalizes to <code>Event Adventures</code>. Raw context <code>0x3e010000</code> normalizes to <code>Remote Inventory</code> for items obtained remotely from another character.</p>
-          <p>When the authoritative calibrated destination key is present in the location registry, <code>source</code> is the destination town, such as <code>Velia</code>, <code>Heidel</code>, or <code>Yukjo Street</code>. It identifies where the item is stored, not whether the action came from a worker, batch operation, Royal Workshop, or a production node. An unknown numeric key stays authoritative and receives an explicit unknown label; the decoder never substitutes a different, known-looking field. <a href="#storage-locations">Storage locations</a> owns the identity and confidence contract; <a href="#deposit-origin">deposit origin</a> owns cause classification.</p>
-          <div class="callout note"><strong>Exact filter values.</strong> Source matching is exact and case-sensitive. For example, use <code>EventFilter(sources={"Mob Drop"})</code>, not a partial label.</div>
+          <section class="source-family-card" aria-labelledby="event-types-storage-destination-title">
+            <div class="source-family-example">
+              <span class="source-family-label">event.source</span>
+              <code>"Heidel"</code>
+            </div>
+            <div class="source-family-body">
+              <h3 class="source-family-title" id="event-types-storage-destination-title">Storage destination names are source labels</h3>
+              <p>When a decoded storage record has a registered numeric <code>storage_id</code>, <code>source</code> uses the registry&rsquo;s current display name.</p>
+              <ul class="source-family-values" aria-label="Representative storage destination source labels">
+                <li>Velia</li><li>Heidel</li><li>Calpheon City</li><li>Olvia</li><li aria-label="Additional registered destinations">&hellip;</li>
+              </ul>
+              <p>The same destination naming is used for live additions and character-load storage records. <code>source</code> answers <em>where</em>; <a href="#deposit-origin"><code>deposit_origin</code></a> separately describes the proven cause of a live addition.</p>
+              <a class="source-family-route" href="#storage-locations/registry">View every storage name, ID, and confidence &rarr;</a>
+            </div>
+          </section>
+          <div class="callout note"><strong>Use the exact label when filtering.</strong> Source matching is case-sensitive. Use <code>EventFilter(sources={"Mob Drop"})</code> for that receipt source. For confirmed live additions to Heidel, combine the type and destination: <code>EventFilter(event_types={"storage_delta"}, sources={"Heidel"})</code>.</div>
         </section>
 
         <section class="doc-section">
@@ -3854,7 +4012,7 @@ for event in capture_live(
             <tr><td><a href="#event-types/event-types"><code>storage_delta</code></a></td><td><code>live</code></td><td>Neutral record promoted by independent manual or worker evidence.</td><td>Transfer logs, notifications, counters, and other activity processing.</td></tr>
             <tr><td><a href="#event-types/event-types"><code>storage_record</code></a></td><td><code>unknown</code></td><td>Structurally decoded record that neither origin evidence nor hydration-cohort evidence classified.</td><td>Diagnostics and protocol review. Do not silently relabel it as a deposit or snapshot.</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>Snapshot is an operation classification, not a lifecycle detector.</strong> Separate operator-labeled initial-login and character-switch captures contain the same observed hydration shape. The decoded packet body does not say which lifecycle action triggered it, so applications must not infer a load reason from <code>storage_operation="snapshot"</code>.</div>
+          <p class="supporting-note"><code>storage_operation="snapshot"</code> identifies the observed hydration shape, not whether initial login or character switch caused it; operator-labeled captures contain the same decoded shape.</p>
           <p>All structurally decoded storage records begin neutral. The origin tracker receives first claim: a calibrated instance/quantity decrement or confirmed worker chain can promote the complete message to live activity. Remaining neutral records enter a bounded hydration cohort; a broad burst across distinct numeric destinations becomes snapshot state and carries <code>extra["storage_quantity"]</code>. Unproven records remain <code>storage_record</code> with <code>deposit_origin=None</code> and no deposit extras. <a href="#event-filter"><code>EventFilter</code></a> runs only after that sequence.</p>
         </section>
 
@@ -3904,14 +4062,14 @@ for event in capture_live(
           <h2 id="storage-events/delivery" class="section-heading" data-anchor="delivery" data-toc>Delivery and batch behavior</h2>
           <div class="mini-flow"><span>decode neutral record</span>→<span>origin evidence</span>→<span>hydration cohort</span>→<span>apply <code>EventFilter</code></span></div>
           <ul>
-            <li><strong>Forward lookahead:</strong> live and neutral candidates can be delivered after later non-storage events while the tracker examines ordered worker companions in the same TCP flow. Timestamps are not changed.</li>
-            <li><strong>Closure:</strong> a decision closes on confirmed evidence, the next complete message whose opcode belongs to a storage profile family known to the tracker, an invalid next-message header, eight following complete messages, replay/session finalization, or when the 2.0-second stale threshold is serviced.</li>
+            <li><strong>Forward lookahead:</strong> live and neutral candidates can be delivered after later non-storage events or independent storage operations while the tracker examines ordered worker companions in the same TCP flow. Storage wrappers are never companion candidates, and timestamps are not changed.</li>
+            <li><strong>Closure:</strong> a decision closes on confirmed evidence, an invalid next-message header, 32 following complete messages, flow/replay/session finalization, pending-operation pressure, or when the 2.0-second stale threshold is serviced. Pending correlation is bounded to 64 raw operations per flow and 4,096 total; resource pressure closes the oldest operation using only evidence already established.</li>
             <li><strong>Declared-count decoding:</strong> the profile&rsquo;s <code>record_count_offset</code>, calibrated one-record base, actual message length, and every declared item, quantity, and instance must validate before any record emits. There is no generation-specific compatibility path.</li>
             <li><strong>Neutral multi-record promotion:</strong> a complete unresolved group receives one promotion decision and emits in record order. Incomplete or inconsistent groups remain neutral.</li>
             <li><strong>Hydration cohort:</strong> inventory hydration anchors a 30-second same-flow epoch; an anchored burst needs at least eight distinct destinations. Without an inventory anchor, a burst needs at least 17 destinations and one wrapper declaring at least eight records. Bursts are separated by a 0.5-second gap or one-second maximum span.</li>
             <li><strong>Boundary proof:</strong> storage records and inventory hydration anchors must match an independent top-level generic frame. If a midstream attachment leaves that scanner falsely synchronized, inventory-only recovery requires two fully decoded wrappers to be exactly adjacent on the same TCP generation; lone or nonadjacent nested signatures are discarded. Storage does not use this exception.</li>
           </ul>
-          <p class="example-note">The 2.0-second value is a stale threshold, not a strict wall-clock delivery promise. Live polling services it; replay can instead close the decision through later traffic, end-of-file finalization, or another earlier boundary.</p>
+          <p class="example-note">The 2.0-second value is a stale threshold, not a strict wall-clock delivery promise. Live polling services it; replay can instead close the decision through later traffic, hard message or operation bounds, or end-of-file finalization.</p>
           <p class="route-links"><strong>Geometry reference:</strong> <a href="#calibration-types/storage-batches">calibrated storage-wrapper batch derivation</a>. <strong>Shutdown draining:</strong> <a href="#live-capture-session/example"><code>LiveCaptureSession.events()</code></a>.</p>
         </section>
 
@@ -3921,8 +4079,8 @@ for event in capture_live(
         <div class="page-kicker"><span class="kind-badge reference">Reference</span> Item events · Storage</div>
         <h1 class="page-title">Storage locations</h1>
         <p class="page-lede"><code>storage_id</code> identifies a storage destination, such as Velia or Heidel; <a href="#storage-locations/storage-location-function"><code>storage_location()</code></a> returns confidence-qualified display metadata for known IDs.</p>
-        <div class="signature"><a href="#storage-locations/storage-location">StorageLocation</a>(name: str, confidence: str)
-storage_location(<a href="#storage-locations/opt-storage_id">storage_id</a>: int | None) -&gt; <a href="#storage-locations/storage-location">StorageLocation</a> | None</div>
+        <div class="signature"><a href="#storage-locations/storage-location">StorageLocation</a>(name: str, confidence: str)</div>
+        <div class="signature">storage_location(<a href="#storage-locations/opt-storage_id">storage_id</a>: int | None) -&gt; <a href="#storage-locations/storage-location">StorageLocation</a> | None</div>
         <p>On a decoded storage record, <code>storage_id</code> answers which destination the record belongs to. <a href="#deposit-origin"><code>deposit_origin</code></a> separately describes an evidence-backed manual or worker cause for a confirmed live addition.</p>
 
         <section class="doc-section">
@@ -4031,6 +4189,17 @@ None</code></pre>
         </nav>
 
         <section class="doc-section">
+          <h2 id="deposit-origin/values" class="section-heading" data-anchor="values" data-toc>Possible values</h2>
+          <div class="table-wrap"><table><thead><tr><th>Value</th><th>Meaning</th><th>Applies to</th></tr></thead><tbody>
+            <tr><td><code>"worker"</code></td><td>A structurally confirmed worker companion chain proves the live storage addition came from worker production.</td><td><code>storage_delta</code></td></tr>
+            <tr><td><code>"manual"</code></td><td>A matching calibrated inventory decrement proves a manual character transfer, with no stronger worker signal.</td><td><code>storage_delta</code></td></tr>
+            <tr><td><code>"unknown"</code></td><td>Compatibility value for an event already classified as a live addition when its cause evidence is unavailable. Current capture and replay do not use it for an unresolved wrapper.</td><td>Already-live compatibility input</td></tr>
+            <tr><td><code>None</code></td><td>No deposit-origin verdict applies or has been proven.</td><td><code>storage_snapshot</code>, unresolved <code>storage_record</code>, and non-storage events</td></tr>
+          </tbody></table></div>
+          <p class="supporting-note"><strong><code>None</code> is not the string <code>"unknown"</code>.</strong> A neutral unresolved wrapper remains <code>storage_record</code> with <code>deposit_origin=None</code>; it does not match a filter for <code>"worker"</code>, <code>"manual"</code>, or <code>"unknown"</code>.</p>
+        </section>
+
+        <section class="doc-section">
           <h2 id="deposit-origin/normal-usage" class="section-heading" data-anchor="normal-usage" data-toc>Read or filter the verdict</h2>
           <pre><code>from bdo_toolkit import EventFilter, capture_live
 
@@ -4064,7 +4233,7 @@ for event in capture_live(
             <tr><td>Not evaluated</td><td>Not evaluated</td><td><code>deposit_origin=None</code> on snapshots, unresolved storage records, and non-storage events</td></tr>
           </tbody></table></div>
           <p class="supporting-note"><strong><code>unknown</code> is not the unresolved-wrapper inspection path.</strong> Use <code>EventFilter(event_types={"storage_record"})</code> for neutral wrappers that current production framing could not prove live or snapshot state.</p>
-          <p>Worker classification uses a bounded, same-flow forward lookahead for a structurally confirmed ordered companion chain; unrelated complete messages may appear between the companions. This can defer delivery while the stronger worker signal remains possible. See the <a href="#storage-events/delivery">storage delivery contract</a> for closure behavior and <a href="#origin-evidence/companion-families">Origin evidence</a> for token, family-confirmation, and candidate-selection mechanics.</p>
+          <p>Worker classification uses a bounded, same-flow forward lookahead for a structurally confirmed ordered companion chain. Unrelated messages and independent storage wrappers may be crossed, but storage wrappers are never companion candidates and the selected pair must have exactly one structural storage-prefix owner. Distinct-token chains remain separable; reused or multiply claimed evidence fails closed. This can defer delivery while the stronger worker signal remains possible. See the <a href="#storage-events/delivery">storage delivery contract</a> for closure behavior and <a href="#origin-evidence/companion-families">Origin evidence</a> for token, family-confirmation, and candidate-selection mechanics.</p>
           <div class="callout context"><strong>Worker evidence takes precedence.</strong> Manual evidence uses the selected decrement spec&rsquo;s opcode and minimum-length geometry; when <code>repeat_stride</code> is declared, the appended region must divide by it exactly. Runtime then matches the storage record&rsquo;s quantity at the corresponding calibrated offset. A configured source-instance field produces observed evidence on an exact destination-instance match, structural evidence on a plausible nonmatching value, or rejection when the field is empty or invalid; item identity is not compared. See the <a href="#calibration-types/source-decrement-geometry">source-decrement geometry contract</a>. Because quantity-only evidence can collide with ambient traffic, a confirmed shared-token chain outranks it.</div>
         </section>
 
@@ -4287,9 +4456,9 @@ with open("events.jsonl", "w", encoding="utf-8") as stream:
       <article class="doc-page" id="item-state-overview" data-page="item-state-overview" data-title="Inventory &amp; storage state" hidden>
         <div class="page-kicker"><span class="kind-badge guide">Guide</span> bdo_toolkit.item_state · Experimental</div>
         <h1 class="page-title">Inventory &amp; storage state</h1>
-        <p class="page-lede">Build a queryable <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> from the inventory and town-storage records observed during a character load, while keeping that initial state separate from ordinary live activity.</p>
+        <p class="page-lede">Build a queryable <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> from the inventory and town-storage records observed during a character load. For the next live load, use <a href="#character-load-session"><code>CharacterLoadSession</code></a>; <a href="#item-state-capture"><code>analyze_item_state_pcap()</code></a> is offline analysis for a PCAP or PCAPNG that already exists.</p>
         <div class="meta-row"><span class="meta-pill">experimental module</span><span class="meta-pill">observational · not on-demand</span></div>
-        <p class="route-links"><strong>Required setup:</strong> complete <a href="#profiles">Opcode profile setup</a> before offline or live item-state capture.</p>
+        <p class="route-links"><strong>Required setup:</strong> complete <a href="#profiles">Opcode profile setup</a> before live or offline item-state acquisition.</p>
 
         <section class="doc-section">
           <h2 id="item-state-overview/model" class="section-heading" data-anchor="model" data-toc>State assembly and live capture flow</h2>
@@ -4299,8 +4468,8 @@ with open("events.jsonl", "w", encoding="utf-8") as stream:
             <div class="state-map-main">
               <div class="state-map-sources">
                 <span class="domain-map-stage-label">Observe one character load</span>
-                <a class="domain-map-source" href="#item-state-capture/analyze"><span>Saved PCAP or PCAPNG</span><strong><code>analyze_item_state_pcap()</code></strong></a>
-                <a class="domain-map-source" href="#character-load-session"><span>Initial login or character switch</span><strong><code>CharacterLoadSession</code></strong></a>
+                <a class="domain-map-source" href="#character-load-session"><span>Next live login or character switch</span><strong><code>CharacterLoadSession</code></strong></a>
+                <a class="domain-map-source" href="#item-state-capture/analyze"><span>Existing PCAP or PCAPNG</span><strong><code>analyze_item_state_pcap()</code></strong></a>
               </div>
               <span class="domain-map-arrow" aria-hidden="true"></span>
               <div class="domain-map-card state-map-evidence">
@@ -4350,70 +4519,116 @@ with open("events.jsonl", "w", encoding="utf-8") as stream:
         </section>
 
         <section class="doc-section">
-          <h2 id="item-state-overview/quickstart" class="section-heading" data-anchor="quickstart" data-toc>Smallest saved-replay example <span class="recommendation-label">Recommended</span></h2>
-          <pre><code>from bdo_toolkit.item_state import analyze_item_state_pcap
+          <h2 id="item-state-overview/choose" class="section-heading" data-anchor="choose" data-toc>Choose how to get a snapshot</h2>
+          <div class="task-grid">
+            <a class="choice-card" href="#character-load-session"><span class="arrow">→</span><h3>Capture the next load</h3><p>The normal live-app path. <code>CharacterLoadSession</code> starts before login or a character switch and returns the aggregate when stopped.</p></a>
+            <a class="choice-card" href="#item-state-capture"><span class="arrow">→</span><h3>Analyze a saved load</h3><p>The offline path. <code>analyze_item_state_pcap()</code> reads an existing PCAP or PCAPNG and never starts live capture.</p></a>
+          </div>
+          <p class="supporting-note"><strong>After acquisition:</strong> read ordinary inventory from <a href="#inventory-contents"><code>state.inventory</code></a>, destination summaries and cross-town queries from <a href="#storage-contents"><code>state.storages</code></a>, evidence quality from <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a>, and capture origin from <a href="#item-state-snapshot/provenance"><code>state.provenance</code></a>. Use <a href="#item-state-output/serialization"><code>state.to_dict()</code></a> for programmatic persistence.</p>
+        </section>
+
+        <section class="doc-section">
+          <h2 id="item-state-overview/quickstart" class="section-heading" data-anchor="quickstart" data-toc>Analyze a saved capture, check, query, and serialize</h2>
+          <p>This deterministic offline example starts with a PCAP or PCAPNG already on disk, making it useful for development, tests, and support. It does not record the next load. A normal live application gets the same <code>state</code> object from <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a>, then uses the same checks, queries, and serialization shown below.</p>
+          <p id="item-state-overview/limits" class="supporting-note" data-anchor="limits" data-search-title="Exact item IDs and observed evidence">Ordinary-item queries use exact encoded item IDs. A zero or missing result describes retained evidence only; evaluate <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> before drawing absence conclusions.</p>
+          <pre><code>import json
+
+from bdo_toolkit.item_state import analyze_item_state_pcap
+
+TARGET_ITEM_ID = 1024  # Replace with the exact encoded item ID to find.
 
 state = analyze_item_state_pcap(
     "character-load.pcapng",
     opcode_profile="path/to/matching-opcodes.json",
 )
 
-heidel = state.storages.named("Heidel")
-print(
-    f"Inventory: {state.inventory.occupied_stacks} occupied stacks + "
-    f"{state.inventory.currency_balance_records} currency balances"
-)
-print(
-    f"Storage coverage: {state.coverage.registered_storage_locations_observed}/"
-    f"{state.coverage.registered_storage_locations_total} registered destinations"
-)
-if heidel is not None:
-    print(f"Heidel: {heidel.occupied_stacks} stacks; capacity={heidel.capacity}")</code></pre>
+coverage = state.coverage
+if not coverage.hydration_detected:
+    raise RuntimeError("No item-state hydration was detected")
+
+if state.decoder_health.storage_status == "incompatible":
+    raise RuntimeError("Storage decoding or destination identity needs review")
+
+inventory_quantity = state.inventory.quantity_for(TARGET_ITEM_ID)
+storage_quantity = state.storages.total_quantity(TARGET_ITEM_ID)
+locations = state.storages.locations_for(TARGET_ITEM_ID)
+snapshot_payload = state.to_dict()
+
+report = {
+    "schema_version": snapshot_payload["schema_version"],
+    "item_id": TARGET_ITEM_ID,
+    "inventory_quantity": inventory_quantity,
+    "storage_quantity": storage_quantity,
+    "observed_total": inventory_quantity + storage_quantity,
+    "storage_locations": [
+        {
+            "storage_id": storage.storage_id,
+            "name": storage.name,
+            "quantity": storage.quantity_for(TARGET_ITEM_ID),
+        }
+        for storage in locations
+    ],
+    "completion_status": coverage.completion_status,
+    "warning_count": len(state.warnings),
+}
+print(json.dumps(report, indent=2))</code></pre>
           <div class="example-output" aria-label="Example item-state quickstart output">
             <div class="output-label"><span>Example output</span><span>validated July 17 character-switch capture</span></div>
-            <pre class="output-block"><code>Inventory: 242 occupied stacks + 4 currency balances
-Storage coverage: 33/34 registered destinations
-Heidel: 183 stacks; capacity=None</code></pre>
+            <pre class="output-block"><code>{
+  "schema_version": 4,
+  "item_id": 1024,
+  "inventory_quantity": 0,
+  "storage_quantity": 3457,
+  "observed_total": 3457,
+  "storage_locations": [
+    {
+      "storage_id": 32,
+      "name": "Heidel",
+      "quantity": 995
+    },
+    {
+      "storage_id": 1246,
+      "name": "Nopsae's Byeot County",
+      "quantity": 331
+    },
+    {
+      "storage_id": 88,
+      "name": "Olvia",
+      "quantity": 26
+    },
+    {
+      "storage_id": 5,
+      "name": "Velia",
+      "quantity": 1844
+    },
+    {
+      "storage_id": 1420,
+      "name": "Yukjo Street",
+      "quantity": 261
+    }
+  ],
+  "completion_status": "unknown",
+  "warning_count": 6
+}</code></pre>
           </div>
-          <p class="example-note">Replace both paths. This July 17 capture predates Angavu Outpost, so the current 34-key registry reports 33 observed destinations. The output is one validated example, not a fixed account or protocol total. Use <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> to decide whether the evidence meets an application-defined operational threshold; neither full registry coverage nor any other current coverage result makes absence protocol-authoritative.</p>
-          <p class="route-links"><a href="#item-state-capture/analyze">Complete replay parameters and failures</a> · <a href="#character-load-session">capture the next load live</a> · <a href="#item-state-snapshot">understand the returned aggregate</a>.</p>
-        </section>
-
-        <section class="doc-section">
-          <h2 id="item-state-overview/choose" class="section-heading" data-anchor="choose" data-toc>Choose an entry point</h2>
-          <div class="task-grid">
-            <a class="choice-card" href="#item-state-capture"><span class="arrow">→</span><h3>Replay a saved load</h3><p><code>analyze_item_state_pcap()</code> returns a deterministic aggregate from PCAP or PCAPNG evidence.</p></a>
-            <a class="choice-card" href="#character-load-session"><span class="arrow">→</span><h3>Capture the next load</h3><p><code>CharacterLoadSession</code> starts before login or a character switch and returns the aggregate when stopped.</p></a>
-            <a class="choice-card" href="#inventory-contents"><span class="arrow">→</span><h3>Query inventory</h3><p>Inspect ordinary stacks, known currency balances, groups, and provisional raw-code containers.</p></a>
-            <a class="choice-card" href="#storage-contents"><span class="arrow">→</span><h3>Query every storage</h3><p>Look up a town, find an item across destinations, or total its observed quantity.</p></a>
-          </div>
-          <p class="supporting-note"><strong>After capture:</strong> read ordinary inventory from <a href="#inventory-contents"><code>state.inventory</code></a>, destination summaries and cross-town queries from <a href="#storage-contents"><code>state.storages</code></a>, evidence quality from <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a>, and capture origin from <a href="#item-state-snapshot/provenance"><code>state.provenance</code></a>. Use <a href="#item-state-snapshot/serialization"><code>state.to_dict()</code></a> for programmatic persistence.</p>
-        </section>
-
-        <section class="doc-section">
-          <h2 id="item-state-overview/limits" class="section-heading" data-anchor="limits" data-toc>What the aggregate does not claim</h2>
-          <ul>
-            <li><strong>No on-demand request:</strong> the toolkit passively observes state sent by the server. Capture must begin before the hydration traffic.</li>
-            <li><strong>No trigger identity:</strong> the same decoded shape is observed during initial login and character switch; <code>load_reason</code> remains <code>None</code>.</li>
-            <li><strong>No proven protocol completion marker:</strong> <a href="#item-state-snapshot/coverage"><code>coverage</code></a> reports observations and always keeps protocol completion unknown.</li>
-            <li><strong>No storage capacity:</strong> occupied-stack counts are not maximum slot counts. <code>capacity</code> remains <code>None</code>.</li>
-            <li><strong>No continuously maintained database:</strong> the result is one immutable, capture-derived aggregate. When no inventory-derived generation start exists, provenance warns that retained storage evidence may span multiple loads. Later supported receipt and <a href="#storage-events">storage-addition</a> events can supplement the result, but they do not cover every consumption, sale, move, or other state change and cannot maintain authoritative current state.</li>
-          </ul>
+          <p class="example-note">Replace both paths and <code>TARGET_ITEM_ID</code>. These two checks reject a capture with no recognized hydration and an explicitly incompatible storage decoder or destination registry; they are not completeness requirements imposed by the query API. Applications with stricter reporting policy can additionally require <code>coverage.identity_complete</code>, <code>generation_selection="latest_observed_inventory_hydration"</code>, or zero earlier-only storage locations. Schema version 4 keeps <code>completion_status="unknown"</code>; a zero quantity still means only that no matching stack was retained. <code>snapshot_payload</code> contains the complete JSON-ready snapshot, including warnings, and can expose sensitive inventory and storage contents.</p>
+          <p class="route-links"><strong>Query contracts:</strong> <a href="#inventory-contents/summary-methods">inventory item methods</a> · <a href="#storage-contents/collection">cross-town storage methods</a>. <strong>Quality and persistence:</strong> <a href="#item-state-snapshot/coverage">coverage</a> · <a href="#item-state-output/serialization">serialization</a>.</p>
         </section>
 
         <section class="doc-section">
           <h2 id="item-state-overview/stability" class="section-heading" data-anchor="stability" data-toc>Experimental module boundary</h2>
           <p>Import this API from <code>bdo_toolkit.item_state</code>. That module is the additive public-experimental façade: it re-exports the implementation retained in <code>bdo_toolkit.character_state</code> so existing imports continue to work. It is intentionally absent from package-root exports while naming, completeness evidence, and post-patch behavior continue to be validated.</p>
           <div class="callout warning"><strong>Hydration uses the calibrated storage fields.</strong> Controlled transfer calibration with at least two distinct validated record counts—single plus multi, or two different multi counts—persists the storage destination <code>context_offset</code> and declared <code>record_count_offset</code>; item-state runtime uses those fields and derives stride without a July/August mode/token layout branch. Inventory container metadata is still discovered from a validated record tail or wrapper header. If the shared item record, count encoding, destination identity, or hydration-cohort relationship changes, state decoding fails closed and can require a decoder/calibration enhancement.</div>
-          <div class="callout note"><strong>Every present item-state layout needs all required fields.</strong> Each loaded <code>INVENTORY_TRANSFER</code> layout requires <code>item_instance_offset</code> and snapshot <code>context_offset</code>. Each loaded <code>STORAGE_ITEM_DELTA</code> layout requires <code>destination_instance_offset</code>, destination <code>context_offset</code>, and <code>record_count_offset</code>. Missing any required identity or wrapper field raises <a href="#profile-api/profile-error"><code>ProfileError</code></a> before offline analysis or during <code>CharacterLoadSession</code> construction. A completely absent profile family instead produces absent evidence and the existing warning/health outcome.</div>
+          <p class="supporting-note">Runtime validates required identity and wrapper fields on every loaded item-state layout. Each <code>INVENTORY_TRANSFER</code> layout requires <code>item_instance_offset</code> and snapshot <code>context_offset</code>; each <code>STORAGE_ITEM_DELTA</code> layout requires <code>destination_instance_offset</code>, destination <code>context_offset</code>, and <code>record_count_offset</code>. A missing required field raises <a href="#profile-api/profile-error"><code>ProfileError</code></a>; an absent family yields absent evidence plus its warning or health result.</p>
           <p class="supporting-note"><strong>Continuing event capture is less strict.</strong> Ordinary replay and live capture can use a selected layout that lacks optional aggregate fields. In particular, an inventory layout without <code>context_offset</code> yields neutral <a href="#event-types/event-types"><code>inventory_record</code></a> values because receipt versus hydration cannot be proven; finite item-state APIs reject that layout instead of treating those records as state.</p>
         </section>
       </article>
 
       <article class="doc-page" id="item-state-capture" data-page="item-state-capture" data-title="Offline item-state analysis" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> bdo_toolkit.item_state · Experimental</div>
-        <h1 class="page-title">Offline analysis &amp; formatting</h1>
-        <p class="page-lede"><code>analyze_item_state_pcap()</code> reads a recording made around initial login or a character switch and assembles the inventory and town-storage evidence it contains; <code>format_item_state()</code> renders the result for a diagnostic console.</p>
+        <div class="page-kicker"><span class="kind-badge function">Function</span> bdo_toolkit.item_state · Experimental</div>
+        <h1 class="page-title"><code>analyze_item_state_pcap()</code></h1>
+        <p class="page-lede"><code>analyze_item_state_pcap()</code> analyzes an existing PCAP or PCAPNG recorded around initial login or a character switch and returns one <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> after end-of-file finalization.</p>
+          <p><code>path</code> must identify an existing recording. This function neither starts live capture nor writes a capture; use <a href="#character-load-session"><code>CharacterLoadSession</code></a> for the next live load, optionally with <code>save_pcap</code>.</p>
           <p class="supporting-note"><strong>Use the recording's matching-era item profile.</strong> Item-state analysis shares the <a href="#profiles">explicit profile contract</a> used by ordinary item-event replay; there is no separate snapshot-profile file or snapshot-only calibration command, and the API never fetches a profile. Each analysis loads one immutable profile revision and uses that same revision for both decoding and aggregation. A migrated storage entry must contain calibrated <code>context_offset</code> and <code>record_count_offset</code>; runtime derives stride and state classification from structure and cohort evidence.</p>
 
         <section class="doc-section">
@@ -4463,50 +4678,6 @@ Storage decoder: compatible</code></pre>
         </section>
 
         <section class="doc-section">
-          <h2 id="item-state-capture/format" class="section-heading" data-anchor="format" data-toc><code>format_item_state()</code> <span class="reading-label">Optional</span></h2>
-          <div class="signature">format_item_state(snapshot: <a href="#item-state-snapshot">ItemStateSnapshot</a>, *,
-                  show_items=False) -&gt; str</div>
-          <p>Return a human-readable diagnostic containing profile, storage-decoder compatibility, hydration status, inventory record/group/container counts, selected storage-sweep coverage, identity exclusions when present, destination summaries, and limitations. <code>show_items=True</code> additionally prints retained ordinary inventory and storage stacks. Repeated observations are merged only through decoded instance identifiers; records without that identity are counted as unresolved and excluded from queryable distinct-stack state. Known currency balances are listed separately.</p>
-          <pre><code>from bdo_toolkit.item_state import format_item_state
-
-print(format_item_state(state))</code></pre>
-          <div class="example-output" aria-label="Example formatted item-state diagnostic">
-            <div class="output-label"><span>Example output</span><span>abridged validated diagnostic</span></div>
-            <pre class="output-block"><code>CHARACTER LOAD SNAPSHOT DIAGNOSTIC
-Profile: path/to/matching-opcodes.json
-Generic BDO frames observed: 2299
-Storage decoder: compatible (72/72 observed wrappers decoded)
-Hydration packets detected; trigger is unclassified (initial login vs character switch).
-
-INVENTORY SNAPSHOT
-  246 serialized records: 242 occupied item stacks + 4 currency balances
-  8 groups: 6 populated, 2 empty
-  group record counts: 72, 1, 72, 70, 2, 0, 29, 0
-  inferred record strides: 223
-  ...
-
-STORAGE SNAPSHOT
-  33/34 known destinations observed
-  29 non-empty, 4 explicitly empty, 1 not observed
-  known destinations not observed: Angavu Outpost
-  1242 unique occupied item stacks from 2484 decoded snapshot records
-  capacity: unavailable (not present in the decoded item wrappers)
-  selected inferred storage sweep 2/2
-  ...
-
-LIMITATIONS
-  - Snapshot completion has no proven end marker; stopping capture during loading can produce a partial report.</code></pre>
-          </div>
-          <p class="example-note">The ellipses shorten only this documentation excerpt; the function prints classified containers, currency balances, each observed storage destination, and limitations. <code>show_items=True</code> can produce a very large diagnostic containing item instances and complete observed contents, so reserve it for controlled troubleshooting rather than ordinary application logging.</p>
-          <h3 id="item-state-capture/format-parameters" class="subheading" data-anchor="format-parameters" data-search-title="format_item_state() parameters" data-toc>Parameters</h3>
-          <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
-            <tr id="item-state-capture/opt-snapshot" data-anchor="opt-snapshot"><td><code>snapshot</code></td><td class="type"><a href="#item-state-snapshot">ItemStateSnapshot</a></td><td><span class="required">required</span></td><td>Aggregate to render.</td></tr>
-            <tr id="item-state-capture/opt-show_items" data-anchor="opt-show_items"><td><code>show_items</code></td><td class="type">bool</td><td><code>False</code></td><td>Append retained ordinary inventory and storage stacks without re-expanding duplicate observations.</td></tr>
-          </tbody></table></div>
-          <div class="callout context"><strong>Human output is presentation, not a serialization schema.</strong> Persist <a href="#item-state-snapshot/serialization"><code>state.to_dict()</code></a> and its <code>schema_version</code> when another program will consume the result.</div>
-        </section>
-
-        <section class="doc-section">
           <h2 id="item-state-capture/errors" class="section-heading" data-anchor="errors" data-toc>Raises</h2>
           <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
             <tr><td><code>TypeError</code></td><td>The required keyword-only <code>opcode_profile</code> argument is omitted.</td><td>Function call</td></tr>
@@ -4523,19 +4694,17 @@ LIMITATIONS
       <article class="doc-page" id="character-load-session" data-page="character-load-session" data-title="CharacterLoadSession" hidden>
         <div class="page-kicker"><span class="kind-badge class">Class</span> bdo_toolkit.item_state · Experimental</div>
         <h1 class="page-title"><code>CharacterLoadSession</code></h1>
-        <p class="page-lede"><code>CharacterLoadSession</code> is a single-use live capture started before the next login or character switch; <code>stop()</code> returns one finite <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> containing the item state observed during that load.</p>
+        <p class="page-lede"><code>CharacterLoadSession</code> is the live entry point for item state from the next login or character switch. Start it before the load, then call <code>stop()</code> after the playable world appears to receive one finite <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a>.</p>
         <div class="signature">CharacterLoadSession(*, opcode_profile, capture_options=None,
                      save_pcap=None, capture_limits=None)</div>
         <p class="route-links"><strong>Required setup:</strong> <a href="#profiles">install or create a current item opcode profile</a> before starting the session.</p>
 
         <section class="doc-section">
           <h2 id="character-load-session/example" class="section-heading" data-anchor="example" data-toc>Capture one load <span class="recommendation-label">Recommended</span></h2>
-          <div class="callout warning"><strong>Raw captures are sensitive.</strong> The example writes admitted packets to <code>character-load.pcapng</code>. Even filtered packets can expose network endpoints, session/account-related data, and complete inventory or storage contents. Store captures outside published source control and inspect them before sharing.</div>
           <pre><code>from bdo_toolkit.item_state import CharacterLoadSession
 
 with CharacterLoadSession(
     opcode_profile="opcodes.local",
-    save_pcap="character-load.pcapng",
 ) as session:
     input("Open the game or switch characters. After the playable world loads, press Enter: ")
     state = session.stop()
@@ -4557,7 +4726,7 @@ Inventory stacks: 242
 Completion: unknown
 Storage decoder: compatible</code></pre>
           </div>
-          <p class="example-note">Complete the <a href="#capture-foundation/live-prerequisites">live-capture setup</a>, then enter the context before the hydration action and call <code>stop()</code> after the playable world has loaded. Context exit attempts shutdown if the operator wait or later code raises; if bounded cleanup remains incomplete, retain <code>session</code> and follow the <a href="#character-load-session/failures">cleanup-retry contract</a>. The session has no protocol-proven auto-completion point, so the operator or application owns the stop decision. Saving is optional and refuses to overwrite an existing capture; counts vary by account and capture.</p>
+          <p class="example-note">Complete the <a href="#capture-foundation/live-prerequisites">live-capture setup</a>, then enter the context before the hydration action and call <code>stop()</code> after the playable world has loaded. Context exit attempts shutdown if the operator wait or later code raises; if bounded cleanup remains incomplete, retain <code>session</code> and follow the <a href="#character-load-session/failures">cleanup-retry contract</a>. The session has no protocol-proven auto-completion point, so the operator or application owns the stop decision. Producing the snapshot does not require a PCAP file; <a href="#character-load-session/opt-save_pcap"><code>save_pcap</code></a> is optional. Counts vary by account and capture.</p>
           <a class="yield-contract" href="#item-state-snapshot" aria-label="CharacterLoadSession stop returns ItemStateSnapshot; open the full aggregate reference">
             <span class="yield-kind">stop() returns</span>
             <span class="yield-copy"><strong><code>ItemStateSnapshot</code></strong><small>A finite aggregate containing the observed inventory, town storages, coverage, provenance, final decoder health, and warnings from the live capture. The result can also be an empty diagnostic when no hydration is recognized; it is never an event iterator.</small></span>
@@ -4573,6 +4742,7 @@ Storage decoder: compatible</code></pre>
             <tr id="character-load-session/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Optional <code>.pcap</code> or <code>.pcapng</code> destination for untouched packets admitted by the session. Parent directories are created; an existing file raises <code>FileExistsError</code>.</td></tr>
             <tr id="character-load-session/opt-capture_limits" data-anchor="opt-capture_limits"><td><span class="field-name"><a href="#item-state-limits"><code>capture_limits</code></a><span class="field-badge">Advanced</span></span></td><td class="type"><a href="#item-state-limits/limits">ItemStateCaptureLimits</a> | None</td><td><code>None</code></td><td>Fail-closed retained-evidence bounds shared with offline analysis. <code>None</code> uses <code>ItemStateCaptureLimits()</code>.</td></tr>
           </tbody></table></div>
+          <div class="callout warning"><strong>Saved raw captures are optional and sensitive.</strong> Set <code>save_pcap</code> only when a reusable development or troubleshooting recording is needed. Even filtered packets can expose network endpoints, session/account-related data, and complete inventory or storage contents. Store captures outside published source control and inspect them before sharing.</div>
         </section>
 
         <section class="doc-section">
@@ -4584,14 +4754,14 @@ Storage decoder: compatible</code></pre>
             <tr><td><code>frames_seen</code></td><td class="type">int</td><td>Generic framed BDO messages observed so far; not a hydration-completeness counter.</td></tr>
             <tr><td><code>decoder_health</code></td><td class="type"><a href="#live-capture-health/decoder-health">DecoderHealth</a></td><td>Point-in-time storage schema/destination compatibility. The stopped snapshot freezes the final value.</td></tr>
             <tr><td><code>error</code></td><td class="type">BaseException | None</td><td>First retained profile, startup, capture, decoder, accumulator, writer, or shutdown failure.</td></tr>
-            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid.</td></tr>
+            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. If <code>stop()</code> raises while this is <code>True</code>, retain the same session and retry <code>stop()</code>; cleanup does not retry in the background. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid. See <a href="#errors/timing">error timing and cleanup ownership</a>.</td></tr>
             <tr><td><code>save_pcap_path</code></td><td class="type">Path | None</td><td>Configured raw-capture destination.</td></tr>
             <tr><td><code>__enter__()</code></td><td class="type"><a href="#character-load-session">CharacterLoadSession</a></td><td>Start an unused session and return it.</td></tr>
             <tr><td><code>__exit__(...)</code></td><td class="type">None</td><td>Stop an active session. Use an explicit <code>stop()</code> when the returned aggregate is needed.</td></tr>
           </tbody></table></div>
           <div class="callout note"><strong>Character-state health is returned, not callback-driven.</strong> This finite aggregate API does not accept the continuing event stream&rsquo;s <code>on_diagnostic=</code> callback. Read <code>session.decoder_health</code> during capture or <code>state.decoder_health</code> after <code>stop()</code>. Treat <code>"not_observed"</code> as inconclusive. A validated sparse/count-zero cohort inside the dedicated inventory-load boundary can upgrade final snapshot health to <code>"compatible"</code> even while the continuous tracker remains fail-neutral; an unregistered authoritative numeric destination is preserved but makes final health <code>"incompatible"</code> and adds a warning.</div>
-          <div class="callout note"><strong>Finite assembly can reconcile a timing-split sweep.</strong> A neutral storage group may join an already proven snapshot group only inside the same inventory-anchored flow generation, storage opcode, inferred sweep, and 30-second hydration epoch. A positively identified live storage mutation is a hard boundary. This does not loosen continuing live-stream classification.</div>
-          <div class="callout note"><strong>This is not an event stream.</strong> <code>CharacterLoadSession</code> owns one finite aggregate and exposes no <code>events()</code> iterator. Use <a href="#live-capture-session"><code>LiveCaptureSession</code></a> for continuing activity and this class only around the load whose contents are needed.</div>
+          <p class="supporting-note"><strong>Finite assembly can reconcile a timing-split sweep.</strong> A neutral storage group may join an already proven snapshot group only inside the same inventory-anchored flow generation, storage opcode, inferred sweep, and 30-second hydration epoch. A positively identified live storage mutation is a hard boundary. This does not loosen continuing live-stream classification.</p>
+          <p class="supporting-note"><code>CharacterLoadSession</code> returns one finite aggregate and exposes no <code>events()</code> iterator. Use <a href="#live-capture-session"><code>LiveCaptureSession</code></a> for continuing activity.</p>
         </section>
 
         <section class="doc-section">
@@ -4605,7 +4775,6 @@ Storage decoder: compatible</code></pre>
             <tr><td>A configured accumulation bound would be exceeded</td><td>Records <a href="#item-state-limits/error"><code>ItemStateCaptureLimitError</code></a>, stops accepting semantic state, and raises it from <code>stop()</code>; no partial aggregate is returned.</td></tr>
             <tr><td>Capture, decode, writer, or shutdown failure</td><td>The first retained exception is raised by <code>stop()</code>. If native capture termination cannot be verified, callback-dependent decoder and writer owners remain retained and <code>cleanup_incomplete</code> stays <code>True</code>. A writer-close failure alone can raise with cleanup otherwise complete.</td></tr>
           </tbody></table></div>
-          <div class="callout warning"><strong>Retain the session when cleanup is incomplete.</strong> If <code>stop()</code> raises with <code>cleanup_incomplete=True</code>, retry <code>stop()</code> on this same object; cleanup does not retry in the background. A later successful cleanup does not validate the failed capture. See <a href="#errors/timing">error timing and cleanup ownership</a>.</div>
         </section>
       </article>
 
@@ -4658,13 +4827,13 @@ error.attempted: int</div>
           <p>The exception identifies the bound, its configured value, and the value the next observation would have produced. For <code>max_snapshot_records</code>, <code>attempted</code> includes live storage-delta boundary markers as well as retained record observations. A successfully returned <code>coverage.snapshot_records_retained</code> excludes those markers. Limit failure returns no partial snapshot, so callers normally observe one value or the other rather than comparing both on the same failed run. The failing observation is not retained.</p>
         </section>
 
-        <div class="page-end"><a class="page-jump" href="#character-load-session">&larr; CharacterLoadSession</a><a class="page-jump" href="#item-state-snapshot">Next: ItemStateSnapshot &rarr;</a></div>
       </article>
 
       <article class="doc-page" id="item-state-snapshot" data-page="item-state-snapshot" data-title="ItemStateSnapshot" hidden>
         <div class="page-kicker"><span class="kind-badge class">Dataclass</span> bdo_toolkit.item_state · Experimental</div>
         <h1 class="page-title"><code>ItemStateSnapshot</code></h1>
-        <p class="page-lede"><code>ItemStateSnapshot</code> is the finite result of a saved or live character-load capture, containing observed inventory and town-storage evidence together with coverage, provenance, warnings, and decoder health.</p>
+        <p class="page-lede"><code>ItemStateSnapshot</code> is the finite result returned by <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> after live capture or by analysis of an existing capture. It contains observed inventory and town-storage evidence together with coverage, provenance, warnings, and decoder health.</p>
+        <p><strong>This is the root item-state result.</strong> <code>snapshot.inventory</code> is an <a href="#inventory-contents/summary"><code>InventorySnapshotSummary</code></a>; <code>snapshot.storages</code> is a <a href="#storage-contents/collection"><code>StorageContents</code></a> sequence whose values are <a href="#storage-contents/destination"><code>StorageSnapshotSummary</code></a> objects.</p>
         <div class="signature">ItemStateSnapshot(profile_source, frames_seen, inventory, storages,
                   storage_snapshot_records, hydration_generations_seen, warnings,
                   capture_mode="unknown", input_path=None, saved_capture_path=None,
@@ -4672,7 +4841,7 @@ error.attempted: int</div>
                   storage_records_missing_instance=0, capture_limits=None,
                   relevant_frames_retained=None, relevant_bytes_retained=None,
                   snapshot_records_retained=None, decoder_health=None)</div>
-        <p class="supporting-note"><strong>Applications normally receive this class rather than construct it.</strong> Use <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a> for saved evidence or <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> for the next live load. The constructor remains documented for compatibility and testing.</p>
+        <p class="supporting-note"><strong>Applications normally receive this class rather than construct it.</strong> Use <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> for the next live load or <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a> for saved evidence. The constructor remains documented for compatibility and testing.</p>
         <p class="supporting-note"><strong>Generations and sweeps are inferred boundaries.</strong> An inventory generation is a timing-based group of inventory records that appear to belong to one load. A storage sweep is one conservatively inferred pass across town-storage destinations. Both are capture-order boundaries, not server-provided IDs, lifecycle labels, or completion markers. See <a href="#item-state-snapshot/provenance">inventory provenance</a> and <a href="#storage-contents/chronology">storage chronology</a> for the exact contracts.</p>
 
         <section class="doc-section">
@@ -4742,7 +4911,7 @@ storage_decoder=compatible</code></pre>
             <tr><td><code>storage_occupied_stacks</code></td><td class="type">int</td><td>Sum of observed-identity occupied stacks in selected current destination state.</td></tr>
             <tr><td><code>storage(storage_id)</code></td><td class="type"><a href="#storage-contents/destination">StorageSnapshotSummary</a> | None</td><td>Compatibility lookup delegating to <code>state.storages.by_id()</code>.</td></tr>
             <tr><td><code>storage_named(name)</code></td><td class="type"><a href="#storage-contents/destination">StorageSnapshotSummary</a> | None</td><td>Compatibility lookup delegating to <code>state.storages.named()</code>.</td></tr>
-            <tr><td><code>to_dict()</code></td><td class="type">dict[str, object]</td><td>Schema-versioned, JSON-ready aggregate described under <a href="#item-state-snapshot/serialization">Serialization</a>.</td></tr>
+            <tr><td><code>to_dict()</code></td><td class="type">dict[str, object]</td><td>Schema-versioned, JSON-ready aggregate described under <a href="#item-state-output/serialization">Output &amp; serialization</a>.</td></tr>
           </tbody></table></div>
         </section>
 
@@ -4794,15 +4963,67 @@ storage_decoder=compatible</code></pre>
             <tr><td><code>identity_status</code></td><td class="type">str</td><td><code>"complete"</code> or <code>"incomplete_records_excluded"</code>.</td></tr>
             <tr><td><code>accumulation_policy</code></td><td class="type">str</td><td><code>"bounded_fail_closed"</code> for API-produced snapshots; otherwise <code>"not_reported"</code>.</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>Generation selection is inferred from timing.</strong> A gap of more than <code>1.0</code> seconds between consecutive observed inventory-message timestamps starts a new inferred generation. The aggregate retains the latest inventory generation and storage evidence at or after its inferred start. This is not a decoded lifecycle trigger or completion marker.</div>
+          <p>Generation selection is inferred: a gap of more than <code>1.0</code> seconds between consecutive observed inventory-message timestamps starts a new generation. The aggregate retains the latest inventory generation and storage evidence at or after its start; this is not a decoded lifecycle or completion marker.</p>
           <div class="callout warning"><strong>Storage-only evidence has no inventory-derived generation start.</strong> When no inventory snapshot records decode, the aggregate has no inventory timestamp from which to select one load generation. It retains all observed storage evidence for diagnostics, selects only the latest inferred storage sweep as current query state, reports <code>all_observed_storage_no_inventory_boundary</code>, and warns that the evidence may span multiple loads.</div>
         </section>
 
+      </article>
+
+      <article class="doc-page" id="item-state-output" data-page="item-state-output" data-title="Item-state output &amp; serialization" hidden>
+        <div class="page-kicker"><span class="kind-badge api">API</span> bdo_toolkit.item_state · Experimental</div>
+        <h1 class="page-title">Output &amp; serialization</h1>
+        <p class="page-lede">Use <a href="#item-state-output/format"><code>format_item_state()</code></a> for a human-readable diagnostic and <a href="#item-state-output/serialization"><code>ItemStateSnapshot.to_dict()</code></a> for schema-versioned programmatic data. Both work with snapshots returned by <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> or <a href="#item-state-capture"><code>analyze_item_state_pcap()</code></a>.</p>
+        <p class="route-links"><strong>Starting point:</strong> use <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> for the next live load or <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a> for a recording that already exists.</p>
+
         <section class="doc-section">
-          <h2 id="item-state-snapshot/serialization" class="section-heading" data-anchor="serialization" data-toc>Serialization</h2>
+          <h2 id="item-state-output/format" class="section-heading" data-anchor="format" data-toc><code>format_item_state()</code> <span class="reading-label">Optional</span></h2>
+          <div class="signature">format_item_state(snapshot: <a href="#item-state-snapshot">ItemStateSnapshot</a>, *,
+                  show_items=False) -&gt; str</div>
+          <p>Return a human-readable diagnostic containing profile, storage-decoder compatibility, hydration status, inventory record/group/container counts, selected storage-sweep coverage, identity exclusions when present, destination summaries, and limitations. <code>show_items=True</code> additionally prints retained ordinary inventory and storage stacks. Repeated observations are merged only through decoded instance identifiers; records without that identity are counted as unresolved and excluded from queryable distinct-stack state. Known currency balances are listed separately.</p>
+          <pre><code>from bdo_toolkit.item_state import format_item_state
+
+print(format_item_state(state))</code></pre>
+          <div class="example-output" aria-label="Example formatted item-state diagnostic">
+            <div class="output-label"><span>Example output</span><span>abridged validated diagnostic</span></div>
+            <pre class="output-block"><code>CHARACTER LOAD SNAPSHOT DIAGNOSTIC
+Profile: path/to/matching-opcodes.json
+Generic BDO frames observed: 2299
+Storage decoder: compatible (72/72 observed wrappers decoded)
+Hydration packets detected; trigger is unclassified (initial login vs character switch).
+
+INVENTORY SNAPSHOT
+  246 serialized records: 242 occupied item stacks + 4 currency balances
+  8 groups: 6 populated, 2 empty
+  group record counts: 72, 1, 72, 70, 2, 0, 29, 0
+  inferred record strides: 223
+  ...
+
+STORAGE SNAPSHOT
+  33/34 known destinations observed
+  29 non-empty, 4 explicitly empty, 1 not observed
+  known destinations not observed: Angavu Outpost
+  1242 unique occupied item stacks from 2484 decoded snapshot records
+  capacity: unavailable (not present in the decoded item wrappers)
+  selected inferred storage sweep 2/2
+  ...
+
+LIMITATIONS
+  - Snapshot completion has no proven end marker; stopping capture during loading can produce a partial report.</code></pre>
+          </div>
+          <p class="example-note">The ellipses shorten only this documentation excerpt; the function prints classified containers, currency balances, each observed storage destination, and limitations. <code>show_items=True</code> can produce a very large diagnostic containing item instances and complete observed contents, so reserve it for controlled troubleshooting rather than ordinary application logging.</p>
+          <h3 id="item-state-output/format-parameters" class="subheading" data-anchor="format-parameters" data-search-title="format_item_state() parameters" data-toc>Parameters</h3>
+          <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
+            <tr id="item-state-output/opt-snapshot" data-anchor="opt-snapshot"><td><code>snapshot</code></td><td class="type"><a href="#item-state-snapshot">ItemStateSnapshot</a></td><td><span class="required">required</span></td><td>Aggregate to render.</td></tr>
+            <tr id="item-state-output/opt-show_items" data-anchor="opt-show_items"><td><code>show_items</code></td><td class="type">bool</td><td><code>False</code></td><td>Append retained ordinary inventory and storage stacks without re-expanding duplicate observations.</td></tr>
+          </tbody></table></div>
+          <p class="supporting-note"><code>format_item_state()</code> produces presentation output. For machine-readable persistence, store <a href="#item-state-output/serialization"><code>state.to_dict()</code></a> with its <code>schema_version</code>.</p>
+        </section>
+
+        <section class="doc-section">
+          <h2 id="item-state-output/serialization" class="section-heading" data-anchor="serialization" data-toc><a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a><code>.to_dict()</code></h2>
           <div class="signature">snapshot.to_dict() -&gt; dict[str, object]</div>
           <p>The JSON-ready dictionary uses the following top-level schema. Nested item, container, destination, coverage, provenance, and decoder-health objects expose their own <code>to_dict()</code> methods.</p>
-          <h3 id="item-state-snapshot/schema-v4" class="subheading" data-anchor="schema-v4" data-toc>Schema version 4</h3>
+          <h3 id="item-state-output/schema-v4" class="subheading" data-anchor="schema-v4" data-toc>Schema version 4</h3>
           <div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Meaning</th></tr></thead><tbody>
             <tr><td><code>schema_version</code></td><td class="type">int</td><td>Currently <code>4</code>.</td></tr>
             <tr><td><code>profile_source</code></td><td class="type">str</td><td>Opcode profile used for decoding.</td></tr>
@@ -4811,11 +5032,11 @@ storage_decoder=compatible</code></pre>
             <tr><td><code>identity_complete</code></td><td class="type">bool</td><td>Whether every decoded snapshot record had observed instance identity.</td></tr>
             <tr><td><code>load_reason</code></td><td class="type">None</td><td>Serialized as JSON <code>null</code>; the trigger is not decoded.</td></tr>
             <tr><td><code>hydration_generations_seen</code></td><td class="type">int</td><td>Number of inferred inventory generations observed.</td></tr>
-            <tr><td><code>provenance</code></td><td class="type">dict[str, object]</td><td>Serialized <code>ItemStateProvenance</code>.</td></tr>
-            <tr><td><code>coverage</code></td><td class="type">dict[str, object]</td><td>Serialized <code>ItemStateCoverage</code>.</td></tr>
+            <tr><td><code>provenance</code></td><td class="type">dict[str, object]</td><td>Serialized <a href="#item-state-snapshot/provenance"><code>ItemStateProvenance</code></a>.</td></tr>
+            <tr><td><code>coverage</code></td><td class="type">dict[str, object]</td><td>Serialized <a href="#item-state-snapshot/coverage"><code>ItemStateCoverage</code></a>.</td></tr>
             <tr><td><code>decoder_health</code></td><td class="type">dict[str, object]</td><td>Serialized final <a href="#live-capture-health/decoder-health"><code>DecoderHealth</code></a>; added in schema version 4 and intentionally separate from <code>coverage</code>.</td></tr>
             <tr><td><code>accumulation</code></td><td class="type">dict[str, object]</td><td>Bounded fail-closed policy, retained frame/byte/record counters, and applied <a href="#item-state-limits">limits</a>.</td></tr>
-            <tr><td><code>inventory</code></td><td class="type">dict[str, object]</td><td>Serialized <code>InventorySnapshotSummary</code>.</td></tr>
+            <tr><td><code>inventory</code></td><td class="type">dict[str, object]</td><td>Serialized <a href="#inventory-contents/summary"><code>InventorySnapshotSummary</code></a>.</td></tr>
             <tr><td><code>storage</code></td><td class="type">dict[str, object]</td><td>Storage summary plus <code>destinations</code>; the key is deliberately singular.</td></tr>
             <tr><td><code>warnings</code></td><td class="type">list[str]</td><td>Human-readable limitations and unresolved observations.</td></tr>
           </tbody></table></div>
@@ -4853,14 +5074,14 @@ print(json.dumps(summary, indent=2))</code></pre>
         </section>
       </article>
 
-      <article class="doc-page" id="inventory-contents" data-page="inventory-contents" data-title="Inventory contents" hidden>
+      <article class="doc-page" id="inventory-contents" data-page="inventory-contents" data-title="Inventory snapshot contents" hidden>
         <div class="page-kicker"><span class="kind-badge class">Types</span> bdo_toolkit.item_state · Experimental</div>
-        <h1 class="page-title">Inventory contents</h1>
-        <p class="page-lede"><code>state.inventory</code> exposes occupied stacks and known wallet balances observed while the character loaded, with provisional grouping into Main Inventory, Pearl Inventory, Enhancement Inventory, and Global Currencies when a container code is validated.</p>
+        <h1 class="page-title">Inventory snapshot contents</h1>
+        <p class="page-lede"><code>state.inventory</code> is the <a href="#inventory-contents/summary"><code>InventorySnapshotSummary</code></a> child of <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a>. It exposes occupied stacks and known wallet balances observed while the character loaded, with provisional grouping into Main Inventory, Pearl Inventory, Enhancement Inventory, and Global Currencies when a container code is validated.</p>
 
         <section class="doc-section">
           <h2 id="inventory-contents/example" class="section-heading" data-anchor="example" data-toc>Query inventory state</h2>
-          <p class="supporting-note"><strong>Starting point:</strong> <code>state</code> is the <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> returned by <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a> or <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a>.</p>
+          <p class="supporting-note"><strong>Starting point:</strong> <code>state</code> is the <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> returned by <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> or <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a>.</p>
           <p>Ordinary stacks are available through <code>items</code>; recognized Silver, Pearl, Loyalties, and Crow Coin balances are available through <code>currency_balances</code>; <code>containers</code> groups records under the provisional labels above.</p>
           <pre><code>inventory = state.inventory
 main = inventory.container_named("Main Inventory")
@@ -4995,17 +5216,17 @@ container_name=Main Inventory</code></pre>
         </section>
       </article>
 
-      <article class="doc-page" id="storage-contents" data-page="storage-contents" data-title="Storage contents" hidden>
+      <article class="doc-page" id="storage-contents" data-page="storage-contents" data-title="Storage snapshot contents" hidden>
         <div class="page-kicker"><span class="kind-badge class">Types</span> bdo_toolkit.item_state · Experimental</div>
-        <h1 class="page-title">Storage contents</h1>
-        <p class="page-lede"><a href="#storage-contents/collection"><code>StorageContents</code></a> answers capture-time questions such as which stacks were observed in Heidel, which town storages held an item ID, and the total observed quantity across those towns.</p>
+        <h1 class="page-title">Storage snapshot contents</h1>
+        <p class="page-lede"><code>state.storages</code> is the <a href="#storage-contents/collection"><code>StorageContents</code></a> child of <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a>. It answers capture-time questions such as which stacks were observed in Heidel, which town storages held an item ID, and the total observed quantity across those towns.</p>
         <p>The server can report town storages more than once during one observed load. The aggregate calls each conservatively inferred pass a <strong>storage sweep</strong> and uses the latest pass for current item queries, without claiming that pass is complete.</p>
         <div class="callout context"><strong>Town names and IDs have a dedicated reference.</strong> Open the <a href="#storage-locations/registry">built-in storage-location registry</a> to see every known numeric <code>storage_id</code>, its current display name, and name confidence. Pass a town name to <code>storages.named("Heidel")</code> or its integer key to <code>storages.by_id(0x0020)</code>; persist the numeric key when destination identity matters.</div>
         <p class="route-links"><strong>Need changes after the load?</strong> The <a href="#storage-events">Storage events guide</a> covers individual snapshot records, live additions, unresolved operations, filtering, and delivery behavior. Use this page when the application needs the merged contents of one or every observed town.</p>
 
         <section class="doc-section">
           <h2 id="storage-contents/example" class="section-heading" data-anchor="example" data-toc>Query town storage</h2>
-          <p class="supporting-note"><strong>Starting point:</strong> <code>state</code> is the <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> returned by <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a> or <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a>.</p>
+          <p class="supporting-note"><strong>Starting point:</strong> <code>state</code> is the <a href="#item-state-snapshot"><code>ItemStateSnapshot</code></a> returned by <a href="#character-load-session"><code>CharacterLoadSession.stop()</code></a> or <a href="#item-state-capture/analyze"><code>analyze_item_state_pcap()</code></a>.</p>
           <pre><code>storages = state.storages
 
 # ── 1. Query one town by name or numeric storage ID ───────────────────────
@@ -5076,15 +5297,20 @@ HEIDEL CONTENTS
         <section class="doc-section">
           <h2 id="storage-contents/collection" class="section-heading" data-anchor="collection" data-toc><code>StorageContents</code></h2>
           <p>Immutable, sequence-style access to every observed destination summary plus lookup and cross-town helpers over selected current items.</p>
+          <p><strong>Iterate all returned storages directly.</strong> <code>state.storages</code> is an immutable <a href="#storage-contents/collection"><code>StorageContents</code></a> sequence containing every destination summary returned in the snapshot. Each value yielded by iteration is a <a href="#storage-contents/destination"><code>StorageSnapshotSummary</code></a> for one represented destination. <code>by_id()</code> and <code>named()</code> are optional conveniences for looking up one destination; they are not required to enumerate towns.</p>
+          <pre><code>for storage in state.storages:
+    label = storage.name or f"UNKNOWN_STORAGE(0x{storage.storage_id:08x})"
+    print(f"{label}: {storage.occupied_stacks} occupied stacks")</code></pre>
+          <p class="supporting-note"><strong>Observed results only.</strong> This iterates the destination summaries present in the snapshot; it does not manufacture entries for registered towns absent from the capture. No town-name list or registry loop is required.</p>
           <div class="table-wrap"><table><thead><tr><th>Method</th><th>Returns</th><th>Contract</th></tr></thead><tbody>
             <tr><td><code>by_id(storage_id)</code></td><td class="type"><a href="#storage-contents/destination">StorageSnapshotSummary</a> | None</td><td>Look up one observed destination by numeric protocol key.</td></tr>
             <tr><td><code>named(name)</code></td><td class="type"><a href="#storage-contents/destination">StorageSnapshotSummary</a> | None</td><td>Case-insensitive convenience lookup by confidence-qualified town name.</td></tr>
             <tr><td><code>find_item(item_id)</code></td><td class="type">tuple[<a href="#inventory-contents/item">SnapshotItem</a>, ...]</td><td>Every retained matching observed-identity stack across destinations selected in the latest inferred sweep.</td></tr>
             <tr><td><code>total_quantity(item_id)</code></td><td class="type">int</td><td>Sum the exact encoded item ID across that selected current state.</td></tr>
             <tr><td><code>locations_for(item_id)</code></td><td class="type">tuple[<a href="#storage-contents/destination">StorageSnapshotSummary</a>, ...]</td><td>Selected current destinations containing at least one matching stack.</td></tr>
-            <tr><td><code>len(storages)</code>, iteration, <code>storages[index]</code></td><td class="type">int / Iterator / summary or tuple</td><td>Standard immutable sequence access; a slice returns a tuple.</td></tr>
+            <tr><td><code>len(storages)</code>, iteration, <code>storages[index_or_slice]</code></td><td class="type">int / Iterator[<a href="#storage-contents/destination">StorageSnapshotSummary</a>] / <a href="#storage-contents/destination">StorageSnapshotSummary</a> | tuple[<a href="#storage-contents/destination">StorageSnapshotSummary</a>, ...]</td><td>Respectively: sequence length; an iterator yielding one summary per destination; or one summary for an integer index and a tuple for a slice.</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>Queries cover observed destinations only.</strong> A zero result can mean no matching item in the captured state, or incomplete evidence. <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> can reveal obvious evidence gaps, but the current completion status always remains unknown and never turns absence into a protocol-authoritative claim.</div>
+          <p class="supporting-note">Lookups and totals cover selected observed state only. See <a href="#storage-contents/empty-vs-missing">Explicitly empty versus not observed</a> and <a href="#item-state-snapshot/coverage"><code>state.coverage</code></a> before interpreting zero.</p>
           <h3 id="storage-contents/tuple-compatibility" class="subheading" data-anchor="tuple-compatibility" data-toc>Tuple compatibility <span class="reading-label">Optional reference</span></h3>
           <p><code>StorageContents</code> is an immutable <code>tuple</code> subclass and <code>Sequence</code> that preserves the earlier tuple-valued <code>state.storages</code> contract, including tuple type checks, operators, iteration, integer and slice indexing, length, hashing, representation, equality, and generic dataclass traversal.</p>
         </section>
@@ -5164,7 +5390,7 @@ HEIDEL CONTENTS
             <a class="choice-card" href="#calibration-workflow/run"><span class="arrow">&rarr;</span><h3>Calibrate locally</h3><p>Create an application-owned local profile from controlled current traffic when the stable profile does not match the required item actions.</p></a>
             <a class="choice-card" href="#profile-api/hosted-channel"><span class="arrow">&rarr;</span><h3>Retain a historical revision</h3><p>Keep the immutable matching-era profile beside saved PCAPs and deterministic fixtures.</p></a>
           </div>
-          <div class="callout note"><strong>Stable means latest promoted, not guaranteed current.</strong> A game patch can make the channel stale until a replacement profile completes maintainer verification. If known current traffic no longer decodes with the fetched revision, verify the expected actions and <a href="#calibration-workflow/run">calibrate locally</a>; that local profile covers only the profile families and actions the capture proves and is not uploaded automatically. A saved recording always needs its matching-era profile rather than the current stable channel.</div>
+          <p class="supporting-note">Stable is the latest maintainer-promoted revision and can lag a game patch. If current traffic no longer decodes, <a href="#calibration-workflow/run">calibrate locally</a>; that local profile covers only the profile families and actions the capture proves and is not uploaded automatically. Saved recordings use matching-era profiles.</p>
         </section>
 
         <section class="doc-section">
@@ -5273,7 +5499,7 @@ with LiveCaptureSession(
             <tr><td><code>SOURCE_ITEM_REFERENCE</code></td><td>&mdash;</td><td>Provides optional calibration-only evidence for inventory-to-storage transfers. Its saved entry is not read by replay or live capture.</td></tr>
           </tbody></table></div>
           <p>The first three profile families produce <code>BDOEvent</code> objects; one profile family does not necessarily map to one public event type. <code>SOURCE_STACK_DECREMENT</code> affects runtime classification without emitting an event, while the other two supporting families are optional retained calibration evidence. Uppercase family names are patch-sensitive configuration; lowercase <code>event_type</code> values are normalized application values. See <a href="#event-types">Event types &amp; sources</a> for their public meanings.</p>
-          <div class="callout note"><strong>Only runtime-consumed profile families belong in a runtime requirement set.</strong> Across the item API, those families are <code>LOOT_PREVIEW</code>, <code>INVENTORY_TRANSFER</code>, <code>STORAGE_ITEM_DELTA</code>, and <code>SOURCE_STACK_DECREMENT</code>. Require only the subset used by the integration: preview events and manual-origin evidence are optional capabilities. <code>SOURCE_CONTAINER_DECREMENT</code> and <code>SOURCE_ITEM_REFERENCE</code> are optional calibration evidence; missing either one never blocks current replay or live capture. Check family names rather than counting raw opcode values because one family can contain multiple opcode entries.</div>
+          <p class="supporting-note">Runtime requirements are profile-family subsets, not raw-opcode counts. Require only the subset used by the integration from <code>LOOT_PREVIEW</code>, <code>INVENTORY_TRANSFER</code>, <code>STORAGE_ITEM_DELTA</code>, and <code>SOURCE_STACK_DECREMENT</code>. <code>SOURCE_CONTAINER_DECREMENT</code> and <code>SOURCE_ITEM_REFERENCE</code> are optional calibration evidence and never block replay or live capture.</p>
         </section>
 
         <section class="doc-section">
@@ -5366,7 +5592,7 @@ with LiveCaptureSession(
       </article>
 
       <article class="doc-page" id="profile-api" data-page="profile-api" data-title="Profile fetching, loading &amp; inspection" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> bdo_toolkit</div>
+        <div class="page-kicker"><span class="kind-badge api">API</span> bdo_toolkit</div>
         <h1 class="page-title">Profile fetching, loading &amp; inspection</h1>
         <p class="page-lede">Explicitly installs a verified remote item profile or loads one local file for inspection and decoder use.</p>
         <div class="signature">fetch_opcode_profile(url, destination, *, timeout=10.0,
@@ -5448,7 +5674,7 @@ b732c674597d9d53afb3090a497320253bb7f0de4ba2b2022b2973f13e16604e</code></pre>
 }</code></pre>
           <p class="example-note">The digest shown is the canonical SHA-256 of the displayed empty object, so this envelope core is internally consistent but not usable for decoding. A usable embedded <code>profile</code> must contain the ordinary schema-1 fields and runtime layouts.</p>
           <p>The embedded profile must be active, use exact profile schema 1, and pass the same runtime profile validation as item capture: event-producing layouts, every present <code>SOURCE_STACK_DECREMENT</code> layout, and promoted <code>origin_companion_families</code>. Optional calibration-only <code>SOURCE_CONTAINER_DECREMENT</code> and <code>SOURCE_ITEM_REFERENCE</code> entries are not runtime layout requirements. Verification failure leaves the destination untouched.</p>
-          <div class="callout note"><strong>Acquisition is explicit and one-shot.</strong> Capture, replay, local loading, and item-state APIs never invoke this function. Envelope version 1 has no polling, automatic refresh, implicit cache, conditional request, or <code>304</code> workflow. A running session pins its selected profile revision and does not hot-reload a replaced file.</div>
+          <p>Fetching is explicit and one-shot. Capture, replay, local loading, and item-state APIs never invoke it; envelope version 1 has no polling, automatic refresh, implicit cache, conditional request, or <code>304</code> workflow, and running sessions pin their loaded revision.</p>
 
         </section>
 
@@ -5582,7 +5808,7 @@ True 1
         <section class="doc-section">
           <h2 id="origin-evidence/companion-families" class="section-heading" data-anchor="companion-families" data-toc>Companion messages and companion families</h2>
           <div class="table-wrap"><table><thead><tr><th>Term</th><th>Role</th><th>Required for verdict?</th></tr></thead><tbody>
-            <tr><td>Companion messages</td><td>Two ordered complete messages within the eight-message window in the same TCP flow that carry the same informative token as the storage-message prefix; unrelated messages may be interleaved.</td><td><strong>Yes</strong>: the complete structural chain is always required.</td></tr>
+            <tr><td>Companion messages</td><td>Two ordered complete messages within the 32-following-message window in the same TCP flow that carry the same informative token as the storage-message prefix; unrelated messages and independent storage wrappers may be interleaved, but storage wrappers are excluded as companions.</td><td><strong>Yes</strong>: the complete structural chain and unique storage-prefix ownership are always required.</td></tr>
             <tr><td>Companion family</td><td>Five-part key containing the storage opcode, two companion opcodes, and two companion lengths.</td><td><strong>Yes</strong>: the structurally observed family must be profile-trusted or confirmed in the current session.</td></tr>
             <tr><td><code>known_family</code></td><td>Whether the family was explicitly promoted into the selected profile.</td><td><strong>No</strong>: a new family can be confirmed at runtime, but a known family is trusted immediately once its full chain appears.</td></tr>
           </tbody></table></div>
@@ -5591,9 +5817,10 @@ True 1
             <tr><td>One unique adjacent pair</td><td>New family</td><td>Confirmed in-session</td><td><code>adjacent-structural-chain</code></td></tr>
             <tr><td>Same new family at two distinct storage-chain locations</td><td>New family</td><td>Confirmed in-session</td><td><code>repeated-structural-chain</code></td></tr>
             <tr><td>One remaining candidate when the pending window closes</td><td>New family</td><td>Confirmed in-session</td><td><code>unambiguous-bounded-window</code></td></tr>
+            <tr><td>One pair matches multiple overlapping storage prefixes</td><td>Contested</td><td>No worker verdict from companion evidence</td><td>None selected</td></tr>
             <tr><td>Several new, unconfirmed candidates at closure</td><td>Ambiguous</td><td>No worker verdict from companion evidence</td><td>None selected</td></tr>
           </tbody></table></div>
-          <p>Token candidates are limited to the storage-message prefix before the earliest item record. The candidate is eight bytes with at least six distinct byte values, and the storage opcode plus both companion opcodes must all differ. These constraints prevent item-record bytes, zero-filled values, and repeated-message self-matches from becoming worker evidence.</p>
+          <p>Token candidates are limited to the storage-message prefix before the earliest item record. The candidate is eight bytes with at least six distinct byte values, and the storage opcode plus both companion opcodes must all differ. Distinct-token chains can be assigned independently; reused tokens or a pair shared by multiple wrappers fail closed. These constraints prevent item-record bytes, zero-filled values, and repeated-message self-matches from becoming worker evidence.</p>
           <p>Profile promotion changes family trust and can resolve a chain sooner or prefer the reviewed candidate when several confirmed candidates exist. If several confirmed candidates remain and none is profile-known, deterministic family-key order selects one. Promotion never creates worker evidence by itself: the full shared-token relationship must still be present. Runtime confirmation is built into the tracker and does not depend on <a href="#origin-learner"><code>OriginLearner</code></a> or its cross-session threshold.</p>
         </section>
 
@@ -6028,7 +6255,7 @@ path\to\opcodes.local.json</code></pre>
 
         <section class="doc-section">
           <h2 id="calibration-session/example" class="section-heading" data-anchor="example" data-toc>Example</h2>
-          <div class="callout warning"><strong>Live-capture prerequisites apply.</strong> Windows requires Npcap, and every platform requires permission to capture on the selected interface; elevation depends on the operating system or Npcap configuration.</div>
+          <p class="supporting-note"><strong>Before starting:</strong> Windows requires Npcap, and every platform requires permission to capture on the selected interface; elevation depends on the operating system or Npcap configuration. See the <a href="#capture-foundation/live-prerequisites">live-capture prerequisites</a>.</p>
           <pre><code>from bdo_toolkit.calibration import CalibrationSession
 
 session = CalibrationSession(
@@ -6082,7 +6309,7 @@ ignored 4 candidate(s) (see .ignored for reasons)</code></pre>
             <tr><td><a href="#calibration-functions/opt-max_retained_frames"><code>max_retained_frames</code></a></td><td class="type">int</td><td><code>50,000</code></td><td>Maximum generic frames retained in the newest contiguous scoring tail. Must be greater than <code>context_frames</code>.</td></tr>
             <tr><td><a href="#calibration-functions/opt-max_retained_bytes"><code>max_retained_bytes</code></a></td><td class="type">int</td><td><code>67,108,864</code></td><td>Maximum generic-frame payload bytes retained in that tail (64 MiB).</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>No event queue is involved.</strong> Calibration stores reassembled protocol frames for scoring; it does not deliver <a href="#bdo-event"><code>BDOEvent</code></a> objects. Use <a href="#packet-capture-options"><code>PacketCaptureOptions</code></a>; the delivery-specific <code>event_queue_size</code> on <a href="#live-capture-options"><code>LiveCaptureOptions</code></a> has no calibration role.</div>
+          <p>Calibration stores reassembled protocol frames for scoring and does not deliver <a href="#bdo-event"><code>BDOEvent</code></a> objects. Use <a href="#packet-capture-options"><code>PacketCaptureOptions</code></a>; the delivery-specific <code>event_queue_size</code> on <a href="#live-capture-options"><code>LiveCaptureOptions</code></a> has no calibration role.</p>
           <p class="supporting-note"><strong>TCP reassembly is bounded independently of retained calibration frames.</strong> Live calibration owns at most 64 active inbound flows. Admitting another flow finalizes the least-recently-active state, providing a hard bound on reassembly ownership. It does not configure time-based idle eviction; FIN/RST, capacity eviction, or session finalization releases state.</p>
         </section>
 
@@ -6115,7 +6342,7 @@ print(result.summary())</code></pre>
             <tr><td><code>retention_truncated</code></td><td class="type">bool</td><td>Whether any older frame or byte evidence was evicted.</td></tr>
             <tr><td><code>retention</code></td><td class="type"><a href="#calibration-types/retention">CalibrationRetention</a></td><td>Atomic observed/retained/discarded snapshot with configured bounds.</td></tr>
             <tr><td><code>error</code></td><td class="type">BaseException | None</td><td>First startup, callback, or shutdown failure for the current run.</td></tr>
-            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid.</td></tr>
+            <tr><td><code>cleanup_incomplete</code></td><td class="type">bool</td><td><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt. If <code>stop()</code> raises while this is <code>True</code>, retain the same session and retry <code>stop()</code>; cleanup does not retry in the background. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid. See <a href="#errors/timing">error timing and cleanup ownership</a>.</td></tr>
             <tr><td><code>frames_collected</code></td><td class="type">int</td><td>Reassembled generic BDO protocol frames captured in the current or most recent run—not decoded item events. The count remains available after <code>stop()</code> and resets on the next <code>start()</code>.</td></tr>
           </tbody></table></div>
           <div class="callout note"><strong>Truncation is visible, not silent.</strong> The session retains the newest contiguous tail so an action performed shortly before <code>stop()</code> keeps its preceding context. <code>stop()</code> scores only that retained tail and attaches the complete retention report to its result.</div>
@@ -6131,12 +6358,11 @@ print(result.summary())</code></pre>
             <tr><td><code>stop()</code></td><td><a href="#errors/exceptions"><code>DirectionMismatchError</code></a></td><td>Structural evidence contradicts an explicit <code>action</code>; no profile is written.</td></tr>
             <tr><td><code>stop()</code></td><td><a href="#errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a></td><td>A storage wrapper was observed but its destination/count fields were ambiguous; no result is returned and no profile is written.</td></tr>
           </tbody></table></div>
-          <div class="callout warning"><strong>Retain the session when cleanup is incomplete.</strong> If <code>stop()</code> raises with <code>cleanup_incomplete=True</code>, retry <code>stop()</code> on this same object; cleanup does not retry in the background. A later successful cleanup does not validate the failed calibration. See <a href="#errors/timing">error timing and cleanup ownership</a>.</div>
         </section>
       </article>
 
       <article class="doc-page" id="calibration-functions" data-page="calibration-functions" data-title="Calibration functions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> calibration module</div>
+        <div class="page-kicker"><span class="kind-badge function">Functions</span> calibration module</div>
         <h1 class="page-title">Calibration functions</h1>
         <p class="page-lede">Calibration functions provide one-call profile updating, offline or live analysis, and controlled-session integration.</p>
         <div class="callout note"><strong>Analysis does not write a profile.</strong> <code>calibrate_pcap()</code>, <code>calibrate_live()</code>, <a href="#calibration-session"><code>CalibrationSession.stop()</code></a>, and <code>calibrate_frames()</code> return a <a href="#calibration-types/result"><code>CalibrationResult</code></a>. Persist reviewed specs with <a href="#profile-updates/update-profile"><code>update_profile()</code></a>, or use <code>calibrate_and_update()</code> for both operations. Promoted-spec counts describe discovery, not runtime readiness; compare <code>events_found</code> with a requirement-specific runtime subset.</div>
@@ -6313,7 +6539,7 @@ ignored 4 candidate(s) (see .ignored for reasons)</code></pre>
       </article>
 
       <article class="doc-page" id="profile-updates" data-page="profile-updates" data-title="Profile updates" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> calibration module</div>
+        <div class="page-kicker"><span class="kind-badge function">Functions</span> calibration module</div>
         <h1 class="page-title">Profile updates</h1>
         <p class="page-lede">Apply reviewed calibration specs to a local opcode profile, or reset that profile to an explicit empty state.</p>
         <p class="route-links"><strong>From analysis to write:</strong> See how <code>CalibrationResult</code>, <code>MessageSpec</code>, <code>update_profile()</code>, and <code>ProfileUpdate</code> connect in the <a href="#calibration-types/relationships">calibration type map</a>. For the one-call workflow, <a href="#calibration-functions/calibrate-update"><code>calibrate_and_update()</code></a> returns <code>update=None</code> for an empty result and applies the same automatic completeness gate before any write.</p>
@@ -6728,7 +6954,7 @@ else:
             <a class="choice-card" href="#solare-live-session/async"><span class="arrow">&rarr;</span><h3>Capture a Solare leaderboard</h3><p><code>AsyncLiveSolareSession</code> is Experimental and yields progress updates plus a domain-specific final result.</p></a>
           </div>
           <p>Use the synchronous APIs when the application does not already own an asyncio event loop. The async item wrappers are lifecycle facades: <code>AsyncLiveCaptureSession</code> reuses the synchronous item decoder, event queue, filter, finalization, and retained-error behavior; <code>AsyncCalibrationSession</code> reuses synchronous frame collection and scoring.</p>
-          <div class="callout context"><strong>The returned domain objects do not change.</strong> Async item capture yields <a href="#bdo-event"><code>BDOEvent</code></a> objects, and async calibration returns <a href="#calibration-types/result"><code>CalibrationResult</code></a>. No async replay function, async one-call profile writer, or universal async result type is exposed.</div>
+          <p>Async item capture still yields <a href="#bdo-event"><code>BDOEvent</code></a>, and async calibration returns <a href="#calibration-types/result"><code>CalibrationResult</code></a>. The package exposes no async replay function, one-call async profile writer, or universal async result type.</p>
         </section>
 
         <section class="doc-section">
@@ -6775,8 +7001,7 @@ else:
     <span class="sig-param">origin_observer</span>: Callable[[<a href="#origin-learner/observation">CompanionObservation</a>], object] | None = None,
     <span class="sig-param">on_diagnostic</span>: Callable[[<a href="#live-capture-health/decoder-diagnostic">DecoderDiagnostic</a>], object] | None = None,
 )</div>
-        <p class="route-links"><strong>Required setup:</strong> <a href="#profiles">install or create a current item opcode profile</a>. <strong>Synchronous counterpart:</strong> <a href="#live-capture-session"><code>LiveCaptureSession</code></a> owns the underlying decoder, queue, filtering, finalization, and retained-error contract.</p>
-        <div class="callout warning"><strong>Live-capture prerequisites apply.</strong> Complete the <a href="#capture-foundation/live-prerequisites">driver, permission, and adapter prerequisites</a> before starting either example on this page.</div>
+        <p class="route-links"><strong>Required setup:</strong> <a href="#profiles">install or create a current item opcode profile</a>. <strong>Live setup:</strong> <a href="#capture-foundation/live-prerequisites">complete the driver, permission, and adapter prerequisites</a> before starting either example. <strong>Synchronous counterpart:</strong> <a href="#live-capture-session"><code>LiveCaptureSession</code></a> owns the underlying decoder, queue, filtering, finalization, and retained-error contract.</p>
 
         <section class="doc-section">
           <h2 id="async-live-capture-session/example" class="section-heading" data-anchor="example" data-toc>Consuming the stream <span class="recommendation-label">Recommended</span></h2>
@@ -6880,7 +7105,6 @@ asyncio.run(main())</code></pre>
             <tr><td><code>health</code></td><td class="type"><a href="#live-capture-health/health">LiveCaptureHealth</a></td><td>Current packet/event queue and acquisition-integrity snapshot from the underlying live session.</td></tr>
             <tr><td><code>decoder_health</code></td><td class="type"><a href="#live-capture-health/decoder-health">DecoderHealth</a></td><td>Current storage schema/destination compatibility snapshot from the underlying live session.</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>Error delivery normally follows the drained stream.</strong> <code>stop()</code> finalizes the session but is not the sole background-error delivery point. When bounded cleanup completes, iteration and a fully drained poll deliver buffered events before re-raising the retained failure. <code>raise_if_failed()</code> can raise immediately, and an incomplete cleanup can escape before the remaining queue drains.</div>
         </section>
 
         <section class="doc-section">
@@ -6923,7 +7147,7 @@ asyncio.run(main())</code></pre>
 
         <section class="doc-section">
           <h2 id="async-calibration-session/example" class="section-heading" data-anchor="example" data-toc>Interactive calibration <span class="recommendation-label">Recommended</span></h2>
-          <div class="callout warning"><strong>Live-capture prerequisites apply.</strong> Complete the <a href="#capture-foundation/live-prerequisites">driver, permission, and adapter prerequisites</a> before starting. The session captures only; it does not write a profile.</div>
+          <p class="supporting-note"><strong>Before starting:</strong> Complete the <a href="#capture-foundation/live-prerequisites">driver, permission, and adapter prerequisites</a>.</p>
           <pre><code>import asyncio
 
 from bdo_toolkit import AsyncCalibrationSession
@@ -6968,7 +7192,7 @@ ignored 4 candidate(s) (see .ignored for reasons)</code></pre>
             <tr><td><a href="#calibration-functions/opt-max_retained_frames"><code>max_retained_frames</code></a></td><td class="type">int</td><td>Bound the newest contiguous generic-frame tail; default <code>50,000</code>.</td></tr>
             <tr><td><a href="#calibration-functions/opt-max_retained_bytes"><code>max_retained_bytes</code></a></td><td class="type">int</td><td>Bound retained generic-frame payload bytes; default 64 MiB.</td></tr>
           </tbody></table></div>
-          <div class="callout note"><strong>No event queue is involved.</strong> Calibration retains reassembled protocol frames for scoring and returns analysis types; it does not deliver <a href="#bdo-event"><code>BDOEvent</code></a> objects.</div>
+          <p>Calibration retains reassembled protocol frames for scoring and returns analysis types; it does not deliver <a href="#bdo-event"><code>BDOEvent</code></a> objects.</p>
         </section>
 
         <section class="doc-section">
@@ -7178,7 +7402,7 @@ for entry in snapshot.overall_top_100[:3]:
       </article>
 
       <article class="doc-page" id="solare-capture" data-page="solare-capture" data-title="Solare capture functions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare &middot; Experimental</div>
+        <div class="page-kicker"><span class="kind-badge function">Functions</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Solare capture functions</h1>
         <p class="page-lede"><code>replay_solare()</code> classifies a saved capture; <code>capture_solare_snapshot()</code> blocks over one passive live-capture window. Both run eagerly and return one <a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a>&mdash;not a <a href="#bdo-event"><code>BDOEvent</code></a> iterator.</p>
 
@@ -7189,7 +7413,7 @@ for entry in snapshot.overall_top_100[:3]:
             <a class="choice-card" href="#solare-capture/capture-snapshot"><span class="arrow">&rarr;</span><h3>Capture one refresh</h3><p><code>capture_solare_snapshot()</code> is the smallest blocking live API and stops after confirmation or its 120-second default deadline.</p></a>
             <a class="choice-card" href="#solare-live-session"><span class="arrow">&rarr;</span><h3>Control the lifecycle</h3><p>Use a live session when the application needs separate start, progress consumption, stop, or asyncio control.</p></a>
           </div>
-          <div class="callout note"><strong>One result, with or without a leaderboard.</strong> When <code>result.complete</code> is true, <code>result.snapshot</code> contains a confirmed <a href="#solare-leaderboard-snapshot"><code>SolareLeaderboardSnapshot</code></a>. Every non-complete classification keeps <code>snapshot=None</code>; inspect its <a href="#solare-progress/detection-status"><code>status</code></a>, <code>message</code>, and <a href="#solare-evidence"><code>evidence</code></a> instead of treating it as an empty leaderboard.</div>
+          <p class="supporting-note"><code>result.complete</code> gates <code>result.snapshot</code>: complete results contain a confirmed <a href="#solare-leaderboard-snapshot"><code>SolareLeaderboardSnapshot</code></a>; every other status keeps <code>snapshot=None</code> and retains diagnostic <a href="#solare-progress/detection-status"><code>status</code></a>, <code>message</code>, and <a href="#solare-evidence"><code>evidence</code></a>.</p>
           <p class="route-links"><strong>Other entry points:</strong> <a href="#solare-live-session/async">asyncio live capture</a> &middot; <a href="#cli/solare">terminal patch check</a> &middot; <a href="#capture-foundation/live-prerequisites">live-capture setup</a>.</p>
         </section>
 
@@ -7254,7 +7478,7 @@ print(
     <span class="sig-param">capture_buffer_bytes</span>: int = 67108864,
 ) -&gt; <a href="#solare-progress/capture-result">SolareCaptureResult</a></div>
           <p>Constructs one <a href="#solare-live-session/sync"><code>LiveSolareSession</code></a> and waits for finalization. With <code>stop_on_complete=True</code>, the first confirmation requests orderly shutdown. With <code>stop_on_complete=False</code>, that snapshot is latched and capture continues until the 120-second default deadline, an explicit deadline, Ctrl+C, or backend end. Pass <code>capture_seconds=None</code> only to remove the deadline deliberately. The function attempts bounded capture draining on every exit; an unverified cleanup raises instead of returning a final result.</p>
-          <div class="callout warning"><strong>Live capture needs system setup.</strong> Complete the <a href="#capture-foundation/live-prerequisites">live-capture prerequisites</a>, start the call, then open or refresh the Leaderboard tab. Add <code>save_pcap="solare-patch-check.pcapng"</code> only when a recording is wanted; it writes sensitive packet data to a new file and refuses to overwrite an existing destination.</div>
+          <p class="supporting-note"><strong>Before starting:</strong> Complete the <a href="#capture-foundation/live-prerequisites">live-capture prerequisites</a>, start the call, then open or refresh the Leaderboard tab.</p>
 
           <h3 id="solare-capture/live-example" class="subheading" data-anchor="live-example" data-toc>Example</h3>
           <pre><code>from bdo_toolkit.solare import capture_solare_snapshot
@@ -7312,7 +7536,7 @@ Player0001 3045 overall=W70/D1/L49 M120 primary-class=Warrior</code></pre>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Default</th><th>Contract</th></tr></thead><tbody>
             <tr id="solare-capture/opt-capture_options" data-anchor="opt-capture_options"><td><code>capture_options</code></td><td class="type"><a href="#packet-capture-options">PacketCaptureOptions</a> | None</td><td><code>None</code></td><td>Interface, local destination IPv4, server ports, and BPF controls. <code>None</code> creates default options.</td></tr>
             <tr id="solare-capture/opt-capture_seconds" data-anchor="opt-capture_seconds"><td><code>capture_seconds</code></td><td class="type">float | None</td><td><code>120.0</code></td><td>Finite, non-negative, non-boolean maximum window. <code>None</code> explicitly sets no deadline; structural confirmation stops capture only when <code>stop_on_complete=True</code>. Ctrl+C finalizes and returns the best classified result.</td></tr>
-            <tr id="solare-capture/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Optional new <code>.pcap</code> or <code>.pcapng</code> destination. Existing files are never overwritten. In keep-listening mode the decoder remains bounded, but this file can grow until the caller's deadline/stop; the toolkit does not impose a disk quota.</td></tr>
+            <tr id="solare-capture/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td><code>None</code></td><td>Optional new <code>.pcap</code> or <code>.pcapng</code> destination. Existing files are never overwritten. Treat the resulting file as sensitive captured data. In keep-listening mode the decoder remains bounded, but this file can grow until the caller's deadline/stop; the toolkit does not impose a disk quota.</td></tr>
             <tr id="solare-capture/opt-stop_on_complete" data-anchor="opt-stop_on_complete"><td><code>stop_on_complete</code></td><td class="type">bool</td><td><code>True</code></td><td>Stops automatically after all class-table records and authoritative overall ranks 1 through 100 pass the overlap/no-conflict gates. Set false only when capture should continue to its deadline, Ctrl+C, or backend end after the first snapshot is latched.</td></tr>
             <tr id="solare-capture/opt-retain_raw_extensions-live" data-anchor="opt-retain_raw_extensions-live"><td><code>retain_raw_extensions</code></td><td class="type">bool</td><td><code>False</code></td><td>Retain validated opaque gear/loadout and skill-addon sections from both responses while constructing a complete result. Aggregate and ordinary per-class fields decode without those opaque allocations; later serialization also requires <code>include_raw=True</code> and cannot restore omitted bytes.</td></tr>
             <tr id="solare-capture/opt-on_update" data-anchor="opt-on_update"><td><code>on_update</code></td><td class="type">Callable[[<a href="#solare-progress/update">SolareUpdate</a>], None] | None</td><td><code>None</code></td><td>Synchronous callback for each structured progress update. Keep it lightweight or enqueue work. An explicit session's non-blocking <code>request_stop()</code> is callback-safe; same-session blocking control is restricted as described below. Callback failure fails the session.</td></tr>
@@ -7347,7 +7571,7 @@ Player0001 3045 overall=W70/D1/L49 M120 primary-class=Warrior</code></pre>
       </article>
 
       <article class="doc-page" id="solare-live-session" data-page="solare-live-session" data-title="Solare live sessions" hidden>
-        <div class="page-kicker"><span class="kind-badge function">API</span> Arena of Solare &middot; Experimental</div>
+        <div class="page-kicker"><span class="kind-badge class">Classes</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title">Solare live sessions</h1>
         <p class="page-lede"><code>LiveSolareSession</code> and <code>AsyncLiveSolareSession</code> expose the same single-use capture lifecycle and structured update stream to synchronous and asyncio applications. Unlike the blocking convenience function, explicit sessions have no hidden deadline; the caller owns when to request or await shutdown.</p>
 
@@ -7362,7 +7586,7 @@ Player0001 3045 overall=W70/D1/L49 M120 primary-class=Warrior</code></pre>
     <span class="sig-param">on_update</span>: Callable[[<a href="#solare-progress/update">SolareUpdate</a>], None] | None = None,
     <span class="sig-param">capture_buffer_bytes</span>: int = 67108864,
 )</div>
-          <div class="callout warning"><strong>Live-capture prerequisites apply.</strong> Complete the <a href="#capture-foundation/live-prerequisites">driver, permission, and adapter setup</a>, start the session, then open or refresh the Leaderboard tab.</div>
+          <p class="supporting-note"><strong>Before starting:</strong> Complete the <a href="#capture-foundation/live-prerequisites">driver, permission, and adapter setup</a>, start the session, then open or refresh the Leaderboard tab.</p>
           <pre><code>from bdo_toolkit.solare import LiveSolareSession
 
 with LiveSolareSession() as session:
@@ -7430,13 +7654,12 @@ asyncio.run(main())</code></pre>
           <p>Both classes accept the same configuration. The blocking convenience function documents the corresponding validation and lifecycle behavior.</p>
           <div class="table-wrap"><table><thead><tr><th>Parameter</th><th>Type</th><th>Summary</th></tr></thead><tbody>
             <tr id="solare-live-session/opt-capture_options" data-anchor="opt-capture_options"><td><code>capture_options</code></td><td class="type"><a href="#packet-capture-options">PacketCaptureOptions</a> | None</td><td><a href="#solare-capture/opt-capture_options">Live capture configuration</a>.</td></tr>
-            <tr id="solare-live-session/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td><a href="#solare-capture/opt-save_pcap">Optional new capture destination</a>.</td></tr>
+            <tr id="solare-live-session/opt-save_pcap" data-anchor="opt-save_pcap"><td><code>save_pcap</code></td><td class="type">str | Path | None</td><td>Optional sensitive <a href="#solare-capture/opt-save_pcap"><code>.pcap</code>/<code>.pcapng</code> destination</a>; existing files are never overwritten.</td></tr>
             <tr id="solare-live-session/opt-stop_on_complete" data-anchor="opt-stop_on_complete"><td><code>stop_on_complete</code></td><td class="type">bool</td><td><a href="#solare-capture/opt-stop_on_complete">Confirmation-triggered shutdown policy</a>.</td></tr>
             <tr id="solare-live-session/opt-retain_raw_extensions" data-anchor="opt-retain_raw_extensions"><td><code>retain_raw_extensions</code></td><td class="type">bool</td><td><a href="#solare-capture/opt-retain_raw_extensions-live">Acquisition-time opaque-section retention for both responses</a>; default false.</td></tr>
             <tr id="solare-live-session/opt-on_update" data-anchor="opt-on_update"><td><code>on_update</code></td><td class="type">Callable[[<a href="#solare-progress/update">SolareUpdate</a>], None] | None</td><td><a href="#solare-capture/opt-on_update">Synchronous progress callback</a>.</td></tr>
             <tr id="solare-live-session/opt-capture_buffer_bytes" data-anchor="opt-capture_buffer_bytes"><td><code>capture_buffer_bytes</code></td><td class="type">int</td><td><a href="#solare-capture/opt-capture_buffer_bytes">Native live-capture buffer request</a>.</td></tr>
           </tbody></table></div>
-          <div class="callout warning"><strong>PCAP recording is opt-in.</strong> Passing <code>save_pcap</code> writes sensitive packet data to a new <code>.pcap</code> or <code>.pcapng</code> path. Existing destinations are never overwritten.</div>
         </section>
 
         <section class="doc-section">
@@ -7451,7 +7674,7 @@ asyncio.run(main())</code></pre>
             <tr><td><code>running</code> / <code>stopped</code></td><td colspan="2">Lifecycle booleans.</td></tr>
             <tr><td><code>result</code></td><td colspan="2"><a href="#solare-progress/capture-result"><code>SolareCaptureResult</code></a> after finalization; otherwise <code>None</code>.</td></tr>
             <tr><td><code>error</code></td><td colspan="2">First retained startup, adapter, writer, callback, decoder, or cleanup exception, or <code>None</code> before a failure.</td></tr>
-            <tr><td><code>cleanup_incomplete</code></td><td colspan="2"><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another <code>stop()</code> attempt on the same sync or async session object. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid.</td></tr>
+            <tr><td><code>cleanup_incomplete</code></td><td colspan="2"><code>True</code> only when the last bounded shutdown attempt could not verify release of native capture or a session-owned worker or pipeline and retained those owners for another terminal attempt. If this is <code>True</code>, retain the same session: call <code>stop()</code> on <code>LiveSolareSession</code>, or <code>await stop()</code> on <code>AsyncLiveSolareSession</code>. Cleanup does not retry in the background. Inspect <code>error</code> separately: <code>False</code> does not prove that the capture run succeeded, and a successful cleanup retry does not make a previously failed result valid. See <a href="#errors/timing">error timing and cleanup ownership</a>.</td></tr>
             <tr><td><code>stop_reason</code></td><td colspan="2"><code>complete-snapshot</code>, <code>requested</code>, <code>capture-ended</code>, <code>resource-limit</code>, or <code>error</code> after shutdown.</td></tr>
             <tr><td><code>endpoint</code></td><td colspan="2"><a href="#solare-live-session/endpoint"><code>SolareCaptureEndpoint</code></a> with resolved interface/local-IP/filter metadata after startup, or <code>None</code>.</td></tr>
             <tr><td><code>raise_if_failed()</code></td><td colspan="2">Reraises the first stored background exception.</td></tr>
@@ -7459,7 +7682,6 @@ asyncio.run(main())</code></pre>
           <div class="mini-flow"><span>stop sniffer</span>&rarr;<span>drain packet queue</span>&rarr;<span>finish TCP flows</span>&rarr;<span>refresh classifier</span>&rarr;<span>close PCAP</span>&rarr;<span>publish latched health/result</span></div>
           <p>Drain ordering preserves packets accepted during shutdown for optional PCAP recording, TCP reassembly, and orderly finalization. Each accepted packet is written before semantic decode. If decoding fails, remaining accepted packets are still writer-drained for diagnosis but are not semantically decoded from a potentially invalid state. The first confirmed frame window and its acquisition health are already latched; drained packets cannot replace the public snapshot or alter its exposed health.</p>
           <div class="callout note"><strong>Failure and context-manager precedence are explicit.</strong> Startup cleans any partially opened capture, writer, or thread and preserves the original exception. During finalization, the first adapter, writer, callback, decoder, or cleanup exception remains <code>session.error</code>. <code>poll()</code>/<code>updates()</code> drain already-published progress before raising it; terminal <code>wait()</code>/<code>stop()</code>, <code>raise_if_failed()</code>, and normal sync/async context exit raise it directly. If the user's context body is already raising, that body exception stays primary while cleanup is still attempted and the session failure remains inspectable.</div>
-          <div class="callout warning"><strong>Retain the session when cleanup is incomplete.</strong> If <code>stop()</code> raises with <code>cleanup_incomplete=True</code>, retry <code>stop()</code> on the same sync or async object; cleanup does not retry in the background. A later successful cleanup does not validate the failed run. See <a href="#errors/timing">error timing and cleanup ownership</a>.</div>
           <p>After verified finalization, native and worker resources are released. Public <code>endpoint</code>, terminal <code>result</code>, <code>error</code>, <code>cleanup_incomplete</code>, and <code>stop_reason</code> remain available on the session object.</p>
         </section>
 
@@ -7487,7 +7709,7 @@ asyncio.run(main())</code></pre>
             <li><code>save_pcap</code> is opt-in and refuses overwrite. Protect saved captures as sensitive data. With keep-listening and no caller deadline, the file can grow without a toolkit disk bound even though decoder memory stays bounded.</li>
           </ul>
           <p class="supporting-note"><strong>Windows buffer requirement:</strong> the Solare session requires configuration of its requested Npcap buffer to succeed; the default request is 64 MiB.</p>
-          <p class="supporting-note"><strong>Final worker cleanup is bounded.</strong> The session allows up to 15 seconds for queued capture work, structural refresh, and optional detail finalization before reporting cleanup as incomplete. Retain the same session object and retry <code>stop()</code> when <code>cleanup_incomplete</code> is true.</p>
+          <p class="supporting-note"><strong>Final worker cleanup is bounded.</strong> The session allows up to 15 seconds for queued capture work, structural refresh, and optional detail finalization before reporting cleanup as incomplete. Retain the same object: call <code>stop()</code> on <code>LiveSolareSession</code>, or <code>await stop()</code> on <code>AsyncLiveSolareSession</code>, when <code>cleanup_incomplete</code> is true.</p>
         </section>
 
         <div class="page-end"><a class="page-jump" href="#solare-capture">&larr; Capture functions</a><a class="page-jump" href="#solare-progress">Next: result and progress types &rarr;</a></div>
@@ -7591,7 +7813,7 @@ print(snapshot_payload["capabilities"])</code></pre>
       </article>
 
       <article class="doc-page" id="solare-leaderboard-snapshot" data-page="solare-leaderboard-snapshot" data-title="Leaderboard snapshot" hidden>
-        <div class="page-kicker"><span class="kind-badge class">Class</span> Arena of Solare &middot; Experimental</div>
+        <div class="page-kicker"><span class="kind-badge class">Dataclass</span> Arena of Solare &middot; Experimental</div>
         <h1 class="page-title"><code>SolareLeaderboardSnapshot</code></h1>
         <p class="page-lede">A toolkit-produced complete snapshot is an immutable, atomic leaderboard containing 620 class top-20 player records and a separate authoritative overall top 100 after their overlap relationship and capture health validate. Applications normally receive this model through <code>result.snapshot</code> rather than constructing it.</p>
         <p class="route-links"><strong>Accessed through:</strong> <a href="#solare-progress/capture-result"><code>result.snapshot</code></a> after <code>result.complete</code> is true. Capture and replay never return a partial snapshot.</p>
@@ -8229,7 +8451,7 @@ overall capabilities: ['aggregate_performance', 'elo', 'performance', 'rankings'
       </article>
 
       <article class="doc-page" id="cli" data-page="cli" data-title="Command line" hidden>
-        <div class="page-kicker"><span class="kind-badge function">CLI</span> bdo-toolkit</div>
+        <div class="page-kicker"><span class="kind-badge cli">CLI</span> bdo-toolkit</div>
         <h1 class="page-title">Command line</h1>
         <p class="page-lede">The <code>bdo-toolkit</code> command installs an explicit item profile, runs item-event workflows, and exposes a separate nested Arena of Solare capture/replay surface.</p>
 
@@ -8263,8 +8485,6 @@ bdo-toolkit solare replay path/to/leaderboard.pcapng
 bdo-toolkit solare live --save-pcap path/to/solare-patch-check.pcapng --output path/to/solare-result.json</code></pre>
           <p class="example-note">Replace the capture, matching-era profile, and calibration item placeholders. The published stable URL installs the latest maintainer-promoted NA/EU profile at <code>opcodes.local</code> for live decoding; historical replay pins its own matching-era profile. <code>replay</code> and <code>live</code> require <code>--profile</code>, and decoding never fetches automatically. For the recommended automatic storage calibration, <code>--qty 1</code> is the fixed per-record value for the entire passive capture; the operator deposits 1, deposits the remaining 4, then withdraws all 5 matching unstackables without changing the flag. Follow the <a href="#calibration-workflow/run">guided sequence and calibration-town restriction</a>. On registry-mapped storage events, <code>--source</code> is the exact destination-town name. Use <code>--deposit-origin worker</code> or <code>manual</code> for normal cause filtering; inspect unresolved wrappers with <code>--event-type storage_record</code>. The accepted <code>unknown</code> origin is an already-live compatibility value, not the current neutral-wrapper path.</p>
           <div class="callout note" id="cli/item-filter-defaults" data-anchor="item-filter-defaults" data-search-title="CLI item filter defaults"><strong>CLI filter flags replace the live default.</strong> With no decode-filter flags, <code>replay</code> is exhaustive and <code>live</code> uses <code>EventFilter.activity()</code>. Supplying any <code>--event-type</code>, <code>--source</code>, <code>--item-id</code>, or <code>--deposit-origin</code> builds one explicit <a href="#event-filter"><code>EventFilter</code></a> from those flags; omitted criteria remain unrestricted. For example, <code>live --source Heidel</code> can also deliver matching snapshot records. Add <code>--event-type storage_delta</code> when only live storage additions are required. The CLI has no direct <code>EventFilter.all()</code> switch; use the Python API for exhaustive live delivery.</div>
-          <div class="callout tip"><strong>Pipe-safe output.</strong> Item events and Solare result JSON use stdout; status, progress, and diagnostics use stderr. Item <code>--jsonl</code> and <code>bdo-toolkit solare ...</code> output can therefore be piped without progress text mixed into the data.</div>
-          <div class="callout warning"><strong>Storage warnings and calibration refusals remain visible.</strong> Replay and live commands install the decoder-diagnostic callback automatically and print warnings to stderr even when <code>--source Heidel</code> yields no events. Calibration reports analysis-time ambiguous destination/count fields as a user-facing <a href="#errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a> without a traceback. The incomplete automatic-transfer gate runs only when <code>--write</code> calls <a href="#profile-updates/update-profile"><code>update_profile()</code></a>; it refuses the write before profile read, backup, or creation. Without <code>--write</code>, a partial automatic result remains available in the dry-run output for inspection.</div>
         </section>
 
         <section class="doc-section">
@@ -8314,6 +8534,7 @@ bdo-toolkit solare live --wait-forever</code></pre>
             <tr><td><code>live</code></td><td>Decode live traffic</td><td>Required <code>--profile</code>; replay flags plus <code>--iface</code>, <code>--capture-seconds</code>, <code>--event-queue-size</code></td></tr>
             <tr><td><code>calibrate</code></td><td>Discover decoder specs</td><td><code>--item-id</code>, <code>--qty</code>, <code>--action</code>, <code>--write</code>, advanced <code>--merge</code></td></tr>
           </tbody></table></div>
+          <p class="supporting-note"><strong>Calibration failure timing.</strong> Ambiguous destination or count fields are reported as a user-facing <a href="#errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a> without a traceback. The incomplete automatic-transfer gate runs only when <code>--write</code> calls <a href="#profile-updates/update-profile"><code>update_profile()</code></a>; a refusal occurs before profile read, backup, or creation. Without <code>--write</code>, a partial automatic result remains available in the dry-run output for inspection.</p>
           <h3 class="subheading">Arena of Solare</h3>
           <div class="table-wrap"><table><thead><tr><th>Command</th><th>Purpose</th><th>Important flags</th></tr></thead><tbody>
             <tr><td><code>solare replay &lt;pcap&gt;</code></td><td>Classify one saved leaderboard response and emit result JSON</td><td><code>--ports</code>, <code>--output</code>, <code>--include-raw</code></td></tr>
@@ -8328,14 +8549,16 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
             <tr><td><code>origin-learn</code></td><td>Aggregate optional companion-family candidates</td><td><code>--profile</code>, repeatable <code>--pcap</code>, threshold, output path</td></tr>
             <tr><td><code>origin-promote</code></td><td>Mark reviewed families as known</td><td><code>--profile</code>, <code>--min-observations</code></td></tr>
           </tbody></table></div>
-          <div class="callout warning"><strong><code>reset-profile</code> replaces all existing specs.</strong> It is an independent recovery operation, not a step after successful calibration. Its default item ID <code>15156</code> is overrideable maintenance metadata for the next guided calibration, not a completed-calibration claim. <code>origin-promote</code> requires a schema-valid existing profile, preserves its current <code>profile_active</code> value, and does not require that value to be <code>true</code>.</div>
+          <div class="callout warning"><strong><code>reset-profile</code> replaces all existing specs.</strong> It is an independent recovery operation, not a step after successful calibration. Its default item ID <code>15156</code> is overrideable maintenance metadata for the next guided calibration, not a completed-calibration claim.</div>
+          <p class="supporting-note"><strong>Origin promotion preserves activation state.</strong> <code>origin-promote</code> requires a schema-valid existing profile, preserves its current <code>profile_active</code> value, and does not require that value to be <code>true</code>.</p>
         </section>
 
         <section class="doc-section">
           <h2 id="cli/process-contract" class="section-heading" data-anchor="process-contract" data-toc>Output streams and exit status</h2>
+          <p>Item events and Solare result JSON use stdout; status, progress, and diagnostics use stderr. Item <code>--jsonl</code> and <code>bdo-toolkit solare ...</code> output can therefore be piped without progress text mixed into the data.</p>
           <div class="table-wrap"><table><thead><tr><th>Surface</th><th>stdout</th><th>stderr</th></tr></thead><tbody>
             <tr><td><code>profile fetch</code></td><td>None</td><td>Installed revision and profile digest, optional backup path, and errors. ETag is never printed.</td></tr>
-            <tr><td><code>replay</code>, <code>live</code></td><td>Decoded events, in console or JSONL form</td><td>Status, diagnostics, and errors</td></tr>
+            <tr><td><code>replay</code>, <code>live</code></td><td>Decoded events, in console or JSONL form</td><td>Status, out-of-band decoder diagnostics, and errors. Decoder warnings remain visible even when an event filter such as <code>--source Heidel</code> yields no events.</td></tr>
             <tr><td><code>solare replay</code></td><td>One complete or non-complete result JSON object, unless <code>--output</code> is supplied</td><td>Output-path confirmation and errors</td></tr>
             <tr><td><code>solare live</code></td><td>One final result JSON object, unless <code>--output</code> is supplied</td><td>Structured progress (unless <code>--quiet</code>), output-path confirmation, diagnostics, and errors</td></tr>
             <tr><td><code>calibrate</code></td><td>One <code>discovered ...</code> line per promoted spec. Lines can include optional calibration evidence and are not a runtime-readiness verdict.</td><td>Progress, direction summary, diagnostics, write summary, and errors</td></tr>
@@ -8351,7 +8574,7 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
 
         <section class="doc-section">
           <h2 id="cli/python-mapping" class="section-heading" data-anchor="python-mapping" data-toc>CLI to Python mapping <span class="reading-label">Optional reference</span></h2>
-          <p>The CLI builds the same configuration and callback objects exposed by the library. This crosswalk maps terminal controls to their Python equivalents.</p>
+          <p>The CLI builds the same configuration and callback objects exposed by the library. This crosswalk maps terminal controls to their Python equivalents. The Solare CLI exposes local-IP and BPF fallback, but custom <code>on_update</code>, native <code>capture_buffer_bytes</code>, <code>auto_local_ip</code>, item <code>packet_queue_size</code>, and item <code>origin_observer</code> remain Python-only controls.</p>
           <div class="table-wrap"><table><thead><tr><th>CLI surface</th><th>Python equivalent</th><th>Mapping detail</th></tr></thead><tbody>
             <tr><td><code>profile fetch URL --output PATH [--timeout SECONDS] [--max-bytes BYTES] [--no-backup]</code></td><td><a href="#profile-api/fetch"><code>fetch_opcode_profile(URL, PATH, ...)</code></a></td><td><code>--timeout</code> and <code>--max-bytes</code> map directly. Backup remains enabled by default; <code>--no-backup</code> passes <code>backup=False</code>. The command writes no stdout, reports revision, digest, and any backup path on stderr, and omits returned ETag metadata.</td></tr>
             <tr><td><code>replay &lt;pcap&gt;</code></td><td><a href="#capture-functions/replay-pcap"><code>replay_pcap(path, ...)</code></a></td><td>The positional capture path maps to <code>path</code>.</td></tr>
@@ -8373,7 +8596,6 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
             <tr><td><code>origin-learn --profile PROFILE [--candidates CANDIDATES] [--pcap PCAP]...</code></td><td><a href="#origin-learner"><code>OriginLearner</code></a> plus replay/live capture</td><td><code>PROFILE</code> selects the opcode profile used for decoding. Each repeatable <code>--pcap</code> is replayed with <code>learner.observe</code> as <code>origin_observer</code>; without one, learning captures live. <code>CANDIDATES</code> is the save path and defaults to <code>opcodes.origin-candidates.json</code>.</td></tr>
             <tr><td><code>origin-promote CANDIDATES --profile PROFILE [--min-observations N]</code></td><td><a href="#origin-promotion"><code>promote_origin_candidates(CANDIDATES, PROFILE, min_observations=N)</code></a></td><td>The positional candidate file and required profile path map directly to <code>candidates_path</code> and <code>profile_path</code>; the optional threshold overrides the candidate file&rsquo;s confirmation threshold.</td></tr>
           </tbody></table></div>
-          <div class="callout context"><strong>Not every library control has a CLI flag.</strong> Solare exposes local-IP and BPF fallback, but custom <code>on_update</code>, native <code>capture_buffer_bytes</code>, <code>auto_local_ip</code>, item <code>packet_queue_size</code>, and item <code>origin_observer</code> remain Python-only controls.</div>
         </section>
       </article>
 
@@ -8481,7 +8703,7 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
       </article>
 
       <article class="doc-page" id="stability" data-page="stability" data-title="Stability & safety" hidden>
-        <div class="page-kicker"><span class="kind-badge guide">Policy</span> Alpha and Experimental contracts</div>
+        <div class="page-kicker"><span class="kind-badge reference">Policy</span> Alpha and Experimental contracts</div>
         <h1 class="page-title">Stability &amp; safety</h1>
         <p class="page-lede">The item-event core follows the package alpha contract. <code>bdo_toolkit.item_state</code> and <code>bdo_toolkit.solare</code> are Experimental public surfaces with weaker compatibility guarantees.</p>
 
@@ -8536,6 +8758,7 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
   var body = document.body;
   var pages = Array.prototype.slice.call(document.querySelectorAll('.doc-page'));
   var navLinks = Array.prototype.slice.call(document.querySelectorAll('.nav-link'));
+  var symbolLinks = Array.prototype.slice.call(document.querySelectorAll('.nav-symbol-link'));
   var navToggles = Array.prototype.slice.call(document.querySelectorAll('.nav-toggle'));
   var search = document.getElementById('navSearch');
   var searchEmpty = document.getElementById('searchEmpty');
@@ -8636,6 +8859,12 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
     eventfilter: 'event-filter',
     bdoevent: 'bdo-event',
     'character-state': 'item-state-overview',
+    'item-state-capture/format': 'item-state-output/format',
+    'item-state-capture/format-parameters': 'item-state-output/format-parameters',
+    'item-state-capture/opt-snapshot': 'item-state-output/opt-snapshot',
+    'item-state-capture/opt-show_items': 'item-state-output/opt-show_items',
+    'item-state-snapshot/serialization': 'item-state-output/serialization',
+    'item-state-snapshot/schema-v4': 'item-state-output/schema-v4',
     'storage-location': 'storage-locations',
     writers: 'event-tools/reference',
     'load-opcode-profile': 'profile-api',
@@ -8778,11 +9007,15 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
     pages.forEach(function (item) { item.hidden = !showAll && item !== page; });
     Array.prototype.slice.call(document.querySelectorAll('.nav-group')).forEach(function (group) { group.classList.remove('has-active'); });
     var category = 'Reference';
+    var currentSymbol = route.anchor ? symbolLinks.find(function (link) {
+      return link.getAttribute('data-page') === route.page && link.getAttribute('data-anchor') === route.anchor;
+    }) : null;
     navLinks.forEach(function (link) {
       var active = link.getAttribute('data-page') === route.page;
       link.classList.toggle('active', active);
       if (active) {
-        link.setAttribute('aria-current', 'page');
+        if (currentSymbol) link.removeAttribute('aria-current');
+        else link.setAttribute('aria-current', 'page');
         var group = link.closest('.nav-group');
         if (group) {
           group.classList.add('has-active');
@@ -8795,10 +9028,16 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
         }
       } else link.removeAttribute('aria-current');
     });
+    symbolLinks.forEach(function (link) {
+      var active = link === currentSymbol;
+      link.classList.toggle('active', active);
+      if (active) link.setAttribute('aria-current', 'location');
+      else link.removeAttribute('aria-current');
+    });
     var title = page.getAttribute('data-title') || 'Reference';
     categoryCrumb.textContent = category;
     crumb.textContent = title;
-    document.title = title + ' · BDO Toolkit';
+    document.title = title + ' · bdo-toolkit';
     buildToc(page, route.page);
     closeMenu(false);
 
@@ -8845,9 +9084,15 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
       var page = pages.find(function (item) { return item.getAttribute('data-page') === pageId; });
       var title = page ? page.getAttribute('data-title') : link.textContent.trim();
       var category = navContext(link);
+      var subgroup = link.closest('.nav-subgroup');
+      var subgroupLabel = subgroup ? subgroup.querySelector('.nav-sublabel') : null;
+      var maturity = navMaturity(link);
       var kindLabel = link.querySelector('.nav-kind');
       var placeholder = kindLabel && kindLabel.textContent.trim() === 'Placeholder';
-      var context = placeholder ? category + ' · Placeholder' : category;
+      var context = category;
+      if (subgroupLabel) context += ' · ' + subgroupLabel.textContent.trim();
+      if (maturity && context.split(' · ').indexOf(maturity) === -1) context += ' · ' + maturity;
+      if (placeholder) context += ' · Placeholder';
       var entry = {
         href: '#' + pageId,
         title: title,
@@ -9226,16 +9471,35 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
       tabs.classList.add('copy-enhanced');
     });
 
+    function inferSignatureKind(source) {
+      if (/^class\s+/.test(source)) return 'class';
+      if (/^(?:from|import)\s+/.test(source)) return 'import';
+      if (/^[A-Za-z_]\w*\s*:\s*Callable\b/.test(source)) return 'callback';
+      if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\s*\(/.test(source)) return 'method';
+      var declaration = source.match(/^(?:def\s+)?([A-Za-z_]\w*)\s*\(/);
+      if (declaration) return /^[A-Z]/.test(declaration[1]) ? 'class' : 'function';
+      return 'api';
+    }
+
     Array.prototype.slice.call(document.querySelectorAll('.signature')).forEach(function (block) {
       block.classList.add('enhanced');
+      var source = block.textContent.trim();
       var codeWrap = document.createElement('span');
       codeWrap.className = 'signature-code';
       while (block.firstChild) codeWrap.appendChild(block.firstChild);
 
-      var article = block.closest('.doc-page');
-      var badge = article ? article.querySelector('.kind-badge') : null;
-      var badgeText = badge ? badge.textContent.toLowerCase() : 'api';
-      var kind = badgeText.indexOf('class') !== -1 || badgeText.indexOf('dataclass') !== -1 ? 'class' : badgeText.indexOf('function') !== -1 ? 'function' : 'api';
+      var kind = block.getAttribute('data-signature-kind') || inferSignatureKind(source);
+      var ariaLabels = {
+        api: 'Python API signature',
+        callback: 'Python callback declaration',
+        class: 'Python class signature',
+        function: 'Python function signature',
+        import: 'Python import statement',
+        method: 'Python method signature'
+      };
+      if (!Object.prototype.hasOwnProperty.call(ariaLabels, kind)) kind = 'api';
+      block.setAttribute('data-signature-kind', kind);
+      block.setAttribute('aria-label', ariaLabels[kind]);
       var kindLabel = document.createElement('span');
       kindLabel.className = 'signature-kind';
       kindLabel.textContent = kind;
@@ -9355,8 +9619,10 @@ bdo-toolkit origin-promote path/to/opcodes.origin-candidates.json --profile path
       toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
     });
   });
-  navLinks.forEach(function (link) {
+  navLinks.concat(symbolLinks).forEach(function (link) {
     link.addEventListener('click', function (event) {
+      var primaryNavigation = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (!primaryNavigation) return;
       closeMenu(false);
       if (window.location.hash === link.getAttribute('href')) {
         event.preventDefault();

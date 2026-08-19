@@ -26,6 +26,7 @@ from ._protocol import MAX_TARGET_MESSAGE_LENGTH, BDOFrame, FlowKey, PacketConte
 from .events import BDOEvent
 from .origin_learning import (
     CompanionObservation,
+    TOKEN_WIDTH,
     discover_companion_observation,
 )
 from .profiles import OriginCompanionFamily
@@ -144,6 +145,7 @@ class _PendingDeposit:
     candidate_observations: dict[
         tuple[int, int, int, int, int], CompanionObservation
     ] = field(default_factory=dict)
+    awaiting_storage_boundaries: frozenset[int] = frozenset()
     finalized: bool = False
 
 
@@ -162,6 +164,7 @@ class _CompanionScan:
     observations: tuple[CompanionObservation, ...]
     complete: bool
     immediate_family_keys: frozenset[tuple[int, int, int, int, int]] = frozenset()
+    awaiting_storage_boundaries: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -178,12 +181,19 @@ class _StagedNeutralBatch:
 class DepositOriginTracker:
     """Correlate live-or-neutral storage records with origin evidence."""
 
-    LOOKAHEAD_FRAMES = 8
+    # Worker companions can be interleaved with ordinary inventory and
+    # storage traffic. Keep a modestly wider message horizon than the original
+    # eight-frame window, while the independent time and pending-count bounds
+    # below prevent unbounded retention or scanning.
+    LOOKAHEAD_FRAMES = 32
+    MAX_PENDING_OPERATIONS_PER_FLOW = 64
+    MAX_PENDING_OPERATIONS_TOTAL = 4096
     STALE_SECONDS = 2.0
     BACKWARD_WINDOW = 16
     STREAM_SPAN_HISTORY_LIMIT = 64
     MANUAL_LOOKBACK_FRAMES = 2
     OBSERVATION_HISTORY_LIMIT = 4096
+    COMPANION_PAIR_HISTORY_LIMIT = 4096
     RECORD_BOUNDARY_HISTORY_LIMIT = 4096
     RUNTIME_CONFIRMED_FAMILY_LIMIT = 4096
     FAMILY_CONFIRMATION_OBSERVATIONS = 2
@@ -259,6 +269,13 @@ class DepositOriginTracker:
                 tuple[int, int, int, int, int],
             ]
         ] = deque()
+        self._contested_companion_pairs: set[
+            tuple[FlowKey, int, int]
+        ] = set()
+        self._contested_companion_pair_order: deque[
+            tuple[FlowKey, int, int]
+        ] = deque()
+        self._companion_contest_overflow_flows: set[FlowKey] = set()
         self._first_record_boundaries: dict[tuple[FlowKey, int], int] = {}
         self._first_record_boundary_order: deque[tuple[FlowKey, int]] = deque()
 
@@ -299,6 +316,9 @@ class DepositOriginTracker:
             if pending.end_sequence is not None and span.end <= pending.end_sequence:
                 still.append(pending)
                 continue
+            if context.timestamp - pending.timestamp > self.STALE_SECONDS:
+                self._close_pending(pending)
+                continue
             if not self._resolve_companions(pending):
                 still.append(pending)
         self._pending = still
@@ -331,12 +351,15 @@ class DepositOriginTracker:
             if not self._frame_is_after(frame, pending):
                 still.append(pending)
                 continue
+            if frame.context.timestamp - pending.timestamp > self.STALE_SECONDS:
+                self._close_pending(pending)
+                continue
             if self._resolve_companions(pending):
                 continue
             pending.frames_after += 1
             if (
-                pending.frames_after >= self.LOOKAHEAD_FRAMES
-                or frame.context.timestamp - pending.timestamp > self.STALE_SECONDS
+                not pending.awaiting_storage_boundaries
+                and pending.frames_after >= self.LOOKAHEAD_FRAMES
             ):
                 self._close_pending(pending)
             else:
@@ -507,6 +530,12 @@ class DepositOriginTracker:
             else:
                 delta_prefix_end = min(previous, delta_prefix_end)
                 self._first_record_boundaries[boundary_key] = delta_prefix_end
+            # The raw stream/frame observers run before target records are
+            # decoded. An older operation may therefore have crossed this
+            # wrapper without yet knowing where its transaction prefix ends.
+            # Retry it now that the authoritative first-record boundary is
+            # available; never substitute the entire record body as a prefix.
+            self._retry_boundary_waiters(flow, stream_sequence)
         manual_matches: list[tuple[int, _ManualDecrementMatch]] = []
         for index, candidate_event in enumerate(events, 1):
             match = self._matching_decrement(
@@ -540,10 +569,109 @@ class DepositOriginTracker:
         for frame in self._recent.get(flow, ()):
             if self._frame_is_after(frame, pending):
                 pending.frames_after += 1
-        if pending.frames_after >= self.LOOKAHEAD_FRAMES:
+        if (
+            pending.frames_after >= self.LOOKAHEAD_FRAMES
+            and not pending.awaiting_storage_boundaries
+        ):
             self._close_pending(pending)
         else:
-            self._pending.append(pending)
+            self._append_pending(pending)
+
+    def _retry_boundary_waiters(
+        self,
+        flow: FlowKey,
+        stream_sequence: int,
+    ) -> None:
+        """Retry older operations deferred on one crossed storage wrapper."""
+
+        still: list[_PendingDeposit] = []
+        for pending in self._pending:
+            if pending.finalized:
+                continue
+            if (
+                pending.flow != flow
+                or stream_sequence not in pending.awaiting_storage_boundaries
+            ):
+                still.append(pending)
+                continue
+            if self._resolve_companions(pending):
+                continue
+            if (
+                pending.frames_after >= self.LOOKAHEAD_FRAMES
+                and not pending.awaiting_storage_boundaries
+            ):
+                self._close_pending(pending)
+                continue
+            still.append(pending)
+        self._pending = [entry for entry in still if not entry.finalized]
+
+    def _append_pending(self, pending: _PendingDeposit) -> None:
+        """Retain one unresolved operation under a hard operation bound."""
+
+        self._pending = [entry for entry in self._pending if not entry.finalized]
+        pending_key = self._pending_operation_key(pending)
+        operation_keys = self._pending_operation_keys()
+        flow_operation_keys = {
+            key for key in operation_keys if key[0] == pending.flow
+        }
+        while pending_key not in operation_keys and (
+            len(flow_operation_keys) >= self.MAX_PENDING_OPERATIONS_PER_FLOW
+            or len(operation_keys) >= self.MAX_PENDING_OPERATIONS_TOTAL
+        ):
+            if len(flow_operation_keys) >= self.MAX_PENDING_OPERATIONS_PER_FLOW:
+                oldest = next(
+                    entry for entry in self._pending if entry.flow == pending.flow
+                )
+            else:
+                oldest = self._pending[0]
+            oldest_key = self._pending_operation_key(oldest)
+            oldest_group = [
+                entry
+                for entry in self._pending
+                if self._pending_operation_key(entry) == oldest_key
+            ]
+            self._pending = [
+                entry
+                for entry in self._pending
+                if self._pending_operation_key(entry) != oldest_key
+            ]
+            for oldest in oldest_group:
+                self._evict_pending_fail_closed(oldest)
+            self._pending = [
+                entry for entry in self._pending if not entry.finalized
+            ]
+            operation_keys = self._pending_operation_keys()
+            flow_operation_keys = {
+                key for key in operation_keys if key[0] == pending.flow
+            }
+        self._pending.append(pending)
+
+    def _evict_pending_fail_closed(self, pending: _PendingDeposit) -> None:
+        """Finalize under resource pressure without trusting partial chains."""
+
+        if pending.finalized:
+            return
+        pending.candidate_observations.clear()
+        pending.companion_observation = None
+        pending.awaiting_storage_boundaries = frozenset()
+        self._finalize(pending)
+
+    def _pending_operation_keys(
+        self,
+    ) -> set[tuple[FlowKey, Optional[int], Optional[int], Optional[int], float]]:
+        return {self._pending_operation_key(entry) for entry in self._pending}
+
+    @staticmethod
+    def _pending_operation_key(
+        pending: _PendingDeposit,
+    ) -> tuple[FlowKey, Optional[int], Optional[int], Optional[int], float]:
+        return (
+            pending.flow,
+            pending.stream_sequence,
+            pending.event.opcode,
+            pending.event.message_length,
+            pending.timestamp,
+        )
 
     # --- anchored structural companion scan ---
 
@@ -606,7 +734,9 @@ class DepositOriginTracker:
             return None
 
         position = pending.end_sequence
-        following: list[bytes] = []
+        following: list[tuple[int, bytes]] = []
+        crossed_storage_messages: list[tuple[int, bytes]] = []
+        awaiting_storage_boundaries: set[int] = set()
         observations: dict[
             tuple[int, int, int, int, int], CompanionObservation
         ] = {}
@@ -618,6 +748,7 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     False,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             length = int.from_bytes(header[0:2], "little")
             if not 5 <= length <= MAX_TARGET_MESSAGE_LENGTH:
@@ -625,6 +756,7 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     True,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             message = self._read_span(pending.flow, position, length)
             if message is None:
@@ -632,15 +764,20 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     False,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             opcode = int.from_bytes(message[3:5], "little")
             if opcode in self._storage_delta_opcodes:
-                return _CompanionScan(
-                    tuple(observations.values()),
-                    True,
-                    frozenset(immediate),
-                )
-            for first_index, first_message in enumerate(following):
+                # A manual or independent storage action can be serialized
+                # between a worker delta and its companion pair. Do not use a
+                # storage wrapper as a companion, but do continue scanning:
+                # the high-entropy token below owns the eventual pair. If the
+                # intervening wrapper repeats that same token, ownership is
+                # ambiguous and the older candidate fails closed.
+                crossed_storage_messages.append((position, message))
+                position += length
+                continue
+            for first_index, (first_sequence, first_message) in enumerate(following):
                 observation = discover_companion_observation(
                     delta_message=delta_message,
                     first_message=first_message,
@@ -652,17 +789,211 @@ class DepositOriginTracker:
                 )
                 if observation is None:
                     continue
+                missing_boundaries = {
+                    sequence
+                    for sequence, _message in crossed_storage_messages
+                    if (pending.flow, sequence)
+                    not in self._first_record_boundaries
+                }
+                if missing_boundaries:
+                    # Target decoding will register these authoritative
+                    # boundaries later in the same scanner pass. Defer this
+                    # ownership decision instead of searching record bodies.
+                    awaiting_storage_boundaries.update(missing_boundaries)
+                    continue
+                bounded_storage_messages = (
+                    (
+                        sequence,
+                        storage_message,
+                        self._first_record_boundaries[(pending.flow, sequence)],
+                    )
+                    for sequence, storage_message in crossed_storage_messages
+                )
+                if not self._observation_has_unique_pending_owner(
+                    pending,
+                    observation,
+                    bounded_storage_messages,
+                    first_message=first_message,
+                    second_message=message,
+                    pair_key=(pending.flow, first_sequence, position),
+                ):
+                    continue
                 observations.setdefault(observation.family_key, observation)
-                if first_index == 0 and message_index == 1:
+                if (
+                    not crossed_storage_messages
+                    and first_index == 0
+                    and message_index == 1
+                ):
                     immediate.add(observation.family_key)
-            following.append(message)
+            following.append((position, message))
             position += length
 
         return _CompanionScan(
             tuple(observations.values()),
             True,
             frozenset(immediate),
+            frozenset(awaiting_storage_boundaries),
         )
+
+    def _observation_has_unique_pending_owner(
+        self,
+        pending: _PendingDeposit,
+        observation: CompanionObservation,
+        crossed_storage_messages: Iterable[tuple[int, bytes, int]],
+        *,
+        first_message: bytes,
+        second_message: bytes,
+        pair_key: tuple[FlowKey, int, int],
+    ) -> bool:
+        """Reject a shared token claimed by another overlapping storage op.
+
+        Companion discovery already proves that the token occurs in this
+        pending delta and both companion messages. Crossing a storage wrapper
+        is safe only when that wrapper does not repeat the same token and no
+        other active pending delta prefix claims it. This keeps overlapping
+        operations separable without borrowing a later worker's companions.
+        """
+
+        if (
+            pending.flow in self._companion_contest_overflow_flows
+            or pair_key in self._contested_companion_pairs
+        ):
+            return False
+
+        delta_message = pending.delta_message
+        if delta_message is None:
+            if (
+                pending.stream_sequence is None
+                or pending.event.message_length is None
+            ):
+                return False
+            delta_message = self._read_span(
+                pending.flow,
+                pending.stream_sequence,
+                pending.event.message_length,
+            )
+        if delta_message is None:
+            return False
+        token_offset = observation.token_offsets[0]
+        token = delta_message[token_offset : token_offset + TOKEN_WIDTH]
+        if len(token) != TOKEN_WIDTH:
+            return False
+
+        competing = False
+        for _sequence, message, boundary in crossed_storage_messages:
+            if self._message_claims_companion_pair(
+                message,
+                boundary,
+                pending,
+                first_message,
+                second_message,
+            ):
+                competing = True
+                break
+
+        for other in self._pending:
+            if other is pending or other.finalized or other.flow != pending.flow:
+                continue
+            if (
+                pending.stream_sequence is not None
+                and other.stream_sequence == pending.stream_sequence
+                and other.event.opcode == pending.event.opcode
+                and other.event.message_length == pending.event.message_length
+                and other.timestamp == pending.timestamp
+            ):
+                # Multiple decoded records from one raw storage wrapper share
+                # one transaction token and are one claimant, not competing
+                # operations. Neutral batches are grouped earlier; retain the
+                # same rule for already-live multi-record wrappers.
+                continue
+            other_message = other.delta_message
+            if other_message is None:
+                if (
+                    other.stream_sequence is None
+                    or other.event.message_length is None
+                ):
+                    continue
+                other_message = self._read_span(
+                    other.flow,
+                    other.stream_sequence,
+                    other.event.message_length,
+                )
+            if other_message is None or other.delta_prefix_end is None:
+                continue
+            prefix_end = min(other.delta_prefix_end, len(other_message))
+            if self._message_claims_companion_pair(
+                other_message,
+                prefix_end,
+                other,
+                first_message,
+                second_message,
+            ):
+                competing = True
+                break
+        if competing:
+            self._mark_companion_pair_contested(pair_key)
+            return False
+        return True
+
+    @staticmethod
+    def _message_claims_companion_pair(
+        message: bytes,
+        prefix_end: int,
+        pending: _PendingDeposit,
+        first_message: bytes,
+        second_message: bytes,
+    ) -> bool:
+        if prefix_end < 5 + TOKEN_WIDTH:
+            return False
+        return (
+            discover_companion_observation(
+                delta_message=message,
+                first_message=first_message,
+                second_message=second_message,
+                timestamp=pending.timestamp,
+                flow=pending.flow,
+                stream_sequence=pending.stream_sequence,
+                delta_prefix_end=min(prefix_end, len(message)),
+            )
+            is not None
+        )
+
+    def _mark_companion_pair_contested(
+        self,
+        pair_key: tuple[FlowKey, int, int],
+    ) -> None:
+        flow = pair_key[0]
+        if (
+            flow in self._companion_contest_overflow_flows
+            or pair_key in self._contested_companion_pairs
+        ):
+            return
+        if self.COMPANION_PAIR_HISTORY_LIMIT <= 0:
+            self._suppress_companion_candidates_for_flow(flow)
+            return
+        if (
+            len(self._contested_companion_pair_order)
+            >= self.COMPANION_PAIR_HISTORY_LIMIT
+        ):
+            expired = self._contested_companion_pair_order.popleft()
+            self._contested_companion_pairs.discard(expired)
+            # Never let bounded-history pressure turn a previously contested
+            # pair back into acceptable evidence. Conservatively suppress
+            # worker-chain attribution on that flow until it closes; manual
+            # decrement evidence and neutral delivery remain available.
+            self._suppress_companion_candidates_for_flow(expired[0])
+        if flow in self._companion_contest_overflow_flows:
+            return
+        self._contested_companion_pairs.add(pair_key)
+        self._contested_companion_pair_order.append(pair_key)
+
+    def _suppress_companion_candidates_for_flow(self, flow: FlowKey) -> None:
+        self._companion_contest_overflow_flows.add(flow)
+        for pending in self._pending:
+            if pending.flow != flow or pending.finalized:
+                continue
+            pending.candidate_observations.clear()
+            pending.companion_observation = None
 
     def _resolve_companions(self, pending: _PendingDeposit) -> bool:
         if pending.finalized:
@@ -673,6 +1004,9 @@ class DepositOriginTracker:
         result = self._scan_companions_after(pending)
         if result is None:
             return False
+        pending.awaiting_storage_boundaries = (
+            result.awaiting_storage_boundaries
+        )
         for observation in result.observations:
             pending.candidate_observations.setdefault(
                 observation.family_key,
@@ -698,6 +1032,8 @@ class DepositOriginTracker:
                 self._finalize(pending)
             return True
 
+        if pending.awaiting_storage_boundaries:
+            return False
         if result.complete:
             self._close_pending(pending)
             return pending.finalized
@@ -756,6 +1092,10 @@ class DepositOriginTracker:
                 self._finalize(pending)
 
     def _select_confirmed_observation(self, pending: _PendingDeposit) -> bool:
+        if pending.flow in self._companion_contest_overflow_flows:
+            pending.candidate_observations.clear()
+            pending.companion_observation = None
+            return False
         eligible = [
             key
             for key in pending.candidate_observations
@@ -1034,6 +1374,14 @@ class DepositOriginTracker:
             key for key in self._observed_chains if key[0] != flow
         }
 
+        self._contested_companion_pair_order = deque(
+            key for key in self._contested_companion_pair_order if key[0] != flow
+        )
+        self._contested_companion_pairs = {
+            key for key in self._contested_companion_pairs if key[0] != flow
+        }
+        self._companion_contest_overflow_flows.discard(flow)
+
         self._first_record_boundary_order = deque(
             key for key in self._first_record_boundary_order if key[0] != flow
         )
@@ -1083,6 +1431,9 @@ class DepositOriginTracker:
         self._family_chain_order.clear()
         self._observed_chains.clear()
         self._observed_chain_order.clear()
+        self._contested_companion_pairs.clear()
+        self._contested_companion_pair_order.clear()
+        self._companion_contest_overflow_flows.clear()
         self._first_record_boundaries.clear()
         self._first_record_boundary_order.clear()
 

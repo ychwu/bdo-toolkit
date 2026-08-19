@@ -1,4 +1,4 @@
-# BDO Toolkit
+# bdo-toolkit
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
@@ -14,7 +14,7 @@ traffic into structured, application-ready data.
 [Command line](https://ychwu.github.io/bdo-toolkit/#cli) ·
 [Report an issue](https://github.com/ychwu/bdo-toolkit/issues)
 
-> **Passive, read-only boundary.** BDO Toolkit observes local traffic or saved
+> **Passive, read-only boundary.** bdo-toolkit observes local traffic or saved
 > captures. It does not send or modify packets, replay traffic to the game,
 > automate gameplay, inspect process memory, or bypass anti-cheat software.
 
@@ -200,5 +200,5 @@ absent.
 
 ## License
 
-BDO Toolkit is available under the
+bdo-toolkit is available under the
 [MIT License](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE).
