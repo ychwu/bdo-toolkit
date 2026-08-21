@@ -50,7 +50,7 @@ _STORAGE_HYDRATION_BURST_GAP_SECONDS = 0.5
 _STORAGE_HYDRATION_MAX_BURST_SECONDS = 1.0
 _STORAGE_HYDRATION_EPOCH_SECONDS = 30.0
 _STORAGE_HYDRATION_MIN_DESTINATIONS = 8
-_ITEM_STATE_SCHEMA_VERSION = 4
+_ITEM_STATE_SCHEMA_VERSION = 5
 _CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
 
 # These interpretations agree across the July 17 initial-load and character-
@@ -466,64 +466,67 @@ class StorageContents(tuple[StorageSnapshotSummary, ...]):
         """Return storage summaries containing at least one matching stack."""
         return tuple(storage for storage in self if storage.records_for(item_id))
 
+    @property
+    def registered_count(self) -> int:
+        """Number of observed destinations present in the installed registry."""
+        return sum(storage.storage_id in STORAGE_LOCATIONS for storage in self)
+
+    @property
+    def selected_count(self) -> int:
+        """Number of destinations selected as current state."""
+        return sum(storage.current_state_observed for storage in self)
+
+    @property
+    def nonempty_count(self) -> int:
+        """Selected destinations containing at least one occupied stack."""
+        return sum(
+            storage.current_state_observed and storage.occupied_stacks > 0
+            for storage in self
+        )
+
+    @property
+    def empty_count(self) -> int:
+        """Selected destinations proven empty by a count-zero wrapper."""
+        return sum(storage.current_empty is True for storage in self)
+
+    @property
+    def occupied_stacks(self) -> int:
+        """Occupied stacks across the selected current destination states."""
+        return sum(storage.occupied_stacks for storage in self)
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialize current aggregate counts and each observed destination."""
+        return {
+            "observed_count": len(self),
+            "registered_count": self.registered_count,
+            "selected_count": self.selected_count,
+            "nonempty_count": self.nonempty_count,
+            "empty_count": self.empty_count,
+            "occupied_stacks": self.occupied_stacks,
+            "destinations": [storage.to_dict() for storage in self],
+        }
+
 
 @dataclass(frozen=True)
 class ItemStateCoverage:
-    """Observed aggregate coverage; never a protocol-completion claim."""
+    """Actionable gaps in the observed item-state evidence."""
 
-    completion_status: str
-    completion_basis: str
-    capture_may_be_partial: bool
-    hydration_detected: bool
-    inventory_records_decoded: int
-    inventory_unique_records: int
-    inventory_groups_observed: int
-    inventory_empty_groups_observed: int
-    inventory_unclassified_records: int
-    storage_records_decoded: int
-    storage_locations_observed: int
-    registered_storage_locations_observed: int
-    registered_storage_locations_total: int
+    inventory_records_missing_instance: int
+    storage_records_missing_instance: int
+    selected_storage_records_missing_instance: int
     registered_storage_ids_not_observed: tuple[int, ...]
     unregistered_storage_ids_observed: tuple[int, ...]
-    explicitly_empty_storage_locations_observed: int
-    storage_locations_selected: int = 0
-    registered_storage_locations_selected: int = 0
-    storage_locations_not_selected_from_latest_sweep: int = 0
-    storage_sweeps_observed: int = 0
-    selected_storage_sweep: Optional[int] = None
-    identity_complete: bool = True
-    identity_status: str = "complete"
-    inventory_records_missing_instance: int = 0
-    storage_records_missing_instance: int = 0
-    selected_storage_records_missing_instance: int = 0
-    storage_locations_with_incomplete_current_identity: int = 0
-    accumulation_status: str = "not_reported"
-    relevant_frames_retained: Optional[int] = None
-    relevant_bytes_retained: Optional[int] = None
-    snapshot_records_retained: Optional[int] = None
-    max_relevant_frames: Optional[int] = None
-    max_snapshot_records: Optional[int] = None
-    max_relevant_bytes: Optional[int] = None
+    storage_locations_not_selected: int
+    storage_locations_with_incomplete_current_identity: int
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "completion_status": self.completion_status,
-            "completion_basis": self.completion_basis,
-            "capture_may_be_partial": self.capture_may_be_partial,
-            "hydration_detected": self.hydration_detected,
-            "inventory_records_decoded": self.inventory_records_decoded,
-            "inventory_unique_records": self.inventory_unique_records,
-            "inventory_groups_observed": self.inventory_groups_observed,
-            "inventory_empty_groups_observed": self.inventory_empty_groups_observed,
-            "inventory_unclassified_records": self.inventory_unclassified_records,
-            "storage_records_decoded": self.storage_records_decoded,
-            "storage_locations_observed": self.storage_locations_observed,
-            "registered_storage_locations_observed": (
-                self.registered_storage_locations_observed
+            "inventory_records_missing_instance": (
+                self.inventory_records_missing_instance
             ),
-            "registered_storage_locations_total": (
-                self.registered_storage_locations_total
+            "storage_records_missing_instance": self.storage_records_missing_instance,
+            "selected_storage_records_missing_instance": (
+                self.selected_storage_records_missing_instance
             ),
             "registered_storage_ids_not_observed": list(
                 self.registered_storage_ids_not_observed
@@ -531,39 +534,10 @@ class ItemStateCoverage:
             "unregistered_storage_ids_observed": list(
                 self.unregistered_storage_ids_observed
             ),
-            "explicitly_empty_storage_locations_observed": (
-                self.explicitly_empty_storage_locations_observed
-            ),
-            "storage_locations_selected": self.storage_locations_selected,
-            "registered_storage_locations_selected": (
-                self.registered_storage_locations_selected
-            ),
-            "storage_locations_not_selected_from_latest_sweep": (
-                self.storage_locations_not_selected_from_latest_sweep
-            ),
-            "storage_sweeps_observed": self.storage_sweeps_observed,
-            "selected_storage_sweep": self.selected_storage_sweep,
-            "identity_complete": self.identity_complete,
-            "identity_status": self.identity_status,
-            "inventory_records_missing_instance": (
-                self.inventory_records_missing_instance
-            ),
-            "storage_records_missing_instance": (self.storage_records_missing_instance),
-            "selected_storage_records_missing_instance": (
-                self.selected_storage_records_missing_instance
-            ),
+            "storage_locations_not_selected": self.storage_locations_not_selected,
             "storage_locations_with_incomplete_current_identity": (
                 self.storage_locations_with_incomplete_current_identity
             ),
-            "accumulation_status": self.accumulation_status,
-            "relevant_frames_retained": self.relevant_frames_retained,
-            "relevant_bytes_retained": self.relevant_bytes_retained,
-            "snapshot_records_retained": self.snapshot_records_retained,
-            "accumulation_limits": {
-                "max_relevant_frames": self.max_relevant_frames,
-                "max_snapshot_records": self.max_snapshot_records,
-                "max_relevant_bytes": self.max_relevant_bytes,
-            },
         }
 
 
@@ -573,324 +547,112 @@ class ItemStateProvenance:
 
     capture_mode: str
     profile_source: str
-    input_path: Optional[str] = None
-    saved_capture_path: Optional[str] = None
     generation_selection: str = "unknown"
-    load_reason: Optional[str] = None
-    load_reason_basis: str = "not_decoded_from_protocol"
-    instance_identity_policy: str = "observed_instance_only"
-    identity_status: str = "complete"
-    accumulation_policy: str = "not_reported"
+    capture_path: Optional[str] = None
+
+    def to_dict(self, *, include_capture_path: bool = False) -> dict[str, object]:
+        output: dict[str, object] = {
+            "capture_mode": self.capture_mode,
+            "profile_source": self.profile_source,
+            "generation_selection": self.generation_selection,
+        }
+        if include_capture_path and self.capture_path is not None:
+            output["capture_path"] = self.capture_path
+        return output
+
+
+@dataclass(frozen=True)
+class ItemStateDiagnostics:
+    """Advanced capture and selection measurements for troubleshooting."""
+
+    frames_seen: int
+    storage_records_decoded: int
+    inventory_generations_observed: int
+    storage_sweeps_observed: int
+    selected_storage_sweep: Optional[int]
+    relevant_frames_retained: int
+    relevant_bytes_retained: int
+    snapshot_records_retained: int
+    capture_limits: ItemStateCaptureLimits
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "capture_mode": self.capture_mode,
-            "profile_source": self.profile_source,
-            "input_path": self.input_path,
-            "saved_capture_path": self.saved_capture_path,
-            "generation_selection": self.generation_selection,
-            "load_reason": self.load_reason,
-            "load_reason_basis": self.load_reason_basis,
-            "instance_identity_policy": self.instance_identity_policy,
-            "identity_status": self.identity_status,
-            "accumulation_policy": self.accumulation_policy,
+            "frames_seen": self.frames_seen,
+            "storage_records_decoded": self.storage_records_decoded,
+            "inventory_generations_observed": self.inventory_generations_observed,
+            "storage_sweeps_observed": self.storage_sweeps_observed,
+            "selected_storage_sweep": self.selected_storage_sweep,
+            "relevant_frames_retained": self.relevant_frames_retained,
+            "relevant_bytes_retained": self.relevant_bytes_retained,
+            "snapshot_records_retained": self.snapshot_records_retained,
+            "capture_limits": self.capture_limits.to_dict(),
         }
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class CharacterStateSnapshot:
     """Query model assembled from observed character-load hydration records."""
 
-    profile_source: str
-    frames_seen: int
     inventory: InventorySnapshotSummary
     storages: StorageContents
-    storage_snapshot_records: int
-    hydration_generations_seen: int
-    warnings: tuple[str, ...]
-    capture_mode: str = "unknown"
-    input_path: Optional[str] = None
-    saved_capture_path: Optional[str] = None
-    storage_sweeps_observed: int = 0
-    selected_storage_sweep: Optional[int] = None
-    storage_records_missing_instance: int = 0
-    capture_limits: ItemStateCaptureLimits = ItemStateCaptureLimits()
-    relevant_frames_retained: Optional[int] = None
-    relevant_bytes_retained: Optional[int] = None
-    snapshot_records_retained: Optional[int] = None
+    provenance: ItemStateProvenance
+    coverage: ItemStateCoverage
     decoder_health: DecoderHealth = DecoderHealth()
+    warnings: tuple[str, ...] = ()
+    diagnostics: Optional[ItemStateDiagnostics] = None
 
-    def __init__(
-        self,
-        profile_source: str,
-        frames_seen: int,
-        inventory: InventorySnapshotSummary,
-        storages: Iterable[StorageSnapshotSummary],
-        storage_snapshot_records: int,
-        hydration_generations_seen: int,
-        warnings: tuple[str, ...],
-        capture_mode: str = "unknown",
-        input_path: Optional[str] = None,
-        saved_capture_path: Optional[str] = None,
-        storage_sweeps_observed: int = 0,
-        selected_storage_sweep: Optional[int] = None,
-        storage_records_missing_instance: int = 0,
-        capture_limits: Optional[ItemStateCaptureLimits] = None,
-        relevant_frames_retained: Optional[int] = None,
-        relevant_bytes_retained: Optional[int] = None,
-        snapshot_records_retained: Optional[int] = None,
-        decoder_health: Optional[DecoderHealth] = None,
-    ) -> None:
-        # ``storages`` was originally a tuple. Accept every historical tuple
-        # call site while exposing a tuple subclass with additive query methods.
-        if capture_limits is not None and not isinstance(
-            capture_limits, ItemStateCaptureLimits
+    def __post_init__(self) -> None:
+        if not isinstance(self.inventory, InventorySnapshotSummary):
+            raise TypeError("inventory must be an InventorySnapshotSummary")
+        if not isinstance(self.provenance, ItemStateProvenance):
+            raise TypeError("provenance must be an ItemStateProvenance")
+        if not isinstance(self.coverage, ItemStateCoverage):
+            raise TypeError("coverage must be an ItemStateCoverage")
+        if not isinstance(self.decoder_health, DecoderHealth):
+            raise TypeError("decoder_health must be a DecoderHealth")
+        if self.diagnostics is not None and not isinstance(
+            self.diagnostics, ItemStateDiagnostics
         ):
-            raise TypeError("capture_limits must be an ItemStateCaptureLimits or None")
-        object.__setattr__(self, "profile_source", profile_source)
-        object.__setattr__(self, "frames_seen", frames_seen)
-        object.__setattr__(self, "inventory", inventory)
-        normalized_storages = StorageContents(storages)
-        object.__setattr__(self, "storages", normalized_storages)
-        object.__setattr__(self, "storage_snapshot_records", storage_snapshot_records)
-        object.__setattr__(
-            self, "hydration_generations_seen", hydration_generations_seen
-        )
-        object.__setattr__(self, "warnings", warnings)
-        object.__setattr__(self, "capture_mode", capture_mode)
-        object.__setattr__(self, "input_path", input_path)
-        object.__setattr__(self, "saved_capture_path", saved_capture_path)
-        if normalized_storages and storage_sweeps_observed == 0:
-            storage_sweeps_observed = 1
-        if normalized_storages and selected_storage_sweep is None:
-            selected_storage_sweep = 1
-        object.__setattr__(self, "storage_sweeps_observed", storage_sweeps_observed)
-        object.__setattr__(self, "selected_storage_sweep", selected_storage_sweep)
-        object.__setattr__(
-            self, "storage_records_missing_instance", storage_records_missing_instance
-        )
-        object.__setattr__(
-            self,
-            "capture_limits",
-            capture_limits or ItemStateCaptureLimits(),
-        )
-        object.__setattr__(self, "relevant_frames_retained", relevant_frames_retained)
-        object.__setattr__(self, "relevant_bytes_retained", relevant_bytes_retained)
-        object.__setattr__(self, "snapshot_records_retained", snapshot_records_retained)
-        if decoder_health is not None and not isinstance(decoder_health, DecoderHealth):
-            raise TypeError("decoder_health must be a DecoderHealth or None")
-        object.__setattr__(self, "decoder_health", decoder_health or DecoderHealth())
+            raise TypeError("diagnostics must be an ItemStateDiagnostics or None")
+        object.__setattr__(self, "storages", StorageContents(self.storages))
 
     @property
     def schema_version(self) -> int:
         return _ITEM_STATE_SCHEMA_VERSION
 
     @property
-    def provenance(self) -> ItemStateProvenance:
-        if self.hydration_generations_seen:
-            generation_selection = "latest_observed_inventory_hydration"
-        elif self.storage_snapshot_records or self.storages:
-            generation_selection = "all_observed_storage_no_inventory_boundary"
-        else:
-            generation_selection = "none_no_hydration_boundary"
-        return ItemStateProvenance(
-            capture_mode=self.capture_mode,
-            profile_source=self.profile_source,
-            input_path=self.input_path,
-            saved_capture_path=self.saved_capture_path,
-            generation_selection=generation_selection,
-            load_reason=self.load_reason,
-            identity_status=(
-                "complete" if self.identity_complete else "incomplete_records_excluded"
-            ),
-            accumulation_policy=(
-                "bounded_fail_closed"
-                if self.snapshot_records_retained is not None
-                else "not_reported"
-            ),
-        )
-
-    @property
-    def coverage(self) -> ItemStateCoverage:
-        observed_registered = {
-            storage.storage_id
-            for storage in self.storages
-            if storage.storage_id in STORAGE_LOCATIONS
-        }
-        missing_registered = tuple(
-            storage_id
-            for storage_id in STORAGE_LOCATIONS
-            if storage_id not in observed_registered
-        )
-        unregistered = tuple(
-            sorted(
-                storage.storage_id
-                for storage in self.storages
-                if storage.storage_id not in STORAGE_LOCATIONS
-            )
-        )
-        selected_storages = tuple(
-            storage for storage in self.storages if storage.current_state_observed
-        )
-        selected_registered = {
-            storage.storage_id
-            for storage in selected_storages
-            if storage.storage_id in STORAGE_LOCATIONS
-        }
-        identity_complete = self.identity_complete
-        return ItemStateCoverage(
-            completion_status="unknown",
-            completion_basis=(
-                "no_proven_protocol_end_marker"
-                if identity_complete
-                else "no_proven_protocol_end_marker_and_missing_instance_identity"
-            ),
-            capture_may_be_partial=True,
-            hydration_detected=self.hydration_detected,
-            inventory_records_decoded=self.inventory.raw_records,
-            inventory_unique_records=self.inventory.serialized_records,
-            inventory_groups_observed=self.inventory.groups,
-            inventory_empty_groups_observed=self.inventory.empty_groups,
-            inventory_unclassified_records=self.inventory.unclassified_records,
-            storage_records_decoded=self.storage_snapshot_records,
-            storage_locations_observed=len(self.storages),
-            registered_storage_locations_observed=len(observed_registered),
-            registered_storage_locations_total=len(STORAGE_LOCATIONS),
-            registered_storage_ids_not_observed=missing_registered,
-            unregistered_storage_ids_observed=unregistered,
-            explicitly_empty_storage_locations_observed=sum(
-                storage.current_empty is True for storage in self.storages
-            ),
-            storage_locations_selected=len(selected_storages),
-            registered_storage_locations_selected=len(selected_registered),
-            storage_locations_not_selected_from_latest_sweep=sum(
-                not storage.current_state_observed for storage in self.storages
-            ),
-            storage_sweeps_observed=self.storage_sweeps_observed,
-            selected_storage_sweep=self.selected_storage_sweep,
-            identity_complete=identity_complete,
-            identity_status=(
-                "complete" if identity_complete else "incomplete_records_excluded"
-            ),
-            inventory_records_missing_instance=(
-                self.inventory.missing_instance_records
-            ),
-            storage_records_missing_instance=self.storage_records_missing_instance,
-            selected_storage_records_missing_instance=sum(
-                storage.selected_missing_instance_records for storage in self.storages
-            ),
-            storage_locations_with_incomplete_current_identity=sum(
-                storage.current_state_observed
-                and storage.current_identity_complete is False
-                for storage in self.storages
-            ),
-            accumulation_status=(
-                "within_limits"
-                if self.snapshot_records_retained is not None
-                else "not_reported"
-            ),
-            relevant_frames_retained=self.relevant_frames_retained,
-            relevant_bytes_retained=self.relevant_bytes_retained,
-            snapshot_records_retained=self.snapshot_records_retained,
-            max_relevant_frames=self.capture_limits.max_relevant_frames,
-            max_snapshot_records=self.capture_limits.max_snapshot_records,
-            max_relevant_bytes=self.capture_limits.max_relevant_bytes,
-        )
-
-    @property
     def identity_complete(self) -> bool:
         return (
             self.inventory.identity_complete
-            and self.storage_records_missing_instance == 0
+            and self.coverage.storage_records_missing_instance == 0
         )
 
     @property
     def hydration_detected(self) -> bool:
-        return bool(
-            self.inventory.groups or self.storage_snapshot_records or self.storages
+        storage_records_decoded = (
+            self.diagnostics.storage_records_decoded
+            if self.diagnostics is not None
+            else 0
         )
+        return bool(self.inventory.groups or storage_records_decoded or self.storages)
 
-    @property
-    def load_reason(self) -> None:
-        """Packet-level reason is intentionally unknown (login vs switch)."""
-        return None
-
-    @property
-    def known_storage_destinations_total(self) -> int:
-        return len(STORAGE_LOCATIONS)
-
-    @property
-    def known_storage_destinations_detected(self) -> int:
-        return sum(summary.storage_id in STORAGE_LOCATIONS for summary in self.storages)
-
-    @property
-    def nonempty_storage_destinations(self) -> int:
-        return sum(
-            summary.current_state_observed and summary.occupied_stacks > 0
-            for summary in self.storages
-        )
-
-    @property
-    def empty_storage_destinations(self) -> int:
-        return sum(summary.current_empty is True for summary in self.storages)
-
-    @property
-    def selected_storage_destinations(self) -> int:
-        return sum(summary.current_state_observed for summary in self.storages)
-
-    @property
-    def storage_destinations_not_selected(self) -> int:
-        return len(self.storages) - self.selected_storage_destinations
-
-    @property
-    def storage_occupied_stacks(self) -> int:
-        return sum(summary.occupied_stacks for summary in self.storages)
-
-    def storage(self, storage_id: int) -> Optional[StorageSnapshotSummary]:
-        """Look up a destination by its durable numeric protocol key."""
-        return self.storages.by_id(storage_id)
-
-    def storage_named(self, name: str) -> Optional[StorageSnapshotSummary]:
-        """Convenience lookup by display name; numeric IDs remain authoritative."""
-        return self.storages.named(name)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
+    def to_dict(self, *, include_diagnostics: bool = False) -> dict[str, object]:
+        output: dict[str, object] = {
             "schema_version": self.schema_version,
-            "profile_source": self.profile_source,
-            "frames_seen": self.frames_seen,
             "hydration_detected": self.hydration_detected,
             "identity_complete": self.identity_complete,
-            "load_reason": self.load_reason,
-            "hydration_generations_seen": self.hydration_generations_seen,
-            "provenance": self.provenance.to_dict(),
+            "provenance": self.provenance.to_dict(
+                include_capture_path=include_diagnostics
+            ),
             "coverage": self.coverage.to_dict(),
             "decoder_health": self.decoder_health.to_dict(),
-            "accumulation": {
-                "policy": self.provenance.accumulation_policy,
-                "status": self.coverage.accumulation_status,
-                "relevant_frames_retained": self.relevant_frames_retained,
-                "relevant_bytes_retained": self.relevant_bytes_retained,
-                "snapshot_records_retained": self.snapshot_records_retained,
-                "limits": self.capture_limits.to_dict(),
-            },
             "inventory": self.inventory.to_dict(),
-            "storage": {
-                "known_destinations_detected": self.known_storage_destinations_detected,
-                "known_destinations_total": self.known_storage_destinations_total,
-                "nonempty_destinations": self.nonempty_storage_destinations,
-                "empty_destinations": self.empty_storage_destinations,
-                "occupied_stacks": self.storage_occupied_stacks,
-                "raw_records": self.storage_snapshot_records,
-                "missing_instance_records": self.storage_records_missing_instance,
-                "sweeps_observed": self.storage_sweeps_observed,
-                "selected_sweep": self.selected_storage_sweep,
-                "selected_destinations": self.selected_storage_destinations,
-                "destinations_not_selected": (self.storage_destinations_not_selected),
-                "destinations": [summary.to_dict() for summary in self.storages],
-            },
+            "storages": self.storages.to_dict(),
             "warnings": list(self.warnings),
         }
+        if include_diagnostics and self.diagnostics is not None:
+            output["diagnostics"] = self.diagnostics.to_dict()
+        return output
 
 
 @dataclass(frozen=True)
@@ -1663,25 +1425,63 @@ class _CharacterStateAccumulator:
                 "instead of being reported as current; the selected sweep may be "
                 "partial."
             )
+        observed_registered = {
+            storage.storage_id
+            for storage in storages
+            if storage.storage_id in STORAGE_LOCATIONS
+        }
+        missing_registered = tuple(
+            storage_id
+            for storage_id in STORAGE_LOCATIONS
+            if storage_id not in observed_registered
+        )
+        if generations_seen:
+            generation_selection = "latest_observed_inventory_hydration"
+        elif storage_events or storages:
+            generation_selection = "all_observed_storage_no_inventory_boundary"
+        else:
+            generation_selection = "none_no_hydration_boundary"
         return CharacterStateSnapshot(
-            profile_source=self.profile_source,
-            frames_seen=frames_seen,
             inventory=inventory,
             storages=StorageContents(storages),
-            storage_snapshot_records=len(storage_events),
-            hydration_generations_seen=generations_seen,
-            warnings=tuple(warnings),
-            capture_mode=self.capture_mode,
-            input_path=self.input_path,
-            saved_capture_path=self.saved_capture_path,
-            storage_sweeps_observed=storage_sweeps_observed,
-            selected_storage_sweep=selected_storage_sweep,
-            storage_records_missing_instance=storage_records_missing_instance,
-            capture_limits=self.capture_limits,
-            relevant_frames_retained=relevant_frames_retained,
-            relevant_bytes_retained=relevant_bytes_retained,
-            snapshot_records_retained=snapshot_records_retained,
+            provenance=ItemStateProvenance(
+                capture_mode=self.capture_mode,
+                profile_source=self.profile_source,
+                generation_selection=generation_selection,
+                capture_path=self.input_path or self.saved_capture_path,
+            ),
+            coverage=ItemStateCoverage(
+                inventory_records_missing_instance=(
+                    inventory.missing_instance_records
+                ),
+                storage_records_missing_instance=storage_records_missing_instance,
+                selected_storage_records_missing_instance=sum(
+                    storage.selected_missing_instance_records for storage in storages
+                ),
+                registered_storage_ids_not_observed=missing_registered,
+                unregistered_storage_ids_observed=tuple(
+                    sorted(unregistered_storage_ids)
+                ),
+                storage_locations_not_selected=not_selected,
+                storage_locations_with_incomplete_current_identity=sum(
+                    storage.current_state_observed
+                    and storage.current_identity_complete is False
+                    for storage in storages
+                ),
+            ),
             decoder_health=resolved_health,
+            warnings=tuple(warnings),
+            diagnostics=ItemStateDiagnostics(
+                frames_seen=frames_seen,
+                storage_records_decoded=len(storage_events),
+                inventory_generations_observed=generations_seen,
+                storage_sweeps_observed=storage_sweeps_observed,
+                selected_storage_sweep=selected_storage_sweep,
+                relevant_frames_retained=relevant_frames_retained,
+                relevant_bytes_retained=relevant_bytes_retained,
+                snapshot_records_retained=snapshot_records_retained,
+                capture_limits=self.capture_limits,
+            ),
         )
 
     def _inventory_summary(
@@ -3265,10 +3065,12 @@ def format_character_state(
     show_items: bool = False,
 ) -> str:
     """Render a stable, honest diagnostic summary for console tools."""
+    diagnostics = snapshot.diagnostics
+    frames_seen = diagnostics.frames_seen if diagnostics is not None else "unavailable"
     lines = [
         "CHARACTER LOAD SNAPSHOT DIAGNOSTIC",
-        f"Profile: {snapshot.profile_source}",
-        f"Generic BDO frames observed: {snapshot.frames_seen}",
+        f"Profile: {snapshot.provenance.profile_source}",
+        f"Generic BDO frames observed: {frames_seen}",
         (
             "Storage decoder: "
             f"{snapshot.decoder_health.storage_status} "
@@ -3362,17 +3164,13 @@ def format_character_state(
         lines.append("  NOT DETECTED")
 
     lines.extend(["", "STORAGE SNAPSHOT"])
-    if snapshot.storage_snapshot_records or snapshot.storages:
-        observed_known_ids = {
-            storage.storage_id
-            for storage in snapshot.storages
-            if storage.storage_id in STORAGE_LOCATIONS
-        }
-        missing_known_ids = tuple(
-            storage_id
-            for storage_id in STORAGE_LOCATIONS
-            if storage_id not in observed_known_ids
-        )
+    storage_records_decoded = (
+        diagnostics.storage_records_decoded
+        if diagnostics is not None
+        else sum(storage.raw_records for storage in snapshot.storages)
+    )
+    if storage_records_decoded or snapshot.storages:
+        missing_known_ids = snapshot.coverage.registered_storage_ids_not_observed
         earlier_only = tuple(
             storage
             for storage in snapshot.storages
@@ -3386,8 +3184,8 @@ def format_character_state(
         )
         if earlier_only or identity_incomplete:
             current_state_parts = [
-                f"  {snapshot.nonempty_storage_destinations} non-empty",
-                f"{snapshot.empty_storage_destinations} explicitly empty",
+                f"  {snapshot.storages.nonempty_count} non-empty",
+                f"{snapshot.storages.empty_count} explicitly empty",
             ]
             if identity_incomplete:
                 current_state_parts.append(
@@ -3401,37 +3199,37 @@ def format_character_state(
             current_state_line = ", ".join(current_state_parts)
         else:
             current_state_line = (
-                f"  {snapshot.nonempty_storage_destinations} non-empty, "
-                f"{snapshot.empty_storage_destinations} explicitly empty, "
+                f"  {snapshot.storages.nonempty_count} non-empty, "
+                f"{snapshot.storages.empty_count} explicitly empty, "
                 f"{len(missing_known_ids)} not observed"
             )
         lines.extend(
             [
                 (
-                    f"  {snapshot.known_storage_destinations_detected}/"
-                    f"{snapshot.known_storage_destinations_total} known destinations observed"
+                    f"  {snapshot.storages.registered_count}/"
+                    f"{len(STORAGE_LOCATIONS)} known destinations observed"
                 ),
                 current_state_line,
                 (
-                    f"  {snapshot.storage_occupied_stacks} unique occupied item stacks "
-                    f"from {snapshot.storage_snapshot_records} decoded snapshot records"
+                    f"  {snapshot.storages.occupied_stacks} unique occupied item stacks "
+                    f"from {storage_records_decoded} decoded snapshot records"
                 ),
                 "  capacity: unavailable (not present in the decoded item wrappers)",
                 "",
             ]
         )
-        if snapshot.storage_sweeps_observed:
+        if diagnostics is not None and diagnostics.storage_sweeps_observed:
             lines.insert(
                 len(lines) - 1,
                 f"  selected inferred storage sweep "
-                f"{snapshot.selected_storage_sweep}/"
-                f"{snapshot.storage_sweeps_observed}",
+                f"{diagnostics.selected_storage_sweep}/"
+                f"{diagnostics.storage_sweeps_observed}",
             )
-        if snapshot.storage_records_missing_instance:
+        if snapshot.coverage.storage_records_missing_instance:
             lines.insert(
                 len(lines) - 1,
                 f"  identity-unresolved records excluded: "
-                f"{snapshot.storage_records_missing_instance}",
+                f"{snapshot.coverage.storage_records_missing_instance}",
             )
         if missing_known_ids:
             missing_names = sorted(
@@ -3479,6 +3277,7 @@ __all__ = [
     "ItemStateCaptureLimitError",
     "ItemStateCaptureLimits",
     "ItemStateCoverage",
+    "ItemStateDiagnostics",
     "ItemStateProvenance",
     "SnapshotItem",
     "StorageContents",

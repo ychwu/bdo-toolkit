@@ -155,10 +155,11 @@ def test_august_character_switch_hydration_is_not_live_activity(tmp_path):
     assert state.inventory.serialized_records == 78
     assert state.inventory.currency_balance_records == 4
     assert state.inventory.unclassified_records == 0
-    assert state.storage_snapshot_records == 2452
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 2452
     assert len(state.storages) == 33
-    assert state.empty_storage_destinations == 4
-    assert state.storage_named("Arehaza").occupied_stacks == 25
+    assert state.storages.empty_count == 4
+    assert state.storages.named("Arehaza").occupied_stacks == 25
 
 
 @requires_fixtures

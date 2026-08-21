@@ -17,6 +17,9 @@ from bdo_toolkit.item_state import (
     CharacterLoadSession,
     ItemStateCaptureLimitError,
     ItemStateCaptureLimits,
+    ItemStateCoverage,
+    ItemStateDiagnostics,
+    ItemStateProvenance,
     ItemStateSnapshot,
     analyze_item_state_pcap,
     format_item_state,
@@ -96,73 +99,89 @@ def test_storage_contents_preserves_tuple_use_and_adds_queries():
     assert contents.locations_for(7003) == (heidel, velia)
     assert contents.locations_for(7004) == (heidel,)
     assert contents.locations_for(9999) == ()
+    assert contents.registered_count == 2
+    assert contents.selected_count == 2
+    assert contents.nonempty_count == 2
+    assert contents.empty_count == 0
+    assert contents.occupied_stacks == 3
+    assert contents.to_dict()["occupied_stacks"] == 3
 
 
-def test_item_state_serialization_exposes_honest_coverage_and_provenance():
+def test_item_state_serialization_is_compact_and_diagnostics_are_opt_in():
     heidel = _storage(0x0020, "Heidel", _item(7003, 5, "heidel-potato"))
     unknown_empty = _storage(
         0xDEAD,
         None,
         empty_envelope_seen=True,
     )
-    # Passing the historical tuple shape remains accepted and is normalized to
-    # the first-class collection.
     state = CharacterStateSnapshot(
-        profile_source="opcodes.local",
-        frames_seen=12,
         inventory=_inventory(),
         storages=(heidel, unknown_empty),
-        storage_snapshot_records=1,
-        hydration_generations_seen=1,
+        provenance=ItemStateProvenance(
+            capture_mode="pcap_replay",
+            profile_source="opcodes.local",
+            generation_selection="latest_observed_inventory_hydration",
+            capture_path="capture.pcapng",
+        ),
+        coverage=ItemStateCoverage(
+            inventory_records_missing_instance=0,
+            storage_records_missing_instance=0,
+            selected_storage_records_missing_instance=0,
+            registered_storage_ids_not_observed=(0x0005,),
+            unregistered_storage_ids_observed=(0xDEAD,),
+            storage_locations_not_selected=0,
+            storage_locations_with_incomplete_current_identity=0,
+        ),
         warnings=("capture may be partial",),
-        capture_mode="pcap_replay",
-        input_path="capture.pcapng",
+        diagnostics=ItemStateDiagnostics(
+            frames_seen=12,
+            storage_records_decoded=1,
+            inventory_generations_observed=1,
+            storage_sweeps_observed=1,
+            selected_storage_sweep=1,
+            relevant_frames_retained=2,
+            relevant_bytes_retained=512,
+            snapshot_records_retained=2,
+            capture_limits=ItemStateCaptureLimits(),
+        ),
     )
 
     assert isinstance(state.storages, StorageContents)
     assert isinstance(state.storages, tuple)
-    assert state.storage(0x0020) is state.storages.by_id(0x0020)
-    assert state.storage_named("heidel") is state.storages.named("Heidel")
+    assert state.storages.by_id(0x0020) is heidel
+    assert state.storages.named("heidel") is heidel
+    assert state.storages.registered_count == 1
+    assert state.storages.empty_count == 1
 
     coverage = state.coverage
-    assert coverage.completion_status == "unknown"
-    assert coverage.completion_basis == "no_proven_protocol_end_marker"
-    assert coverage.capture_may_be_partial
-    assert coverage.inventory_records_decoded == 1
-    assert coverage.inventory_unique_records == 1
-    assert coverage.inventory_groups_observed == 1
-    assert coverage.inventory_unclassified_records == 1
-    assert coverage.storage_records_decoded == 1
-    assert coverage.storage_locations_observed == 2
-    assert coverage.registered_storage_locations_observed == 1
-    assert coverage.registered_storage_locations_total > 1
     assert 0x0005 in coverage.registered_storage_ids_not_observed
     assert coverage.unregistered_storage_ids_observed == (0xDEAD,)
-    assert coverage.explicitly_empty_storage_locations_observed == 1
-    assert coverage.identity_complete
-    assert coverage.identity_status == "complete"
     assert coverage.inventory_records_missing_instance == 0
     assert coverage.storage_records_missing_instance == 0
-    assert coverage.accumulation_status == "not_reported"
+    assert coverage.storage_locations_not_selected == 0
+    assert state.identity_complete
+    assert state.hydration_detected
 
     provenance = state.provenance
     assert provenance.capture_mode == "pcap_replay"
     assert provenance.profile_source == "opcodes.local"
-    assert provenance.input_path == "capture.pcapng"
-    assert provenance.saved_capture_path is None
+    assert provenance.capture_path == "capture.pcapng"
     assert provenance.generation_selection == "latest_observed_inventory_hydration"
-    assert provenance.load_reason is None
-    assert provenance.load_reason_basis == "not_decoded_from_protocol"
-    assert provenance.instance_identity_policy == "observed_instance_only"
-    assert provenance.identity_status == "complete"
-    assert provenance.accumulation_policy == "not_reported"
 
     payload = state.to_dict()
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["decoder_health"]["storage_status"] == "not_observed"
     assert payload["coverage"] == coverage.to_dict()
     assert payload["provenance"] == provenance.to_dict()
-    assert payload["storage"]["destinations"][0]["storage_id"] == 0x0020
+    assert payload["storages"]["destinations"][0]["storage_id"] == 0x0020
+    assert "diagnostics" not in payload
+    diagnostic_payload = state.to_dict(include_diagnostics=True)
+    assert diagnostic_payload["diagnostics"] == state.diagnostics.to_dict()
+    assert diagnostic_payload["provenance"]["capture_path"] == "capture.pcapng"
+    assert "capture_path" not in payload["provenance"]
+    assert "profile_source" not in payload
+    assert "accumulation" not in payload
+    assert "load_reason" not in payload
     generic_payload = asdict(state)
     assert isinstance(generic_payload["storages"], tuple)
     assert generic_payload["storages"][0]["storage_id"] == 0x0020
@@ -170,12 +189,22 @@ def test_item_state_serialization_exposes_honest_coverage_and_provenance():
 
 def test_decoder_health_is_a_first_class_snapshot_dataclass_field():
     common = {
-        "profile_source": "opcodes.local",
-        "frames_seen": 1,
         "inventory": _inventory(),
         "storages": (),
-        "storage_snapshot_records": 0,
-        "hydration_generations_seen": 1,
+        "provenance": ItemStateProvenance(
+            capture_mode="pcap_replay",
+            profile_source="opcodes.local",
+            generation_selection="latest_observed_inventory_hydration",
+        ),
+        "coverage": ItemStateCoverage(
+            inventory_records_missing_instance=0,
+            storage_records_missing_instance=0,
+            selected_storage_records_missing_instance=0,
+            registered_storage_ids_not_observed=(),
+            unregistered_storage_ids_observed=(),
+            storage_locations_not_selected=0,
+            storage_locations_with_incomplete_current_identity=0,
+        ),
         "warnings": (),
     }
     compatible = CharacterStateSnapshot(
@@ -191,12 +220,19 @@ def test_decoder_health_is_a_first_class_snapshot_dataclass_field():
     assert asdict(compatible)["decoder_health"]["storage_status"] == "compatible"
     assert "decoder_health=DecoderHealth" in repr(compatible)
     assert compatible != incompatible
+    assert {field.name for field in fields(compatible)} == {
+        "inventory",
+        "storages",
+        "provenance",
+        "coverage",
+        "decoder_health",
+        "warnings",
+        "diagnostics",
+    }
 
 
 def test_storage_only_provenance_discloses_missing_generation_boundary():
     state = CharacterStateSnapshot(
-        profile_source="opcodes.local",
-        frames_seen=3,
         inventory=InventorySnapshotSummary(
             items=(),
             raw_records=0,
@@ -208,8 +244,20 @@ def test_storage_only_provenance_discloses_missing_generation_boundary():
             unclassified_records=0,
         ),
         storages=(_storage(0x0020, "Heidel", _item(7003, 5, "stack")),),
-        storage_snapshot_records=1,
-        hydration_generations_seen=0,
+        provenance=ItemStateProvenance(
+            capture_mode="unknown",
+            profile_source="opcodes.local",
+            generation_selection="all_observed_storage_no_inventory_boundary",
+        ),
+        coverage=ItemStateCoverage(
+            inventory_records_missing_instance=0,
+            storage_records_missing_instance=0,
+            selected_storage_records_missing_instance=0,
+            registered_storage_ids_not_observed=(),
+            unregistered_storage_ids_observed=(),
+            storage_locations_not_selected=0,
+            storage_locations_with_incomplete_current_identity=0,
+        ),
         warnings=(),
     )
 
@@ -225,6 +273,7 @@ def test_item_state_facade_is_additive_and_not_package_root_exported():
     assert format_item_state is format_character_state
     assert CharacterLoadSession.__module__ == "bdo_toolkit.character_state"
     assert ItemStateCaptureLimits.__module__ == "bdo_toolkit.character_state"
+    assert ItemStateDiagnostics.__module__ == "bdo_toolkit.character_state"
     assert issubclass(ItemStateCaptureLimitError, RuntimeError)
     assert "ItemStateSnapshot" not in package_exports
     assert "analyze_item_state_pcap" not in package_exports

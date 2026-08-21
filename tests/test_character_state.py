@@ -46,13 +46,12 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
 
     assert state.hydration_detected
     assert state.provenance.capture_mode == "pcap_replay"
-    assert state.provenance.input_path == str(capture)
-    assert state.provenance.saved_capture_path is None
-    assert state.load_reason is None
-    assert state.hydration_generations_seen == 1
+    assert state.provenance.capture_path == str(capture)
+    assert state.diagnostics is not None
+    assert state.diagnostics.inventory_generations_observed == 1
     assert state.identity_complete
     assert state.inventory.missing_instance_records == 0
-    assert state.storage_records_missing_instance == 0
+    assert state.coverage.storage_records_missing_instance == 0
     assert state.decoder_health.storage_status == "compatible"
     assert state.decoder_health.storage_is_compatible is True
     assert (
@@ -60,8 +59,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
         == state.decoder_health.storage_messages_observed
         > 0
     )
-    assert state.snapshot_records_retained == 2_727
-    assert state.coverage.accumulation_status == "within_limits"
+    assert state.diagnostics.snapshot_records_retained == 2_727
     assert state.inventory.raw_records == 247
     assert state.inventory.serialized_records == 247
     assert state.inventory.occupied_stacks == 243
@@ -94,20 +92,20 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     # Two repeated storage sweeps produce 2,480 decoded records but describe
     # one 1,240-stack state. Four explicit empty envelopes complete all 33
     # registered destinations in the second sweep.
-    assert state.storage_snapshot_records == 2480
-    assert state.storage_occupied_stacks == 1240
-    assert state.known_storage_destinations_detected == 33
-    assert state.nonempty_storage_destinations == 29
-    assert state.empty_storage_destinations == 4
+    assert state.diagnostics.storage_records_decoded == 2480
+    assert state.storages.occupied_stacks == 1240
+    assert state.storages.registered_count == 33
+    assert state.storages.nonempty_count == 29
+    assert state.storages.empty_count == 4
 
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
     assert heidel is not None
     assert heidel.name == "Heidel"
     assert heidel.occupied_stacks == 184
     assert heidel.raw_records == 368
     assert heidel.duplicate_records == 184
     assert heidel.capacity is None
-    assert state.storage_named("heidel") == heidel
+    assert state.storages.named("heidel") == heidel
 
 
 @requires_fixtures
@@ -161,19 +159,19 @@ def test_july17_character_switch_classifies_exact_inventory_state():
     assert inventory.unclassified_records == 0
 
     assert state.hydration_detected
-    assert state.load_reason is None
-    assert state.hydration_generations_seen == 1
+    assert state.diagnostics is not None
+    assert state.diagnostics.inventory_generations_observed == 1
     assert state.identity_complete
     assert state.inventory.missing_instance_records == 0
-    assert state.storage_records_missing_instance == 0
-    assert state.snapshot_records_retained == 2_730
-    assert state.storage_snapshot_records == 2_484
-    assert state.storage_occupied_stacks == 1_242
-    assert state.known_storage_destinations_detected == 33
-    assert state.nonempty_storage_destinations == 29
-    assert state.empty_storage_destinations == 4
+    assert state.coverage.storage_records_missing_instance == 0
+    assert state.diagnostics.snapshot_records_retained == 2_730
+    assert state.diagnostics.storage_records_decoded == 2_484
+    assert state.storages.occupied_stacks == 1_242
+    assert state.storages.registered_count == 33
+    assert state.storages.nonempty_count == 29
+    assert state.storages.empty_count == 4
 
-    heidel = state.storage_named("Heidel")
+    heidel = state.storages.named("Heidel")
     assert heidel is not None
     assert (
         heidel.raw_records,
@@ -183,7 +181,7 @@ def test_july17_character_switch_classifies_exact_inventory_state():
     ) == (366, 183, 183, 6)
 
     # One retransmitted Old Wisdom Tree frame must not create a third group.
-    old_wisdom = state.storage_named("Old Wisdom Tree")
+    old_wisdom = state.storages.named("Old Wisdom Tree")
     assert old_wisdom is not None
     assert (
         old_wisdom.raw_records,
@@ -192,7 +190,7 @@ def test_july17_character_switch_classifies_exact_inventory_state():
         old_wisdom.groups,
     ) == (26, 13, 13, 2)
 
-    bukpo = state.storage_named("Bukpo")
+    bukpo = state.storages.named("Bukpo")
     assert bukpo is not None
     assert bukpo.raw_records == 0
     assert bukpo.occupied_stacks == 0
@@ -707,8 +705,9 @@ def test_character_state_reconciles_one_hydration_sweep_split_across_bursts(
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 12
-    assert state.known_storage_destinations_detected == 12
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 12
+    assert state.storages.registered_count == 12
     assert {storage.storage_id for storage in state.storages} == set(storage_ids)
     assert any("split across timing bursts" in warning for warning in state.warnings)
 
@@ -749,10 +748,11 @@ def test_split_hydration_reconciliation_stops_at_a_live_mutation_boundary() -> N
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 8
-    assert state.known_storage_destinations_detected == 8
-    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
-    assert state.snapshot_records_retained == 13
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 8
+    assert state.storages.registered_count == 8
+    assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
+    assert state.diagnostics.snapshot_records_retained == 13
     assert not any("split across timing bursts" in warning for warning in state.warnings)
 
 
@@ -786,8 +786,9 @@ def test_split_hydration_reconciliation_does_not_cross_opcode_families() -> None
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 8
-    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 8
+    assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
 
 
 @pytest.mark.parametrize("isolation", ["flow", "generation"])
@@ -833,8 +834,9 @@ def test_split_hydration_reconciliation_isolates_connection_identity(
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 8
-    assert all(state.storage(storage_id) is None for storage_id in storage_ids[:4])
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 8
+    assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
 
 
 def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() -> None:
@@ -856,9 +858,10 @@ def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() 
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 0
-    assert state.known_storage_destinations_detected == 0
-    assert all(state.storage(storage_id) is None for storage_id in storage_ids)
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 0
+    assert state.storages.registered_count == 0
+    assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids)
 
 
 @pytest.mark.parametrize("repeat_stride", [222, None])
@@ -924,10 +927,11 @@ def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
         )
     )
 
-    assert state.storage_snapshot_records == 3
-    assert state.known_storage_destinations_detected == 8
-    assert state.nonempty_storage_destinations == 3
-    assert state.empty_storage_destinations == 5
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 3
+    assert state.storages.registered_count == 8
+    assert state.storages.nonempty_count == 3
+    assert state.storages.empty_count == 5
     assert state.decoder_health.storage_status == "compatible"
     assert any("dedicated character-load boundary" in warning for warning in state.warnings)
     assert state.to_dict()["decoder_health"]["storage_status"] == "compatible"
@@ -994,9 +998,9 @@ def test_classified_nonempty_snapshot_keeps_leading_empty_envelopes_without_stri
         )
     )
 
-    assert state.known_storage_destinations_detected == 10
-    assert state.nonempty_storage_destinations == 8
-    assert state.empty_storage_destinations == 2
+    assert state.storages.registered_count == 10
+    assert state.storages.nonempty_count == 8
+    assert state.storages.empty_count == 2
 
 
 def test_empty_cohort_cannot_override_observed_multi_record_geometry():
@@ -1072,11 +1076,13 @@ def test_empty_cohort_cannot_override_observed_multi_record_geometry():
         )
     )
 
-    assert state.known_storage_destinations_detected == 2
-    assert state.nonempty_storage_destinations == 1
-    assert state.empty_storage_destinations == 1
-    assert state.storage(storage_ids[9]).current_empty
-    assert all(state.storage(storage_id) is None for storage_id in storage_ids[1:9])
+    assert state.storages.registered_count == 2
+    assert state.storages.nonempty_count == 1
+    assert state.storages.empty_count == 1
+    assert state.storages.by_id(storage_ids[9]).current_empty
+    assert all(
+        state.storages.by_id(storage_id) is None for storage_id in storage_ids[1:9]
+    )
 
 
 def test_character_state_does_not_merge_reused_four_tuple_generations():
@@ -1117,11 +1123,12 @@ def test_character_state_does_not_merge_reused_four_tuple_generations():
 
     state = accumulator.snapshot()
 
-    assert state.hydration_generations_seen == 2
+    assert state.diagnostics is not None
+    assert state.diagnostics.inventory_generations_observed == 2
     assert state.inventory.raw_records == 1
     assert [item.item_id for item in state.inventory.items] == [7005]
-    assert state.storage(0x0020) is None
-    assert state.storage(0x0005) is not None
+    assert state.storages.by_id(0x0020) is None
+    assert state.storages.by_id(0x0005) is not None
 
 
 def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
@@ -1175,8 +1182,9 @@ def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 0
-    assert state.known_storage_destinations_detected == 0
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 0
+    assert state.storages.registered_count == 0
 
 
 def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
@@ -1210,10 +1218,11 @@ def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
 
     state = accumulator.snapshot()
 
-    assert state.storage_snapshot_records == 0
-    assert state.empty_storage_destinations == 8
-    assert state.storage(unknown_storage_id) is not None
-    assert state.storage(unknown_storage_id).name is None
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 0
+    assert state.storages.empty_count == 8
+    assert state.storages.by_id(unknown_storage_id) is not None
+    assert state.storages.by_id(unknown_storage_id).name is None
     assert state.coverage.unregistered_storage_ids_observed == (unknown_storage_id,)
     assert state.decoder_health.storage_status == "incompatible"
     assert state.decoder_health.storage_destination_failures == 1
@@ -1281,8 +1290,9 @@ def test_unknown_empty_envelope_adds_to_decoded_destination_failure_count():
         )
     )
 
-    assert state.storage_snapshot_records == 1
-    assert state.known_storage_destinations_detected == 6
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 1
+    assert state.storages.registered_count == 6
     assert state.coverage.unregistered_storage_ids_observed == (
         decoded_unknown_id,
         empty_unknown_id,
@@ -1335,7 +1345,7 @@ def test_missing_instance_records_are_excluded_from_distinct_stack_state():
             )
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
 
     assert state.inventory.raw_records == 2
     assert state.inventory.items == ()
@@ -1353,22 +1363,15 @@ def test_missing_instance_records_are_excluded_from_distinct_stack_state():
     assert heidel.current_identity_complete is False
     assert heidel.current_empty is False
     assert not state.identity_complete
-    assert state.storage_occupied_stacks == 0
-    assert state.empty_storage_destinations == 0
-    assert state.nonempty_storage_destinations == 0
+    assert state.storages.occupied_stacks == 0
+    assert state.storages.empty_count == 0
+    assert state.storages.nonempty_count == 0
 
     coverage = state.coverage
-    assert not coverage.identity_complete
-    assert coverage.identity_status == "incomplete_records_excluded"
     assert coverage.inventory_records_missing_instance == 2
     assert coverage.storage_records_missing_instance == 2
     assert coverage.selected_storage_records_missing_instance == 2
     assert coverage.storage_locations_with_incomplete_current_identity == 1
-    assert (
-        coverage.completion_basis
-        == "no_proven_protocol_end_marker_and_missing_instance_identity"
-    )
-    assert state.provenance.identity_status == "incomplete_records_excluded"
     payload = state.to_dict()
     assert "unavailable:" not in str(payload)
     output = format_character_state(state)
@@ -1393,7 +1396,7 @@ def test_mixed_storage_identity_exposes_only_the_authoritative_stack():
         )
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
 
     assert heidel is not None
     assert len(heidel.items) == 1
@@ -1475,10 +1478,9 @@ def test_item_state_record_limit_fails_closed_without_partial_snapshot():
     )
 
     within_limit = accumulator.snapshot()
-    assert within_limit.coverage.accumulation_status == "within_limits"
-    assert within_limit.coverage.snapshot_records_retained == 1
-    assert within_limit.coverage.max_snapshot_records == 1
-    assert within_limit.provenance.accumulation_policy == "bounded_fail_closed"
+    assert within_limit.diagnostics is not None
+    assert within_limit.diagnostics.snapshot_records_retained == 1
+    assert within_limit.diagnostics.capture_limits.max_snapshot_records == 1
 
     with pytest.raises(ItemStateCaptureLimitError) as raised:
         accumulator.observe_record(
@@ -1550,7 +1552,7 @@ def test_storage_item_then_empty_selects_atomic_latest_empty_state():
     accumulator.observe_frame(_empty_storage_frame(timestamp=2.0, sequence=200))
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
 
     assert heidel is not None
     assert heidel.items == ()
@@ -1566,9 +1568,10 @@ def test_storage_item_then_empty_selects_atomic_latest_empty_state():
     assert heidel.superseded_groups == 1
     assert heidel.sweeps_observed == 2
     assert heidel.selected_sweep == 2
-    assert state.storage_sweeps_observed == 2
-    assert state.empty_storage_destinations == 1
-    assert state.nonempty_storage_destinations == 0
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_sweeps_observed == 2
+    assert state.storages.empty_count == 1
+    assert state.storages.nonempty_count == 0
 
 
 def test_storage_empty_then_item_selects_latest_nonempty_state():
@@ -1589,7 +1592,7 @@ def test_storage_empty_then_item_selects_latest_nonempty_state():
     )
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
 
     assert heidel is not None
     assert [item.quantity for item in heidel.items] == [9]
@@ -1605,8 +1608,8 @@ def test_storage_empty_then_item_selects_latest_nonempty_state():
     assert heidel.superseded_groups == 1
     assert heidel.sweeps_observed == 2
     assert heidel.selected_sweep == 2
-    assert state.empty_storage_destinations == 0
-    assert state.nonempty_storage_destinations == 1
+    assert state.storages.empty_count == 0
+    assert state.storages.nonempty_count == 1
 
 
 def test_repeated_storage_sweep_replaces_items_but_preserves_diagnostics():
@@ -1649,15 +1652,16 @@ def test_repeated_storage_sweep_replaces_items_but_preserves_diagnostics():
         accumulator.observe_record(record, b"")
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
-    velia = state.storage(0x0005)
+    heidel = state.storages.by_id(0x0020)
+    velia = state.storages.by_id(0x0005)
 
     assert heidel is not None and velia is not None
     assert [item.quantity for item in heidel.items] == [9]
     assert [item.quantity for item in velia.items] == [10]
-    assert state.storage_occupied_stacks == 2
-    assert state.storage_snapshot_records == 4
-    assert state.storage_sweeps_observed == 2
+    assert state.storages.occupied_stacks == 2
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_records_decoded == 4
+    assert state.diagnostics.storage_sweeps_observed == 2
     for storage in (heidel, velia):
         assert storage.raw_records == 2
         assert storage.duplicate_records == 1
@@ -1700,7 +1704,7 @@ def test_same_destination_after_chunk_gap_replaces_removed_instances():
         accumulator.observe_record(record, b"")
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
+    heidel = state.storages.by_id(0x0020)
 
     assert heidel is not None
     assert [(item.item_id, item.quantity) for item in heidel.items] == [(7004, 9)]
@@ -1710,7 +1714,8 @@ def test_same_destination_after_chunk_gap_replaces_removed_instances():
     assert heidel.superseded_records == 2
     assert heidel.duplicate_records == 1
     assert heidel.sweeps_observed == 2
-    assert state.storage_sweeps_observed == 2
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage_sweeps_observed == 2
 
 
 def test_partial_later_storage_sweep_excludes_earlier_only_items():
@@ -1745,8 +1750,8 @@ def test_partial_later_storage_sweep_excludes_earlier_only_items():
         accumulator.observe_record(record, b"")
 
     state = accumulator.snapshot()
-    heidel = state.storage(0x0020)
-    velia = state.storage(0x0005)
+    heidel = state.storages.by_id(0x0020)
+    velia = state.storages.by_id(0x0005)
 
     assert heidel is not None and velia is not None
     assert [item.quantity for item in heidel.items] == [9]
@@ -1763,18 +1768,16 @@ def test_partial_later_storage_sweep_excludes_earlier_only_items():
     assert velia.selected_groups == 0
     assert velia.superseded_groups == 1
     assert velia.selected_sweep is None
-    assert state.storage_occupied_stacks == 1
-    assert state.selected_storage_destinations == 1
-    assert state.storage_destinations_not_selected == 1
+    assert state.storages.occupied_stacks == 1
+    assert state.storages.selected_count == 1
     assert state.storages.total_quantity(7005) == 0
-    assert state.coverage.storage_locations_observed == 2
-    assert state.coverage.storage_locations_selected == 1
-    assert state.coverage.storage_locations_not_selected_from_latest_sweep == 1
+    assert len(state.storages) == 2
+    assert state.coverage.storage_locations_not_selected == 1
     assert any("selected sweep may be partial" in warning for warning in state.warnings)
-    payload = state.to_dict()["storage"]
-    assert payload["sweeps_observed"] == 2
-    assert payload["selected_sweep"] == 2
-    assert payload["selected_destinations"] == 1
+    payload = state.to_dict(include_diagnostics=True)
+    assert payload["diagnostics"]["storage_sweeps_observed"] == 2
+    assert payload["diagnostics"]["selected_storage_sweep"] == 2
+    assert payload["storages"]["selected_count"] == 1
     output = format_character_state(state)
     assert "Velia: current state unavailable" in output
 
@@ -1791,10 +1794,11 @@ def test_multiple_character_loads_report_only_the_latest_generation():
 
     state = accumulator.snapshot()
 
-    assert state.hydration_generations_seen == 2
+    assert state.diagnostics is not None
+    assert state.diagnostics.inventory_generations_observed == 2
     assert [item.item_id for item in state.inventory.items] == [7006]
-    assert state.storage_snapshot_records == 1
-    heidel = state.storage(0x0020)
+    assert state.diagnostics.storage_records_decoded == 1
+    heidel = state.storages.by_id(0x0020)
     assert heidel is not None
     assert [item.item_id for item in heidel.items] == [7007]
     assert any("only the latest generation" in warning for warning in state.warnings)
@@ -1821,8 +1825,9 @@ def test_storage_only_capture_discloses_that_no_generation_boundary_exists():
 
     state = accumulator.snapshot()
 
-    assert state.hydration_generations_seen == 0
-    assert state.storage_snapshot_records == 2
+    assert state.diagnostics is not None
+    assert state.diagnostics.inventory_generations_observed == 0
+    assert state.diagnostics.storage_records_decoded == 2
     assert (
         state.provenance.generation_selection
         == "all_observed_storage_no_inventory_boundary"
@@ -1891,7 +1896,7 @@ def test_offline_character_state_loads_one_profile_revision(monkeypatch):
     )
 
     assert calls == [profile]
-    assert state.profile_source == str(profile)
+    assert state.provenance.profile_source == str(profile)
 
 
 def test_live_character_load_pins_profile_revision_at_construction(
@@ -1919,7 +1924,7 @@ def test_live_character_load_pins_profile_revision_at_construction(
     session.start()
     state = session.stop()
 
-    assert state.profile_source == str(JULY17_OPCODE_PROFILE)
+    assert state.provenance.profile_source == str(JULY17_OPCODE_PROFILE)
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
     CharacterLoadSession(
@@ -1962,8 +1967,7 @@ def test_live_character_load_can_save_every_filtered_raw_packet(
     assert parser_packets == [packet]
     assert session.save_pcap_path == output
     assert state.provenance.capture_mode == "live_capture"
-    assert state.provenance.input_path is None
-    assert state.provenance.saved_capture_path == str(output)
+    assert state.provenance.capture_path == str(output)
     with PcapReader(str(output)) as reader:
         saved_packets = list(reader)
     assert len(saved_packets) == 1
@@ -2433,10 +2437,10 @@ def test_live_character_load_successful_session_is_single_use_and_stop_is_cached
     assert session._capture is None
     assert session._capture_writer is None
     assert session._engine is None
-    assert first.coverage.accumulation_status == "within_limits"
-    assert first.coverage.max_relevant_frames == 7
-    assert first.coverage.max_snapshot_records == 11
-    assert first.coverage.max_relevant_bytes == 2_048
+    assert first.diagnostics is not None
+    assert first.diagnostics.capture_limits.max_relevant_frames == 7
+    assert first.diagnostics.capture_limits.max_snapshot_records == 11
+    assert first.diagnostics.capture_limits.max_relevant_bytes == 2_048
     with pytest.raises(RuntimeError, match="single-use"):
         session.start()
 
