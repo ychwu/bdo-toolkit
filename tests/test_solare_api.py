@@ -154,7 +154,6 @@ def test_overall_entry_keeps_independent_details_and_raw_extensions() -> None:
         snapshot_id="sha256:overall-raw",
         observed_at=1.0,
         players=(),
-        evidence=SolareEvidence(),
         overall_top_100=(entry,),
     )
     assert (
@@ -231,8 +230,6 @@ def test_snapshot_separates_authoritative_overall_rows_from_rich_details() -> No
         SolarePlayer("RichRank1", 1, player_class),
         SolarePlayer("RichRank2", 2, player_class),
     )
-    evidence = SolareEvidence()
-
     overall = (
         SolareOverallEntry("RichRank1", 1),
         SolareOverallEntry("RichRank2", 2),
@@ -243,7 +240,6 @@ def test_snapshot_separates_authoritative_overall_rows_from_rich_details() -> No
         snapshot_id="sha256:example",
         observed_at=1.0,
         players=rich_players,
-        evidence=evidence,
         overall_top_100=overall,
         class_table_capabilities=frozenset({"rankings", "elo", "performance"}),
         overall_capabilities=frozenset({"rankings", "elo"}),
@@ -287,7 +283,6 @@ def test_solare_schema_version_is_library_owned() -> None:
         snapshot_id="sha256:versioned",
         observed_at=1.0,
         players=(),
-        evidence=evidence,
     )
     result = SolareCaptureResult(
         status=SolareDetectionStatus.COMPLETE,
@@ -305,7 +300,6 @@ def test_solare_schema_version_is_library_owned() -> None:
             snapshot_id="sha256:caller-version",
             observed_at=1.0,
             players=(),
-            evidence=evidence,
             schema_version=2,
         )
     with pytest.raises(TypeError, match="schema_version"):
@@ -319,8 +313,43 @@ def test_solare_schema_version_is_library_owned() -> None:
             "sha256:positional-capabilities",
             1.0,
             (),
-            evidence,
             frozenset({"rankings"}),
+        )
+
+
+def test_capture_result_is_the_only_evidence_owner() -> None:
+    evidence = SolareEvidence(
+        ranked_players=620,
+        overall_players=100,
+        exact_cross_check=100,
+    )
+    snapshot = SolareLeaderboardSnapshot(
+        snapshot_id="sha256:result-owned-evidence",
+        observed_at=1.0,
+        players=(),
+    )
+    result = SolareCaptureResult(
+        status=SolareDetectionStatus.COMPLETE,
+        evidence=evidence,
+        snapshot=snapshot,
+    )
+
+    assert not hasattr(snapshot, "evidence")
+    assert "evidence" not in snapshot.to_dict()
+
+    payload = result.to_dict()
+    assert payload["evidence"] == evidence.to_dict()
+    assert "evidence" not in payload["snapshot"]
+
+    # Pre-release compatibility guard: this old-constructor rejection may be
+    # retired after the result-only evidence contract becomes the established
+    # public baseline. Keep the ownership/serialization assertions above.
+    with pytest.raises(TypeError, match="evidence"):
+        SolareLeaderboardSnapshot(
+            snapshot_id="sha256:obsolete-evidence-owner",
+            observed_at=1.0,
+            players=(),
+            evidence=evidence,  # type: ignore[call-arg]
         )
 
 

@@ -58,7 +58,6 @@ def _classified_result(
         snapshot_id=solare_snapshot_id((player,)),
         observed_at=1234.5,
         players=(player,),
-        evidence=evidence,
     )
     return SolareCaptureResult(
         status=SolareDetectionStatus.COMPLETE,

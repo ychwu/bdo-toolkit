@@ -417,7 +417,6 @@ class SolareLeaderboardSnapshot:
     snapshot_id: str
     observed_at: float
     players: tuple[SolarePlayer, ...]
-    evidence: SolareEvidence
     overall_top_100: tuple[SolareOverallEntry, ...] = field(
         default=(),
         kw_only=True,
@@ -513,7 +512,6 @@ class SolareLeaderboardSnapshot:
             "overall_top_100": [
                 entry.to_dict(include_raw=include_raw) for entry in self.overall_top_100
             ],
-            "evidence": self.evidence.to_dict(),
         }
 
     def to_json(self, *, include_raw: bool = False, indent: Optional[int] = 2) -> str:
@@ -527,7 +525,7 @@ class SolareLeaderboardSnapshot:
 
 @dataclass(frozen=True)
 class SolareCaptureResult:
-    """Final capture/replay outcome; only ``complete`` carries a snapshot."""
+    """Final outcome and sole evidence owner; only ``complete`` has a snapshot."""
 
     status: SolareDetectionStatus
     evidence: SolareEvidence

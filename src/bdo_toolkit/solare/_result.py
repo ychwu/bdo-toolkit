@@ -430,7 +430,6 @@ def build_solare_result(
         ),
         players=players,
         overall_top_100=overall_entries,
-        evidence=evidence,
         class_table_capabilities=frozenset(class_table_capabilities),
         overall_capabilities=frozenset(overall_capabilities),
     )
