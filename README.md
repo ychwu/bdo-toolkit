@@ -101,8 +101,11 @@ Solare uses structural classification and does not use that profile.
 | [Live Transfer Log](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_transfer_log.py) | Prints item receipts and confirmed storage additions live. | Storage-decoder diagnostics go to stderr |
 | [Async Live Transfer Log](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_live_capture.py) | Runs the live transfer log from an asyncio application. | Demonstrates application-controlled stop and drain |
 | [Character-Load Item Snapshot](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_character_load_snapshot.py) | Captures and summarizes inventory, known balances, and town-storage state during the next login or character switch. | Experimental; observed state may be partial |
-| [Solare Live Snapshot](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_live_snapshot.py) | Captures one Arena of Solare Leaderboard result with progress and health evidence. | No item profile required |
-| [Solare Replay Snapshot](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_replay_snapshot.py) | Replays a saved Leaderboard capture and optionally writes JSON. | Deterministic development and support path |
+| [Solare Live Snapshot](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_live_snapshot.py) | Captures one Arena of Solare Leaderboard result with progress and health evidence. | No item profile; pass `--save-pcap` to record |
+| [Solare Overall Top 100](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_overall_top_100.py) | Prints the authoritative overall ranking from a saved Leaderboard capture. | Checks overall-table Elo capability |
+| [Solare Class Top 20](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_class_top_20.py) | Prints one class leaderboard selected by class code. | Uses the independent class-table response |
+| [Solare Player Lookup](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_find_player.py) | Looks up an exact player name in both leaderboard collections. | Either independent lookup can be absent |
+| [Solare Player Statistics](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_player_statistics.py) | Prints direct overall aggregate outcomes and exposed per-class records. | Checks source-specific capabilities |
 
 ## Calibrate after a game patch
 
@@ -129,7 +132,10 @@ example:
 `QUANTITY = 1` is the quantity in each serialized item record, not the batch
 size. This example calibrates item transfers only. An
 [`async_calibrate_profile.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibrate_profile.py)
-variant is provided for asyncio applications.
+variant is provided for asyncio applications. A separate
+[`live_calibrate_loot_preview.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibrate_loot_preview.py)
+example adds optional preview-window support without replacing transfer
+families.
 
 See the [Calibration guide](https://ychwu.github.io/bdo-toolkit/#calibration-workflow)
 for accepted capture shapes, loot-preview calibration, storage-field validation,

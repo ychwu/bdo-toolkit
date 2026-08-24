@@ -1,4 +1,4 @@
-"""Capture one Arena of Solare leaderboard and print useful player fields."""
+"""Capture one Arena of Solare leaderboard load and optionally save it."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ deadline_group.add_argument(
 parser.add_argument(
     "--save-pcap",
     type=Path,
-    help="optionally save the exact accepted packets for deterministic replay",
+    help="optionally save accepted packets for deterministic replay",
 )
 parser.add_argument(
     "--include-raw",
@@ -45,6 +45,7 @@ capture_seconds = (
     if args.wait_forever
     else (120.0 if args.capture_seconds is None else args.capture_seconds)
 )
+save_pcap = args.save_pcap
 
 
 def show_progress(update: SolareUpdate) -> None:
@@ -57,7 +58,7 @@ def show_progress(update: SolareUpdate) -> None:
 # confirmed. Solare structural discovery and unknown-layout learning do not
 # use item calibration or an opcode profile.
 session = LiveSolareSession(
-    save_pcap=args.save_pcap,
+    save_pcap=save_pcap,
     retain_raw_extensions=args.include_raw,
 )
 session.start()
@@ -72,7 +73,13 @@ deadline_text = (
 )
 print(
     "[capture-policy] auto-stop on a complete snapshot; "
-    f"{deadline_text}; status heartbeat every 10 seconds",
+    f"{deadline_text}; "
+    + (
+        "recording disabled; "
+        if save_pcap is None
+        else f"recording {save_pcap}; "
+    )
+    + "status heartbeat every 10 seconds",
     flush=True,
 )
 next_heartbeat = started_at + 10.0
@@ -135,8 +142,8 @@ try:
                 f"ranked players={ranked_players}/620, "
                 f"overall rows={overall_players}/100, "
                 f"exact cross-check={exact_cross_check}/100. "
-                "Still listening; refresh the Leaderboard tab again if "
-                "progress has stalled.",
+                "Still listening. If the Leaderboard was opened before "
+                "capture started, restart the game before retrying.",
                 flush=True,
             )
             while next_heartbeat <= now:
@@ -166,6 +173,8 @@ if result is None:
     raise RuntimeError("live Solare session ended without a result")
 
 print(f"[capture-finished] stop reason: {termination}", flush=True)
+if save_pcap is not None:
+    print(f"[saved-capture] {save_pcap.resolve()}", flush=True)
 if not result.complete or result.snapshot is None:
     evidence = result.evidence
     health = evidence.health
@@ -184,8 +193,6 @@ if not result.complete or result.snapshot is None:
         f"{health.candidate_history_rolled_over}",
         flush=True,
     )
-    if args.save_pcap is not None:
-        print(f"  saved capture: {args.save_pcap.resolve()}", flush=True)
     raise SystemExit(1)
 
 snapshot = result.snapshot

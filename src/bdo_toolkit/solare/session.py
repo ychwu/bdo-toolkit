@@ -248,7 +248,8 @@ class LiveSolareSession:
                     message=(
                         f"passive Solare capture is ready on {endpoint_text}"
                         f"{endpoint_details}{recording}; "
-                        "open or refresh the Leaderboard tab"
+                        "open the Leaderboard tab for its first load after "
+                        "restarting the game"
                     ),
                 )
                 self._queue_update(ready_update)

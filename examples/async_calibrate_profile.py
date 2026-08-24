@@ -29,8 +29,14 @@ async def main() -> None:
         item_id=ITEM_ID,
         quantity=QUANTITY,
     ) as session:
-        print("Perform the following in-game actions yourself while capture remains open.")
-        print("Use Velia or Heidel as the controlled storage destination.")
+        print("Listening in the background.")
+        print(
+            "Perform the following in-game actions yourself while capture remains open."
+        )
+        print(
+            "Use one unambiguous town such as Velia, Heidel, Calpheon City, or Olvia."
+        )
+        print("Do not use Muzgar, Velandir, Yukjo Street, Godu Village, or Bukpo.")
         print(f"Using unstackable item {ITEM_ID} (record quantity {QUANTITY}):")
         print("deposit one item, then deposit the remaining four,")
         print("then withdraw all five matching items in one action.")

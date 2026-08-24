@@ -381,8 +381,10 @@ class LiveSolareDiscoveryTracker:
                 SolareUpdate(
                     kind=SolareUpdateKind.MENU_CONTEXT,
                     message=(
-                        "Solare menu/history-like traffic was observed; open or "
-                        "refresh the Leaderboard tab"
+                        "Solare menu/history-like traffic was observed, but no "
+                        "leaderboard load was sent; if the Leaderboard was "
+                        "already opened, restart the game and retry capture "
+                        "before opening it"
                     ),
                 )
             )
