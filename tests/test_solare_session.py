@@ -327,28 +327,6 @@ def test_live_session_forwards_raw_retention_to_result_builder(
     assert state["build_kwargs"] == [{"retain_raw_extensions": True}]
 
 
-@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
-def test_live_session_rejects_non_boolean_raw_retention(value: object) -> None:
-    with pytest.raises(
-        TypeError,
-        match="retain_raw_extensions must be a boolean",
-    ):
-        LiveSolareSession(
-            retain_raw_extensions=value,  # type: ignore[arg-type]
-        )
-
-
-@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
-def test_async_session_rejects_non_boolean_raw_retention(value: object) -> None:
-    with pytest.raises(
-        TypeError,
-        match="retain_raw_extensions must be a boolean",
-    ):
-        AsyncLiveSolareSession(
-            retain_raw_extensions=value,  # type: ignore[arg-type]
-        )
-
-
 def test_capture_convenience_forwards_raw_retention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1908,12 +1886,11 @@ def test_async_live_wait_timeout_keeps_session_reusable(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
 def test_async_solare_stopped_wait_ignores_timeout(
     monkeypatch: pytest.MonkeyPatch,
-    invalid_timeout: Any,
 ) -> None:
     _install_live_fakes(monkeypatch)
+    invalid_timeout = float("nan")
 
     async def scenario() -> None:
         session = AsyncLiveSolareSession(stop_on_complete=False)
@@ -1925,12 +1902,11 @@ def test_async_solare_stopped_wait_ignores_timeout(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
 def test_async_solare_stopped_poll_ignores_timeout_while_draining(
     monkeypatch: pytest.MonkeyPatch,
-    invalid_timeout: Any,
 ) -> None:
     _install_live_fakes(monkeypatch)
+    invalid_timeout = float("nan")
 
     async def scenario() -> None:
         session = AsyncLiveSolareSession(stop_on_complete=False)

@@ -213,15 +213,10 @@ class StorageHydrationTracker:
 
     @staticmethod
     def _as_snapshot(event: BDOEvent, burst: _HydrationBurst) -> BDOEvent:
-        extra = dict(event.extra)
-        extra.pop("storage_delta", None)
-        extra["storage_quantity"] = event.quantity
         return dataclasses.replace(
             event,
             event_type="storage_snapshot",
-            storage_operation="snapshot",
-            deposit_origin=None,
-            extra=extra,
+            source=None,
         )
 
     def _queue_locked(self, event: BDOEvent) -> None:

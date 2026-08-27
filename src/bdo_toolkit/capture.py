@@ -260,9 +260,9 @@ class _EventCollector:
             for spec in self.event_specs
             if spec.label == "INVENTORY_TRANSFER"
         )
-        self._requested_sources = tuple(
-            sorted(event_filter.sources)
-            if event_filter is not None and event_filter.sources is not None
+        self._requested_storage_ids = tuple(
+            sorted(event_filter.storage_ids)
+            if event_filter is not None and event_filter.storage_ids is not None
             else ()
         )
         self._hydration = StorageHydrationTracker(self._deliver)
@@ -370,7 +370,7 @@ class _EventCollector:
                     message=(
                         "A storage wrapper decoded, but its destination field "
                         "did not resolve to a registered town. Recalibrate the "
-                        "inventory-to-storage action; source-filtered events "
+                        "inventory-to-storage action; storage-ID-filtered events "
                         "may otherwise be omitted."
                     ),
                 )
@@ -382,8 +382,8 @@ class _EventCollector:
                         f"The calibrated storage destination field decoded ID "
                         f"0x{event.storage_id:08X}, but that key is not in the "
                         "town registry. Its numeric identity was preserved and "
-                        "its source was named UNKNOWN_STORAGE; update the "
-                        "registry or recalibrate before relying on source filters."
+                        "no display name is registered for it. Update the "
+                        "registry before relying on destination display metadata."
                     ),
                 )
         if event.event_type == "inventory_snapshot":
@@ -393,8 +393,8 @@ class _EventCollector:
             and event.event_type in {"storage_delta", "storage_record"}
         ):
             # Filtering happens at delivery, AFTER classification, so filters
-            # on event_type/deposit_origin see any evidence-based promotion and
-            # the final origin verdict.
+            # on event_type/source see any evidence-based promotion and the
+            # final semantic source verdict.
             self._tracker.register(event, raw_message=raw_message)
         elif event.event_type in {"storage_delta", "storage_record"}:
             self._hydration.observe_storage(event)
@@ -529,7 +529,7 @@ class _EventCollector:
                 f"destinations uniquely proves the destination field at byte "
                 f"{mismatch.observed_offset}, but the active profile uses byte "
                 f"{mismatch.configured_offset}. Events were not relabeled; "
-                "recalibrate before relying on town names or source filters."
+                "recalibrate before relying on storage names or storage-ID filters."
             ),
         )
 
@@ -619,7 +619,7 @@ class _EventCollector:
                 message=(
                     "The active opcode profile has no storage decoder. "
                     "Run inventory-to-storage calibration before relying on "
-                    "storage events or town filters."
+                    "storage events or storage-ID filters."
                 ),
             )
             return
@@ -648,7 +648,7 @@ class _EventCollector:
                     f"{' and '.join(missing)}. Recalibrate with two validated "
                     "record counts (for example a single and an unstackable "
                     "multi-record deposit) before relying on storage events "
-                    "or town filters."
+                    "or storage-ID filters."
                 ),
             )
 
@@ -760,7 +760,7 @@ class _EventCollector:
                     code=code,
                     message=message,
                     opcode=opcode,
-                    requested_sources=self._requested_sources,
+                    requested_storage_ids=self._requested_storage_ids,
                 )
             )
 

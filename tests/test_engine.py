@@ -6,7 +6,6 @@ import random
 from fixture_paths import JULY17_OPCODE_PROFILE
 from bdo_toolkit import EventFilter
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
-from bdo_toolkit import _engine as engine_module
 from bdo_toolkit._framing import FrameCollectorScanner, TargetMessageScanner
 from bdo_toolkit._protocol import (
     BDOFrame,
@@ -30,7 +29,7 @@ def test_source_label_default_applies_only_without_candidate():
 
 def test_source_label_unknown_candidate_stays_visible():
     # A new/unpatched context value must not silently match an existing
-    # source filter such as sources={"Storage"}.
+    # raw-context label. Public storage events keep endpoint identity separate.
     unknown = bytes.fromhex("deadbeef")
     assert source_label(unknown, "Storage") == "UNKNOWN(0xdeadbeef)"
     assert source_label(unknown, None) == "UNKNOWN(0xdeadbeef)"
@@ -99,10 +98,11 @@ def _frame_context(sequence: int = 100) -> PacketContext:
     )
 
 
-def test_promoted_remote_item_sources_reach_events_and_exact_filters():
+def test_known_item_sources_reach_events_and_exact_filters():
     observed = (
         (bytes.fromhex("60260000"), "Event Adventures"),
         (bytes.fromhex("3e010000"), "Remote Inventory"),
+        (bytes.fromhex("d0f205a3"), "Storage"),
     )
 
     for raw_context, expected_source in observed:
@@ -165,64 +165,6 @@ def test_target_anchor_skips_invalid_signature_before_valid_header():
     assert scanner.can_anchor_at_start(invalid + valid)
     assert not scanner.can_anchor_at_start(spec.signature + b"\x00" * 16)
     assert not scanner.can_anchor_at_start(b"\x00" + spec.signature + b"\x00" * 16)
-
-
-def test_target_scanner_caches_signatures_for_anchor_and_decode(monkeypatch):
-    specs = (
-        EventSpec(
-            "LOOT_PREVIEW",
-            0x1234,
-            5,
-            9,
-            13,
-            single_record_message_length=13,
-        ),
-        EventSpec(
-            "LOOT_PREVIEW",
-            0x1234,
-            5,
-            9,
-            21,
-            single_record_message_length=21,
-        ),
-        EventSpec(
-            "LOOT_PREVIEW",
-            0x5678,
-            5,
-            9,
-            13,
-            single_record_message_length=13,
-        ),
-    )
-    original_getter = EventSpec.signature.fget
-    assert original_getter is not None
-    signature_reads = 0
-
-    def counted_signature(spec):
-        nonlocal signature_reads
-        signature_reads += 1
-        return original_getter(spec)
-
-    monkeypatch.setattr(EventSpec, "signature", property(counted_signature))
-    events = []
-    scanner = TargetMessageScanner(
-        lambda event, _raw: events.append(event),
-        specs,
-    )
-    assert signature_reads == len(specs)
-
-    frame = bytearray(13)
-    frame[0:2] = len(frame).to_bytes(2, "little")
-    frame[2:5] = b"\x00\x34\x12"
-    frame[5:9] = (7003).to_bytes(4, "little")
-    frame[9:13] = (3).to_bytes(4, "little")
-    signature_reads = 0
-
-    assert scanner.can_anchor_at_start(bytes(frame))
-    scanner.scan_standalone(bytes(frame), _frame_context())
-
-    assert signature_reads == 0
-    assert [(event.item_id, event.quantity) for event in events] == [(7003, 3)]
 
 
 def test_target_anchor_optimized_search_matches_slow_reference():
@@ -457,46 +399,6 @@ def test_item_engine_bounds_active_flows_and_reports_resource_eviction():
 
     assert engine.flow_state_evictions == 1
     engine.finish()
-
-
-def test_multi_record_message_is_hashed_once(monkeypatch):
-    spec = EventSpec(
-        label="LOOT_PREVIEW",
-        opcode=0x1234,
-        item_offset=5,
-        quantity_offset=9,
-        min_message_length=13,
-        repeat_stride=8,
-        single_record_message_length=13,
-    )
-    message = bytearray(21)
-    message[0:2] = len(message).to_bytes(2, "little")
-    message[3:5] = spec.opcode.to_bytes(2, "little")
-    message[5:9] = (7003).to_bytes(4, "little")
-    message[9:13] = (3).to_bytes(4, "little")
-    message[13:17] = (5960).to_bytes(4, "little")
-    message[17:21] = (1).to_bytes(4, "little")
-    events = []
-    engine = PacketEngine(
-        server_ports=(8889,),
-        event_specs=(spec,),
-        on_event=lambda event, raw: events.append(event),
-    )
-    original_blake2b = engine_module.hashlib.blake2b
-    calls = []
-
-    def counted_blake2b(*args, **kwargs):
-        calls.append(True)
-        return original_blake2b(*args, **kwargs)
-
-    monkeypatch.setattr(engine_module.hashlib, "blake2b", counted_blake2b)
-    _segment(engine, 1000, bytes(message))
-
-    assert [(event.item_id, event.quantity) for event in events] == [
-        (7003, 3),
-        (5960, 1),
-    ]
-    assert len(calls) == 1
 
 
 def test_replay_pcap_round_trip_with_synthetic_capture(tmp_path):

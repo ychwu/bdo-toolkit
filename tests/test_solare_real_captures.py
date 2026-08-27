@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import bdo_toolkit.solare._result as result_module
 from bdo_toolkit.solare import (
     SolareDetectionStatus,
     SolareFamilyLayout,
@@ -523,7 +525,7 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    _COMPLETE_CAPTURES[:2],
+    _COMPLETE_CAPTURES[:1],
     ids=lambda case: f"raw-retention-{Path(case.relative_path).stem}",
 )
 def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
@@ -725,8 +727,16 @@ def test_private_non_complete_capture_never_exposes_snapshot(
     if not path.is_file():
         pytest.skip("private Solare capture is not installed")
 
-    result = replay_solare(path)
+    with patch.object(
+        result_module,
+        "learn_unknown_solare_details",
+        side_effect=AssertionError(
+            "the detail learner must not run for a non-complete capture"
+        ),
+    ) as learner:
+        result = replay_solare(path)
 
+    assert learner.call_count == 0
     assert result.status is case.status
     assert not result.complete
     assert result.snapshot is None

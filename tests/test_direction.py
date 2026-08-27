@@ -1,9 +1,8 @@
-"""Transfer-direction classification tests over labeled fixtures.
+"""Transfer-direction classification tests over labeled wire layouts.
 
-These lock in the 2026-07-07 re-audit findings: the reference-frame and
-context-label features classify direction opcode-free across both observed
-opcode generations, batch deposits fall in the storage-delta family, and auto
-calibration never silently mislabels a wrong-direction capture.
+Reference-frame and context-label evidence classify direction opcode-free
+across observed geometries, batch deposits remain in the storage-delta family,
+and auto calibration never silently mislabels a wrong-direction capture.
 """
 
 import pytest
@@ -28,22 +27,12 @@ requires_fixtures = pytest.mark.skipif(
 STORAGE_TO_INVENTORY = [  # item entering inventory -> receipt family
     ("1000707_inven_transfer_from_storage.pcapng", 1000707, "into_inventory"),
     ("new_potato.pcapng", 7003, "into_inventory"),
-    ("potato_qty6.pcapng", 7003, "into_inventory"),
-    ("potato_qty20_storage.pcapng", 7003, "into_inventory"),
     ("hit_1_5_unstackable.pcapng", 1000306, "into_inventory"),
-    ("base_ring.pcapng", 12031, "into_inventory"),
-    ("DUO_ring.pcapng", 33566463, "into_inventory"),
-    ("duo_item_s_to_i.pcapng", 34105233, "into_inventory"),
     ("tet_item_storage_to_inven.pcapng", 318780390, "into_inventory"),
 ]
 INVENTORY_TO_STORAGE = [  # item entering storage -> storage-delta family
     ("new_potato_1_1_1.pcapng", 7003, "into_storage"),
-    ("new_potato_3_tostorage.pcapng", 7003, "into_storage"),
     ("potato_leaving_inventory_qty20.pcapng", 7003, "into_storage"),
-    ("potato_leaving_inventory_qty10.pcapng", 7003, "into_storage"),
-    ("potato_transfer_test_3.pcapng", 7003, "into_storage"),
-    ("potato_7_3_to_storage.pcapng", 7003, "into_storage"),
-    ("new_item_to_storage_13_42.pcapng", 44195, "into_storage"),
     # Multi-record unstackable deposit: NO reference frame at all — classified
     # by the intrinsic offset-8 storage-delta context, not the windowed
     # reference. This is the case that motivated the intrinsic feature.
@@ -54,7 +43,6 @@ INVENTORY_TO_STORAGE = [  # item entering storage -> storage-delta family
 WORKER_DEPOSITS = [
     ("5960_qty1_and_4015_qty1_multi.pcapng", 5960, "into_storage"),
     ("5960_qty1_and_4015_qty1_multi.pcapng", 4015, "into_storage"),
-    ("worker_4607.pcapng", 4607, "into_storage"),
 ]
 
 

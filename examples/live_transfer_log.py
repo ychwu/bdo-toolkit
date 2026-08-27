@@ -28,15 +28,14 @@ def report_decoder_problem(diagnostic: DecoderDiagnostic) -> None:
 
 
 def print_event(event: BDOEvent) -> None:
-    fields = [
-        f"[{event.timestamp_text}]",
-        event.event_type.upper(),
-        f"source={event.source!r}",
-        f"item_id={event.item_id}",
-        f"quantity={event.quantity}",
-    ]
-    if event.deposit_origin is not None:
-        fields.append(f"deposit_origin={event.deposit_origin}")
+    fields = [f"[{event.timestamp_text}]", event.event_type.upper()]
+    if event.source is not None:
+        fields.append(f"source={event.source!r}")
+    if event.storage_id is not None:
+        destination = event.storage_name or f"0x{event.storage_id:08x}"
+        fields.append(f"destination={destination!r}")
+        fields.append(f"storage_id=0x{event.storage_id:08x}")
+    fields.extend((f"item_id={event.item_id}", f"quantity={event.quantity}"))
     print(" ".join(fields), flush=True)
 
 

@@ -1,4 +1,4 @@
-﻿"""Public API tests ported from the legacy repo's toolkit test suite."""
+﻿"""Current public API contract tests."""
 
 import pytest
 
@@ -110,10 +110,11 @@ def test_replay_batch_storage_deposit_as_structured_events():
 
     assert len(events) == 2
     assert [event.event_type for event in events] == ["storage_delta", "storage_delta"]
-    assert [event.source for event in events] == [
+    assert [event.storage_name for event in events] == [
         "Heidel",
         "Heidel",
     ]
+    assert {event.source for event in events} == {"Worker Production"}
     assert [event.item_id for event in events] == [5960, 4015]
     assert [event.quantity for event in events] == [1, 1]
     assert [event.record_index for event in events] == [1, 2]
@@ -122,10 +123,16 @@ def test_replay_batch_storage_deposit_as_structured_events():
         "0xb6391c5dcc1b8e00",
         "0xbf8d491bcc1b8e00",
     ]
+    first_payload = events[0].to_dict()
+    assert first_payload["event_type"] == "storage_delta"
+    assert first_payload["quantity"] == 1
+    assert first_payload["storage_id"] == 0x0020
+    assert first_payload["storage_name"] == "Heidel"
+    assert "stream_sequence" in first_payload["extra"]
 
 
 @requires_fixtures
-def test_replay_filters_by_event_type_and_source():
+def test_replay_filters_by_event_type_and_storage_id():
     fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
 
     assert list(
@@ -139,10 +146,23 @@ def test_replay_filters_by_event_type_and_source():
         replay_pcap(
             fixture,
             opcode_profile=JULY6_OPCODE_PROFILE,
-            event_filter=EventFilter(sources={"Heidel"}),
+            event_filter=EventFilter(storage_ids={0x0020}),
         )
     )
     assert len(worker_events) == 2
+    assert len(
+        list(
+            replay_pcap(
+                fixture,
+                opcode_profile=JULY6_OPCODE_PROFILE,
+                event_filter=EventFilter(
+                    event_types={"storage_delta"},
+                    sources={"Worker Production"},
+                    storage_ids={0x0020},
+                ),
+            )
+        )
+    ) == 2
     assert list(
         replay_pcap(
             fixture,
@@ -162,21 +182,7 @@ def test_manual_bulk_deposit_uses_destination_storage_label():
     )
 
     assert len(events) == 5
-    assert {event.source for event in events} == {"Heidel"}
+    assert {event.storage_name for event in events} == {"Heidel"}
+    assert {event.source for event in events} == {"Player Inventory"}
     assert [event.record_index for event in events] == [1, 2, 3, 4, 5]
-
-
-@requires_fixtures
-def test_event_to_dict_round_trips_extra_fields():
-    fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
-    event = next(
-        iter(replay_pcap(fixture, opcode_profile=JULY6_OPCODE_PROFILE))
-    )
-    data = event.to_dict()
-
-    assert data["event_type"] == "storage_delta"
-    assert not hasattr(event, "legacy_label")
-    assert "legacy_label" not in data
-    assert data["extra"]["storage_delta"] == event.quantity
-    assert "stream_sequence" in data["extra"]
 

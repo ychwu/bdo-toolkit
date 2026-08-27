@@ -37,7 +37,7 @@ def main() -> None:
     snapshot = capture_snapshot()
     inventory = snapshot.inventory
 
-    if not inventory.groups:
+    if not inventory.hydration_observed:
         raise RuntimeError("No character-inventory snapshot was observed")
 
     print("INVENTORY CONTENTS")
@@ -50,7 +50,7 @@ def main() -> None:
             f"container_label={container}"
         )
 
-    if not inventory.identity_complete:
+    if snapshot.coverage.inventory_records_missing_instance:
         print(
             "Warning: some inventory records lacked instance identity "
             "and were excluded"

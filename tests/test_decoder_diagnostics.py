@@ -146,7 +146,7 @@ def test_diagnostic_models_are_frozen_exported_and_serializable() -> None:
         code="storage_decoder_incompatible",
         message="recalibrate",
         opcode=0x2222,
-        requested_sources=("Heidel",),
+        requested_storage_ids=(0x0020,),
     )
     assert diagnostic.to_dict() == {
         "code": "storage_decoder_incompatible",
@@ -154,7 +154,7 @@ def test_diagnostic_models_are_frozen_exported_and_serializable() -> None:
         "severity": "warning",
         "subsystem": "storage",
         "opcode": 0x2222,
-        "requested_sources": ("Heidel",),
+        "requested_storage_ids": (0x0020,),
     }
     with pytest.raises(FrozenInstanceError):
         diagnostic.code = "changed"
@@ -171,13 +171,13 @@ def test_diagnostic_models_are_frozen_exported_and_serializable() -> None:
         health.storage_status = "incompatible"
 
 
-def test_incomplete_profile_emits_one_out_of_band_town_filter_diagnostic(
+def test_incomplete_profile_emits_one_out_of_band_storage_filter_diagnostic(
     tmp_path,
 ) -> None:
     diagnostics: list[DecoderDiagnostic] = []
     collector = _EventCollector(
         server_ports=(8889,),
-        event_filter=EventFilter(sources={"Heidel"}),
+        event_filter=EventFilter(storage_ids={0x0020}),
         opcode_profile=_write_storage_profile(
             tmp_path,
             context_offset=None,
@@ -190,7 +190,7 @@ def test_incomplete_profile_emits_one_out_of_band_town_filter_diagnostic(
     assert len(diagnostics) == 1
     assert diagnostics[0].code == "storage_decoder_incompatible"
     assert diagnostics[0].opcode == 0x2222
-    assert diagnostics[0].requested_sources == ("Heidel",)
+    assert diagnostics[0].requested_storage_ids == (0x0020,)
     assert collector.decoder_health.storage_status == "incompatible"
     assert collector.decoder_health.diagnostics_emitted == 1
 
@@ -221,10 +221,11 @@ def test_valid_profile_moves_health_from_not_observed_to_compatible(tmp_path) ->
     events = list(collector.drain_events())
     assert len(events) == 1
     assert events[0].event_type == "storage_record"
-    assert events[0].source == "Heidel"
+    assert events[0].source is None
+    assert events[0].storage_name == "Heidel"
 
 
-def test_malformed_declared_count_is_incompatible_and_emits_no_event(tmp_path) -> None:
+def test_top_level_geometry_rejections_mark_incompatible_once(tmp_path) -> None:
     diagnostics: list[DecoderDiagnostic] = []
     collector = _EventCollector(
         server_ports=(8889,),
@@ -235,7 +236,36 @@ def test_malformed_declared_count_is_incompatible_and_emits_no_event(tmp_path) -
 
     # A two-record declaration cannot fit a calibrated one-record base frame.
     malformed = _storage_message(declared_count=2)
-    _feed(collector, malformed + malformed)
+    collector.engine.process_tcp_segment(
+        source_ip="203.0.113.10",
+        source_port=8889,
+        destination_ip="198.51.100.20",
+        destination_port=51000,
+        sequence=1000,
+        payload=malformed,
+        timestamp=1000.0,
+    )
+
+    # The first proven top-level rejection is already enough to make the
+    # decoder state actionable; repeated failures only advance counters.
+    assert collector.decoder_health.storage_status == "incompatible"
+    assert collector.decoder_health.storage_messages_observed == 1
+    assert collector.decoder_health.storage_geometry_failures == 1
+    assert [diagnostic.code for diagnostic in diagnostics] == [
+        "storage_decoder_incompatible"
+    ]
+
+    collector.engine.process_tcp_segment(
+        source_ip="203.0.113.10",
+        source_port=8889,
+        destination_ip="198.51.100.20",
+        destination_port=51000,
+        sequence=1000 + len(malformed),
+        payload=malformed,
+        timestamp=1000.1,
+    )
+    collector.engine.finish()
+    collector.finalize()
 
     assert list(collector.drain_events()) == []
     health = collector.decoder_health
@@ -251,73 +281,32 @@ def test_malformed_declared_count_is_incompatible_and_emits_no_event(tmp_path) -
     assert diagnostics[0].opcode == 0x2222
 
 
-def test_first_top_level_storage_rejection_warns_immediately(tmp_path) -> None:
-    diagnostics: list[DecoderDiagnostic] = []
-    collector = _EventCollector(
-        server_ports=(8889,),
-        event_filter=EventFilter.all(),
-        opcode_profile=_write_storage_profile(tmp_path),
-        on_diagnostic=diagnostics.append,
-    )
-
-    _feed(collector, _storage_message(declared_count=2))
-
-    assert list(collector.drain_events()) == []
-    assert collector.decoder_health.storage_status == "incompatible"
-    assert collector.decoder_health.storage_messages_observed == 1
-    assert collector.decoder_health.storage_geometry_failures == 1
-    assert [diagnostic.code for diagnostic in diagnostics] == [
-        "storage_decoder_incompatible"
-    ]
-
-
-def test_nested_storage_signature_does_not_poison_decoder_health(tmp_path) -> None:
-    diagnostics: list[DecoderDiagnostic] = []
-    collector = _EventCollector(
-        server_ports=(8889,),
-        event_filter=EventFilter.all(),
-        opcode_profile=_write_storage_profile(tmp_path),
-        on_diagnostic=diagnostics.append,
-    )
-
-    outer = bytearray(400)
-    outer[0:2] = len(outer).to_bytes(2, "little")
-    outer[3:5] = (0x7777).to_bytes(2, "little")
-    nested = _storage_message(declared_count=2)
-    outer[50 : 50 + len(nested)] = nested
-    _feed(collector, bytes(outer))
-
-    assert list(collector.drain_events()) == []
-    assert collector.decoder_health.storage_status == "not_observed"
-    assert collector.decoder_health.storage_messages_observed == 0
-    assert diagnostics == []
-
-
-def test_valid_nested_storage_wrapper_is_not_delivered_as_a_top_level_event(
+def test_nested_storage_signatures_never_enter_top_level_decoder_state(
     tmp_path,
 ) -> None:
-    diagnostics: list[DecoderDiagnostic] = []
-    collector = _EventCollector(
-        server_ports=(8889,),
-        event_filter=EventFilter.all(),
-        opcode_profile=_write_storage_profile(tmp_path),
-        on_diagnostic=diagnostics.append,
-    )
+    for declared_count in (1, 2):
+        diagnostics: list[DecoderDiagnostic] = []
+        collector = _EventCollector(
+            server_ports=(8889,),
+            event_filter=EventFilter.all(),
+            opcode_profile=_write_storage_profile(tmp_path),
+            on_diagnostic=diagnostics.append,
+        )
 
-    outer = bytearray(400)
-    outer[0:2] = len(outer).to_bytes(2, "little")
-    outer[3:5] = (0x7777).to_bytes(2, "little")
-    nested = _storage_message(declared_count=1)
-    outer[50 : 50 + len(nested)] = nested
-    _feed(collector, bytes(outer))
+        outer = bytearray(400)
+        outer[0:2] = len(outer).to_bytes(2, "little")
+        outer[3:5] = (0x7777).to_bytes(2, "little")
+        nested = _storage_message(declared_count=declared_count)
+        outer[50 : 50 + len(nested)] = nested
+        _feed(collector, bytes(outer))
 
-    assert list(collector.drain_events()) == []
-    health = collector.decoder_health
-    assert health.storage_status == "not_observed"
-    assert health.storage_messages_observed == 0
-    assert health.storage_messages_decoded == 0
-    assert health.storage_records_decoded == 0
-    assert diagnostics == []
+        assert list(collector.drain_events()) == [], declared_count
+        health = collector.decoder_health
+        assert health.storage_status == "not_observed", declared_count
+        assert health.storage_messages_observed == 0, declared_count
+        assert health.storage_messages_decoded == 0, declared_count
+        assert health.storage_records_decoded == 0, declared_count
+        assert diagnostics == [], declared_count
 
 
 def test_nested_inventory_cannot_anchor_eight_top_level_storage_towns(
@@ -522,7 +511,7 @@ def test_configured_unknown_destination_cannot_be_replaced_by_known_decoy(
     assert len(events) == 1
     assert events[0].storage_id == 0x12345678
     assert events[0].storage_name is None
-    assert events[0].source == "UNKNOWN_STORAGE(0x12345678)"
+    assert events[0].source is None
     assert collector.decoder_health.storage_status == "incompatible"
     assert len(diagnostics) == 1
     assert diagnostics[0].code == "storage_destination_unrecognized"

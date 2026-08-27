@@ -26,6 +26,7 @@ from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit._specs import event_specs_from_profile
 from bdo_toolkit.calibration import (
     CalibrationAuthorityError,
+    CalibrationRetention,
     CalibrationResult,
     DirectionMismatchError,
     MessageSpec,
@@ -973,34 +974,6 @@ def test_inactive_explicit_profile_fails_instead_of_mixing_authorities(tmp_path)
         next(events)
 
 
-def test_event_collector_loads_profile_once(monkeypatch):
-    real_load = capture_module.load_opcode_profile
-    calls = []
-
-    def counted_load(path):
-        calls.append(path)
-        return real_load(path)
-
-    monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
-    capture_module._EventCollector(
-        server_ports=(8889,), opcode_profile=JULY17_OPCODE_PROFILE
-    )
-
-    assert len(calls) == 1
-
-
-def test_event_collector_skips_origin_graph_for_nonstorage_filter():
-    collector = capture_module._EventCollector(
-        server_ports=(8889,),
-        opcode_profile=JULY17_OPCODE_PROFILE,
-        event_filter=EventFilter(event_types={"item_received"}),
-    )
-
-    assert collector._tracker is None
-    collector.flush_stale(1000.0)
-    collector.finalize()
-
-
 def test_origin_observer_keeps_origin_graph_for_nonstorage_filter():
     collector = capture_module._EventCollector(
         server_ports=(8889,),
@@ -1017,7 +990,15 @@ def test_empty_profile_update_is_a_true_noop(tmp_path):
     original = '{"sentinel": true}\n'
     path.write_text(original, encoding="utf-8")
 
-    update = update_profile(CalibrationResult((), (), 0), path)
+    update = update_profile(
+        CalibrationResult(
+            (),
+            (),
+            0,
+            retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+        ),
+        path,
+    )
 
     assert not update.written
     assert update.backup_path is None
@@ -1062,6 +1043,7 @@ def test_partial_auto_calibration_cannot_preserve_stale_storage_silently(tmp_pat
         ),
         ignored=(),
         frames_scanned=1,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
     )
 
     with pytest.raises(CalibrationAuthorityError, match="auto calibration is incomplete"):
@@ -1353,6 +1335,7 @@ def test_profile_records_calibration_item_and_uses_unique_backups(tmp_path):
         (),
         1,
         calibration_item_id=99123,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
     )
     first = update_profile(first_result, path)
     second = update_profile(
@@ -1471,7 +1454,6 @@ def test_event_extra_is_deeply_immutable_hashable_and_json_safe():
         "_vendor": "preserved",
     }
     assert event.to_dict()["timestamp_iso"] == "1970-01-01T00:00:00.000Z"
-    assert "timestamp_text" not in event.to_dict()
 
 
 @pytest.mark.parametrize(
@@ -1509,7 +1491,12 @@ def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
 
         def stop(self):
             state["stopped"] = True
-            return CalibrationResult((), (), 0)
+            return CalibrationResult(
+                (),
+                (),
+                0,
+                retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+            )
 
     def fail_sleep(seconds):
         raise RuntimeError("wait failed")
@@ -1530,7 +1517,10 @@ def test_filter_rejects_accidental_string_iterables():
 
 def test_event_filter_constructor_normalizes_and_freezes_inputs():
     sources = {"Mob Drop"}
-    event_filter = EventFilter(sources=sources)
+    storage_ids = {0x0020}
+    event_filter = EventFilter(sources=sources, storage_ids=storage_ids)
     sources.add("Storage")
+    storage_ids.add(0x0058)
 
     assert event_filter.sources == frozenset({"Mob Drop"})
+    assert event_filter.storage_ids == frozenset({0x0020})

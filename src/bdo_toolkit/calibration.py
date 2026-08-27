@@ -433,50 +433,15 @@ class CalibrationResult:
     frames_scanned: int
     evidence: tuple[DirectionEvidence, ...] = ()
     calibration_item_id: Optional[int] = None
-    retention: Optional[CalibrationRetention] = None
+    retention: CalibrationRetention = field(kw_only=True)
 
-    @property
-    def retention_status(self) -> CalibrationRetention:
-        """Complete retention report, including legacy/manual result objects."""
-
-        if self.retention is not None:
-            return self.retention
-        return CalibrationRetention(
-            frames_observed=self.frames_scanned,
-            frames_retained=self.frames_scanned,
-            frames_discarded=0,
-            bytes_observed=None,
-            bytes_retained=None,
-            bytes_discarded=None,
-        )
-
-    @property
-    def frames_observed(self) -> int:
-        return self.retention_status.frames_observed
-
-    @property
-    def frames_retained(self) -> int:
-        return self.retention_status.frames_retained
-
-    @property
-    def frames_discarded(self) -> int:
-        return self.retention_status.frames_discarded
-
-    @property
-    def bytes_observed(self) -> Optional[int]:
-        return self.retention_status.bytes_observed
-
-    @property
-    def bytes_retained(self) -> Optional[int]:
-        return self.retention_status.bytes_retained
-
-    @property
-    def bytes_discarded(self) -> Optional[int]:
-        return self.retention_status.bytes_discarded
-
-    @property
-    def retention_truncated(self) -> bool:
-        return self.retention_status.truncated
+    def __post_init__(self) -> None:
+        if not isinstance(self.retention, CalibrationRetention):
+            raise TypeError("retention must be a CalibrationRetention")
+        if self.frames_scanned != self.retention.frames_retained:
+            raise ValueError(
+                "frames_scanned must equal retention.frames_retained"
+            )
 
     @property
     def events_found(self) -> frozenset[str]:
@@ -511,7 +476,7 @@ class CalibrationResult:
     def summary(self) -> str:
         """Human-readable multi-line report; print or log it as-is."""
         lines = [f"scanned {self.frames_scanned} frames"]
-        retention = self.retention_status
+        retention = self.retention
         if retention.bounded:
             status = "truncated" if retention.truncated else "complete"
             lines.append(
@@ -541,7 +506,7 @@ class CalibrationResult:
         return {
             "frames_scanned": self.frames_scanned,
             "calibration_item_id": self.calibration_item_id,
-            "retention": self.retention_status.to_json_dict(),
+            "retention": self.retention.to_json_dict(),
             "specs": [spec.to_json_dict() for spec in self.specs],
             "ignored": list(self.ignored),
             "evidence": [e.to_json_dict() for e in self.evidence],
@@ -1471,7 +1436,7 @@ def calibrate_and_update(
 
         result, update = calibrate_and_update(
             "opcodes.local",
-            item_id=1000306,
+            item_id=15156,
             quantity=1,
         )
         print(result.summary())

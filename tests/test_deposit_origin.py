@@ -20,7 +20,7 @@ from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
-from bdo_toolkit.profiles import OpcodeProfile, OriginCompanionFamily, ProfileError
+from bdo_toolkit.profiles import OpcodeProfile, ProfileError
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -71,9 +71,9 @@ MANUAL_FIXTURES = [
 ]
 
 
-def _origins(fixture):
+def _classified_sources(fixture):
     return [
-        (event.deposit_origin, event.extra.get("deposit_origin_evidence"))
+        (event.source, event.extra.get("deposit_origin_evidence"))
         for event in replay_pcap(
             fixture_path(fixture),
             opcode_profile=JULY6_OPCODE_PROFILE,
@@ -85,10 +85,10 @@ def _origins(fixture):
 @requires_fixtures
 @pytest.mark.parametrize("fixture", WORKER_FIXTURES)
 def test_worker_deposits_classify_as_worker(fixture):
-    results = _origins(fixture)
+    results = _classified_sources(fixture)
     assert results, f"no storage_delta events decoded from {fixture}"
-    for origin, evidence in results:
-        assert origin == "worker"
+    for source, evidence in results:
+        assert source == "Worker Production"
         assert evidence["worker_companions"] is True
         assert evidence["matching_decrement"] is False
         chain = evidence["companion_chain"]
@@ -99,10 +99,10 @@ def test_worker_deposits_classify_as_worker(fixture):
 @requires_fixtures
 @pytest.mark.parametrize("fixture", MANUAL_FIXTURES)
 def test_manual_deposits_classify_as_manual(fixture):
-    results = _origins(fixture)
+    results = _classified_sources(fixture)
     assert results, f"no storage_delta events decoded from {fixture}"
-    for origin, evidence in results:
-        assert origin == "manual"
+    for source, evidence in results:
+        assert source == "Player Inventory"
         assert evidence["worker_companions"] is False
         assert evidence["matching_decrement"] is True
         assert evidence["manual_decrement"]["confidence"] in {
@@ -113,19 +113,12 @@ def test_manual_deposits_classify_as_manual(fixture):
 
 
 @requires_fixtures
-def test_ambient_nonmatching_decrement_does_not_flip_worker_verdict():
-    # 7002_qty25 has a 0x1A32 near the deposit that does NOT carry qty=25:
-    # presence alone must not read as manual.
-    (origin, evidence), = _origins("7002_qty25.pcapng")
-    assert origin == "worker"
-    assert evidence["matching_decrement"] is False
-
-
-@requires_fixtures
 def test_legacy_manual_fixtures_distinguish_identity_confidence_and_stride():
-    full_stack = _origins("new_potato_3_tostorage.pcapng")
-    partial_stack = _origins("new_potato_1_1_1.pcapng")
-    unstackable_batch = _origins("1000306_qty5_unstackable_i2s.pcapng")
+    full_stack = _classified_sources("new_potato_3_tostorage.pcapng")
+    partial_stack = _classified_sources("new_potato_1_1_1.pcapng")
+    unstackable_batch = _classified_sources(
+        "1000306_qty5_unstackable_i2s.pcapng"
+    )
 
     assert len(full_stack) == 1
     full_evidence = full_stack[0][1]["manual_decrement"]
@@ -256,7 +249,7 @@ def test_manual_decrement_requires_calibrated_length_and_offset():
     tracker.register(_storage_event(quantity=3, seq=1000))
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
     assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
 
 
@@ -292,7 +285,7 @@ def test_common_quantity_does_not_match_an_empty_declared_instance_field():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
     assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
 
 
@@ -328,7 +321,7 @@ def test_exact_instance_match_accepts_low_entropy_identity():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "manual"
+    assert emitted[0].source == "Player Inventory"
     manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
     assert manual["confidence"] == "observed"
     assert manual["instance_matches_destination"] is True
@@ -365,7 +358,7 @@ def test_nonexact_structural_instance_requires_entropy_in_both_halves():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
     assert emitted[0].extra["deposit_origin_evidence"]["matching_decrement"] is False
 
 
@@ -400,7 +393,7 @@ def test_valid_nonexact_instance_is_explicit_structural_evidence():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "manual"
+    assert emitted[0].source == "Player Inventory"
     manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
     assert manual["match_kind"] == "anchored-instance-and-quantity"
     assert manual["confidence"] == "structural"
@@ -443,7 +436,7 @@ def test_configured_decrement_stride_matches_the_corresponding_record():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "manual"
+    assert emitted[0].source == "Player Inventory"
     manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
     assert manual["quantity_offset"] == 65
     assert manual["source_instance_offset"] == 57
@@ -503,7 +496,7 @@ def test_current_decrement_stride_accepts_odd_and_even_batch_counts(record_count
 
     assert len(emitted) == record_count
     assert all(event.event_type == "storage_delta" for event in emitted)
-    assert all(event.deposit_origin == "manual" for event in emitted)
+    assert all(event.source == "Player Inventory" for event in emitted)
     assert [
         event.extra["deposit_origin_evidence"]["manual_decrement"][
             "record_index"
@@ -549,7 +542,7 @@ def test_no_evidence_yields_unknown():
     tracker.observe_frame(_frame(0x0E6A, seq=1000))
     tracker.register(_storage_event(seq=1000))
     tracker.finalize_all()
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_companions_outrank_a_spurious_decrement_match():
@@ -577,7 +570,7 @@ def test_companions_outrank_a_spurious_decrement_match():
     tracker.observe_frame(first)
     tracker.observe_frame(second)
     tracker.finalize_all()
-    assert emitted[0].deposit_origin == "worker"
+    assert emitted[0].source == "Worker Production"
     evidence = emitted[0].extra["deposit_origin_evidence"]
     assert evidence["worker_companions"] is True
     assert evidence["matching_decrement"] is True
@@ -613,8 +606,8 @@ def test_multi_record_worker_batch_agrees_across_records():
     tracker.observe_frame(first)
     tracker.observe_frame(second)
     tracker.finalize_all()
-    origins = [e.deposit_origin for e in emitted]
-    assert origins == ["worker", "worker"]
+    sources = [event.source for event in emitted]
+    assert sources == ["Worker Production", "Worker Production"]
 
 
 def test_companions_already_in_segment_finalize_immediately():
@@ -627,7 +620,7 @@ def test_companions_already_in_segment_finalize_immediately():
     tracker.observe_frame(first)
     tracker.observe_frame(second)
     tracker.register(_storage_event(seq=1000, message_length=80))
-    assert emitted and emitted[0].deposit_origin == "worker"
+    assert emitted and emitted[0].source == "Worker Production"
 
 
 def test_worker_chain_resynchronizes_generic_tap_after_midframe_start():
@@ -691,7 +684,7 @@ def test_worker_chain_resynchronizes_generic_tap_after_midframe_start():
         first.opcode,
         second.opcode,
     ]
-    assert emitted and emitted[0].deposit_origin == "worker"
+    assert emitted and emitted[0].source == "Worker Production"
 
 
 def _write_july17_unknown_operation_profile(tmp_path):
@@ -798,16 +791,22 @@ def test_unknown_operation_manual_is_promoted_before_filtering(tmp_path):
     events = _collect_synthetic_current_storage(
         profile,
         _july17_manual_decrement(8) + storage,
-        EventFilter(event_types={"storage_delta"}),
+        EventFilter(
+            event_types={"storage_delta"},
+            sources={"Player Inventory"},
+            storage_ids={0x0020},
+        ),
     )
 
     assert len(events) == 1
     event = events[0]
-    assert (event.item_id, event.quantity, event.source) == (7307, 8, "Heidel")
+    assert (event.item_id, event.quantity, event.storage_name) == (
+        7307,
+        8,
+        "Heidel",
+    )
+    assert event.source == "Player Inventory"
     assert event.event_type == "storage_delta"
-    assert event.storage_operation == "live"
-    assert event.deposit_origin == "manual"
-    assert event.extra["storage_delta"] == 8
     manual_evidence = event.extra["deposit_origin_evidence"]
     assert manual_evidence["worker_companions"] is False
     assert manual_evidence["matching_decrement"] is True
@@ -834,9 +833,7 @@ def test_unknown_operation_without_live_evidence_stays_neutral(tmp_path):
     assert len(events) == 1
     event = events[0]
     assert event.event_type == "storage_record"
-    assert event.storage_operation == "unknown"
-    assert event.deposit_origin is None
-    assert "storage_delta" not in event.extra
+    assert event.source is None
     assert "deposit_origin_evidence" not in event.extra
 
 
@@ -854,7 +851,6 @@ def test_incomplete_unknown_operation_batch_finalizes_neutral():
         record_offset=36,
         record_index=1,
         record_count=2,
-        storage_operation="unknown",
         extra={"stream_sequence": 1000},
     )
 
@@ -862,7 +858,7 @@ def test_incomplete_unknown_operation_batch_finalizes_neutral():
     tracker.finalize_all()
 
     assert emitted == [event]
-    assert emitted[0].deposit_origin is None
+    assert emitted[0].source is None
 
 
 def test_unknown_operation_manual_batch_is_promoted_atomically(tmp_path):
@@ -878,8 +874,8 @@ def test_unknown_operation_manual_batch_is_promoted_atomically(tmp_path):
         (event.item_id, event.quantity, event.record_index, event.record_count)
         for event in events
     ] == [(7307, 8, 1, 2), (4003, 21, 2, 2)]
-    assert {event.deposit_origin for event in events} == {"manual"}
-    assert {event.storage_operation for event in events} == {"live"}
+    assert {event.source for event in events} == {"Player Inventory"}
+    assert {event.event_type for event in events} == {"storage_delta"}
     assert all(
         event.extra["deposit_origin_evidence"][
             "matching_decrement_record_indexes"
@@ -902,8 +898,7 @@ def test_unknown_operation_worker_chain_is_promoted(tmp_path):
     assert len(events) == 1
     event = events[0]
     assert event.event_type == "storage_delta"
-    assert event.storage_operation == "live"
-    assert event.deposit_origin == "worker"
+    assert event.source == "Worker Production"
     assert event.extra["deposit_origin_evidence"]["matching_decrement"] is True
     assert event.extra["storage_operation_evidence"]["signal"] == (
         "worker_companions"
@@ -935,11 +930,11 @@ def test_interleaved_manual_storage_does_not_hide_worker_from_filter(tmp_path):
     )
 
     assert [
-        (event.item_id, event.event_type, event.deposit_origin)
+        (event.item_id, event.event_type, event.source)
         for event in events
     ] == [
-        (4802, "storage_delta", "worker"),
-        (15156, "storage_delta", "manual"),
+        (4802, "storage_delta", "Worker Production"),
+        (15156, "storage_delta", "Player Inventory"),
     ]
 
 
@@ -970,8 +965,8 @@ def test_crossed_storage_record_body_is_not_treated_as_token_prefix(tmp_path):
         EventFilter(event_types={"item_received", "storage_delta"}),
     )
     assert [
-        (event.item_id, event.deposit_origin) for event in delivered
-    ] == [(4802, "worker")]
+        (event.item_id, event.source) for event in delivered
+    ] == [(4802, "Worker Production")]
 
     all_events = _collect_synthetic_current_storage(
         profile,
@@ -979,10 +974,10 @@ def test_crossed_storage_record_body_is_not_treated_as_token_prefix(tmp_path):
         EventFilter.all(),
     )
     assert [
-        (event.item_id, event.event_type, event.deposit_origin)
+        (event.item_id, event.event_type, event.source)
         for event in all_events
     ] == [
-        (4802, "storage_delta", "worker"),
+        (4802, "storage_delta", "Worker Production"),
         (15156, "storage_record", None),
     ]
 
@@ -1012,7 +1007,7 @@ def test_reused_token_ambiguity_stays_neutral_before_live_filter(tmp_path):
         EventFilter.all(),
     )
     assert [
-        (event.item_id, event.event_type, event.deposit_origin)
+        (event.item_id, event.event_type, event.source)
         for event in all_events
     ] == [
         (4802, "storage_record", None),
@@ -1068,7 +1063,7 @@ def test_whole_segment_dual_token_pair_stays_neutral_after_older_closes(tmp_path
         event for event in all_events if event.event_type == "storage_record"
     ]
     assert [event.item_id for event in storage_records] == [4802, 15156]
-    assert all(event.deposit_origin is None for event in storage_records)
+    assert all(event.source is None for event in storage_records)
     assert all("deposit_origin_evidence" not in event.extra for event in storage_records)
 
 
@@ -1096,64 +1091,12 @@ def test_unknown_companion_opcodes_are_discovered_once_for_multi_record_batch():
     tracker.observe_frame(second)
     tracker.finalize_all()
 
-    assert [event.deposit_origin for event in emitted] == ["worker", "worker"]
+    assert [event.source for event in emitted] == [
+        "Worker Production",
+        "Worker Production",
+    ]
     assert len(observations) == 1
     assert observations[0].companion_opcodes == (0x0F7E, 0x0DE1)
-
-
-def test_worker_companions_can_skip_three_unrelated_messages():
-    emitted = []
-    tracker = _tracker(emitted)
-    delta, first, second = _worker_chain()
-    tracker.observe_frame(delta)
-    tracker.register(_storage_event(seq=1000, message_length=80))
-
-    next_sequence = 1080
-    for index in range(3):
-        unrelated = _frame(0x2000 + index, next_sequence, length=10)
-        tracker.observe_frame(unrelated)
-        next_sequence += len(unrelated.message)
-    tracker.observe_frame(
-        BDOFrame(first.index, first.message, first.context, next_sequence)
-    )
-    next_sequence += len(first.message)
-    tracker.observe_frame(
-        BDOFrame(second.index, second.message, second.context, next_sequence)
-    )
-    tracker.finalize_all()
-
-    assert emitted[0].deposit_origin == "worker"
-    chain = emitted[0].extra["deposit_origin_evidence"]["companion_chain"]
-    assert chain["confirmed_family"] is True
-    assert chain["confirmation"] == "unambiguous-bounded-window"
-
-
-def test_interleaved_storage_with_distinct_token_does_not_hide_worker():
-    emitted = []
-    tracker = _tracker(emitted)
-    delta, first, second = _worker_chain()
-    other_delta, _, _ = _worker_chain(
-        delta_seq=1080,
-        token=bytes.fromhex("3141592653589793"),
-    )
-    tracker.observe_frame(delta)
-    tracker.register(_storage_event(seq=1000, message_length=80))
-
-    tracker.observe_frame(other_delta)
-    tracker.register(
-        _storage_event(
-            item_id=15156,
-            quantity=1,
-            seq=1080,
-            message_length=80,
-        )
-    )
-    tracker.observe_frame(BDOFrame(4, first.message, first.context, 1160))
-    tracker.observe_frame(BDOFrame(5, second.message, second.context, 1218))
-    tracker.finalize_all()
-
-    origins = {event.item_id: event.deposit_origin for event in emitted}
-    assert origins == {7002: "worker", 15156: "unknown"}
 
 
 def test_two_interleaved_workers_keep_distinct_token_ownership():
@@ -1177,7 +1120,10 @@ def test_two_interleaved_workers_keep_distinct_token_ownership():
         sequence += len(frame.message)
     tracker.finalize_all()
 
-    assert [event.deposit_origin for event in emitted] == ["worker", "worker"]
+    assert [event.source for event in emitted] == [
+        "Worker Production",
+        "Worker Production",
+    ]
     digests = {
         event.extra["deposit_origin_evidence"]["companion_chain"][
             "shared_token_digest"
@@ -1211,7 +1157,7 @@ def test_one_companion_pair_cannot_serve_two_distinct_tokens():
     )
     tracker.finalize_all()
 
-    assert [event.deposit_origin for event in emitted] == ["unknown", "unknown"]
+    assert [event.source for event in emitted] == [None, None]
 
 
 def test_interleaved_storage_with_reused_token_is_ambiguous():
@@ -1235,7 +1181,7 @@ def test_interleaved_storage_with_reused_token_is_ambiguous():
     tracker.observe_frame(BDOFrame(5, second.message, second.context, 1218))
     tracker.finalize_all()
 
-    assert [event.deposit_origin for event in emitted] == ["unknown", "unknown"]
+    assert [event.source for event in emitted] == [None, None]
 
 
 def test_contested_pair_history_pressure_never_restores_worker_trust():
@@ -1261,7 +1207,7 @@ def test_contested_pair_history_pressure_never_restores_worker_trust():
     tracker.observe_frame(_frame(0x2222, 1241))
     tracker.finalize_all()
 
-    assert [event.deposit_origin for event in emitted] == ["unknown", "unknown"]
+    assert [event.source for event in emitted] == [None, None]
 
 
 def test_contest_overflow_clears_previously_accumulated_worker_candidate():
@@ -1284,8 +1230,8 @@ def test_contest_overflow_clears_previously_accumulated_worker_candidate():
     assert tracker._pending[0].candidate_observations == {}
 
     tracker.finalize_all()
-    assert [(event.item_id, event.deposit_origin) for event in emitted] == [
-        (7002, "unknown")
+    assert [(event.item_id, event.source) for event in emitted] == [
+        (7002, None)
     ]
 
 
@@ -1309,13 +1255,13 @@ def test_operation_cap_eviction_does_not_confirm_partial_worker_chain():
     )
     tracker.observe_frame(next_delta)
     tracker.register(_storage_event(item_id=7003, seq=1171, message_length=80))
-    assert [(event.item_id, event.deposit_origin) for event in emitted] == [
-        (7002, "unknown")
+    assert [(event.item_id, event.source) for event in emitted] == [
+        (7002, None)
     ]
     tracker.finalize_all()
-    assert [(event.item_id, event.deposit_origin) for event in emitted] == [
-        (7002, "unknown"),
-        (7003, "unknown"),
+    assert [(event.item_id, event.source) for event in emitted] == [
+        (7002, None),
+        (7003, None),
     ]
 
 
@@ -1335,7 +1281,7 @@ def test_unregistered_next_storage_with_reused_token_is_not_borrowed():
     tracker.observe_frame(BDOFrame(5, second.message, second.context, 1218))
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_worker_companions_survive_more_than_eight_unrelated_messages():
@@ -1359,7 +1305,10 @@ def test_worker_companions_survive_more_than_eight_unrelated_messages():
     )
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "worker"
+    assert emitted[0].source == "Worker Production"
+    chain = emitted[0].extra["deposit_origin_evidence"]["companion_chain"]
+    assert chain["confirmed_family"] is True
+    assert chain["confirmation"] == "unambiguous-bounded-window"
 
 
 def test_worker_companions_survive_ten_distinct_storage_operations():
@@ -1396,10 +1345,10 @@ def test_worker_companions_survive_ten_distinct_storage_operations():
     )
     tracker.finalize_all()
 
-    origins = {event.item_id: event.deposit_origin for event in emitted}
-    assert origins[7002] == "worker"
+    sources = {event.item_id: event.source for event in emitted}
+    assert sources[7002] == "Worker Production"
     assert all(
-        origins[15156 + index] == "unknown" for index in range(10)
+        sources[15156 + index] is None for index in range(10)
     )
 
 
@@ -1415,7 +1364,7 @@ def test_stale_raw_stream_companions_do_not_revive_worker():
         PacketContext(timestamp=1003.1, flow=FLOW, stream_start=1080),
     )
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_stale_second_companion_does_not_revive_worker():
@@ -1441,7 +1390,7 @@ def test_stale_second_companion_does_not_revive_worker():
         )
     )
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_different_profile_storage_opcode_stops_companion_search():
@@ -1459,7 +1408,7 @@ def test_different_profile_storage_opcode_stops_companion_search():
     tracker.observe_frame(token_bearing_message)
     tracker.finalize_all()
 
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_runtime_confirmed_family_history_is_bounded():
@@ -1477,25 +1426,6 @@ def test_runtime_confirmed_family_history_is_bounded():
     assert families[0] not in tracker._confirmed_companion_families
     assert set(families[1:]) <= tracker._confirmed_companion_families
     assert families[0] not in tracker._family_confirmation
-
-
-def test_known_family_generator_is_not_consumed_before_boundary_setup():
-    family = OriginCompanionFamily(
-        delta_opcode=0x0E6A,
-        companion_opcodes=(0x1558, 0x1168),
-        companion_lengths=(58, 23),
-        detection="shared-token-chain-v1",
-        observations=2,
-        promoted_at=None,
-    )
-    tracker = DepositOriginTracker(
-        decrement_specs=(),
-        emit=lambda event: None,
-        known_companion_families=(entry for entry in (family,)),
-    )
-
-    assert family.family_key in tracker._known_companion_families
-    assert family.delta_opcode in tracker._storage_delta_opcodes
 
 
 @requires_fixtures
@@ -1533,11 +1463,11 @@ def test_july17_single_record_profile_decodes_full_worker_batch(tmp_path):
     events = list(replay_pcap(fixture, opcode_profile=profile))
 
     assert [
-        (event.item_id, event.quantity, event.record_index, event.deposit_origin)
+        (event.item_id, event.quantity, event.record_index, event.source)
         for event in events
     ] == [
-        (4802, 1, 1, "worker"),
-        (4003, 21, 2, "worker"),
+        (4802, 1, 1, "Worker Production"),
+        (4003, 21, 2, "Worker Production"),
     ]
 
 
@@ -1548,7 +1478,7 @@ def test_stale_pending_deposit_flushes_as_unknown():
     tracker.register(_storage_event(seq=1000, timestamp=1000.0))
     assert not emitted
     tracker.flush_stale(now=1005.0)
-    assert emitted[0].deposit_origin == "unknown"
+    assert emitted[0].source is None
 
 
 def test_stale_flush_delivery_does_not_invert_tracker_and_session_locks():
@@ -1687,7 +1617,6 @@ def test_stale_flush_serializes_concurrent_neutral_batch_creation():
             record_offset=36,
             record_index=1,
             record_count=2,
-            storage_operation="unknown",
             extra={"stream_sequence": sequence},
         )
 
@@ -1741,7 +1670,7 @@ def test_lookahead_window_remains_hard_bounded():
     tracker.register(_storage_event(seq=1000))
     for i in range(tracker.LOOKAHEAD_FRAMES):
         tracker.observe_frame(_frame(0x1CAE, seq=1100 + i))
-    assert emitted and emitted[0].deposit_origin == "unknown"
+    assert emitted and emitted[0].source is None
 
 
 def test_pending_storage_operations_are_hard_bounded():
@@ -1760,19 +1689,7 @@ def test_pending_storage_operations_are_hard_bounded():
 
 
 @requires_fixtures
-def test_format_human_shows_deposit_origin():
-    events = list(
-        replay_pcap(
-            fixture_path("worker_4607.pcapng"),
-            opcode_profile=JULY6_OPCODE_PROFILE,
-        )
-    )
-    line = events[0].format_human()
-    assert "deposit_origin=worker" in line
-
-
-@requires_fixtures
-def test_deposit_origins_filter_is_first_class():
+def test_classified_storage_sources_filter_through_the_canonical_field():
     # The dev-facing worker-tracker one-liner: filter at the API, applied
     # AFTER classification so the verdict is already on the event.
     manual = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
@@ -1782,7 +1699,7 @@ def test_deposit_origins_filter_is_first_class():
         replay_pcap(
             manual,
             opcode_profile=JULY6_OPCODE_PROFILE,
-            event_filter=EventFilter(deposit_origins={"worker"}),
+            event_filter=EventFilter(sources={"Worker Production"}),
         )
     ) == []
     assert len(
@@ -1790,7 +1707,7 @@ def test_deposit_origins_filter_is_first_class():
             replay_pcap(
                 manual,
                 opcode_profile=JULY6_OPCODE_PROFILE,
-                event_filter=EventFilter(deposit_origins={"manual"}),
+                event_filter=EventFilter(sources={"Player Inventory"}),
             )
         )
     ) == 5
@@ -1799,26 +1716,9 @@ def test_deposit_origins_filter_is_first_class():
         replay_pcap(
             worker,
             opcode_profile=JULY6_OPCODE_PROFILE,
-            event_filter=EventFilter(deposit_origins={"worker"}),
+            event_filter=EventFilter(sources={"Worker Production"}),
         )
     )
-    assert [(e.item_id, e.deposit_origin) for e in events] == [(4607, "worker")]
-
-
-def test_deposit_origin_defaults_to_none_off_storage_deltas():
-    from bdo_toolkit.events import BDOEvent, Flow
-
-    event = BDOEvent(
-        event_type="item_received",
-        timestamp=1000.0,
-        flow=Flow("1.1.1.1", 8889, "2.2.2.2", 50000),
-        item_id=7003,
-        quantity=1,
-    )
-    assert event.deposit_origin is None
-    assert "deposit_origin" not in event.to_dict()
-
-    from bdo_toolkit.filters import EventFilter
-
-    f = EventFilter.from_values(deposit_origins={"worker"})
-    assert not f.allows(event)  # None never matches a set filter
+    assert [(event.item_id, event.source) for event in events] == [
+        (4607, "Worker Production")
+    ]

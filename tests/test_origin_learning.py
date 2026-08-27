@@ -256,10 +256,10 @@ def test_new_patch_family_is_discovered_without_being_known(tmp_path):
             )
         )
 
-    assert [(event.item_id, event.deposit_origin) for event in events] == [
-        (5004, "worker"),
-        (4604, "worker"),
-        (7003, "worker"),
+    assert [(event.item_id, event.source) for event in events] == [
+        (5004, "Worker Production"),
+        (4604, "Worker Production"),
+        (7003, "Worker Production"),
     ]
     (candidate,) = learner.confirmed_candidates
     assert candidate.companion_opcodes == (0x0F7E, 0x0DE1)

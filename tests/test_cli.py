@@ -15,7 +15,11 @@ from bdo_toolkit import (
     load_opcode_profile,
 )
 from bdo_toolkit._protocol import FlowKey
-from bdo_toolkit.calibration import CalibrationResult, MessageSpec
+from bdo_toolkit.calibration import (
+    CalibrationRetention,
+    CalibrationResult,
+    MessageSpec,
+)
 from bdo_toolkit.origin_learning import CompanionObservation
 from bdo_toolkit.solare import (
     SolareCaptureResult,
@@ -173,6 +177,7 @@ def test_calibrate_cli_writes_mocked_result(
         ignored=(),
         frames_scanned=1,
         calibration_item_id=99123,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
     )
     monkeypatch.setattr(cli, "calibrate_pcap", lambda *args, **kwargs: result)
     real_update_profile = cli.update_profile
@@ -229,6 +234,14 @@ def test_calibrate_cli_writes_mocked_result(
             "0",
         ],
         [
+            "replay",
+            "session.pcapng",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--storage-id",
+            "0",
+        ],
+        [
             "origin-learn",
             "--profile",
             "opcodes.local",
@@ -241,6 +254,30 @@ def test_cli_rejects_invalid_numeric_arguments(argv):
     with pytest.raises(SystemExit) as exc_info:
         cli.main(argv)
     assert exc_info.value.code == 2
+
+
+def test_decode_cli_accepts_decimal_and_hex_storage_ids():
+    args = cli.build_parser().parse_args(
+        [
+            "replay",
+            "session.pcapng",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--storage-id",
+            "32",
+            "--storage-id",
+            "0x58",
+            "--storage-id",
+            "00032",
+            "--source",
+            "Worker Production",
+        ]
+    )
+
+    event_filter = cli._decode_filter(args)
+    assert event_filter is not None
+    assert event_filter.storage_ids == frozenset({0x0020, 0x0058})
+    assert event_filter.sources == frozenset({"Worker Production"})
 
 
 def test_cli_version(capsys):

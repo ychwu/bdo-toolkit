@@ -109,16 +109,14 @@ class ItemStateCaptureLimitError(RuntimeError):
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class SnapshotItem:
     """One occupied item-stack record observed during state hydration."""
 
     item_id: int
     quantity: int
     instance: str
-    timestamp: float
-    opcode: Optional[int]
-    message_length: Optional[int]
+    observed_at: float
     base_item_id: Optional[int] = None
     enhancement_level: Optional[int] = None
     enhancement: Optional[str] = None
@@ -127,7 +125,6 @@ class SnapshotItem:
     container_name: Optional[str] = None
     container_confidence: Optional[str] = None
     currency_name: Optional[str] = None
-    instance_confidence: str = "observed"
 
     @property
     def is_currency_balance(self) -> bool:
@@ -139,12 +136,9 @@ class SnapshotItem:
             "item_id": self.item_id,
             "quantity": self.quantity,
             "instance": self.instance,
-            "instance_confidence": self.instance_confidence,
-            "timestamp": self.timestamp,
+            "observed_at": self.observed_at,
         }
         optional = {
-            "opcode": (f"0x{self.opcode:04X}" if self.opcode is not None else None),
-            "message_length": self.message_length,
             "base_item_id": self.base_item_id,
             "enhancement_level": self.enhancement_level,
             "enhancement": self.enhancement,
@@ -181,7 +175,7 @@ class _ItemQueries:
         return sum(item.quantity for item in self.records_for(item_id))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class InventoryContainerSummary(_ItemQueries):
     """One structurally classified inventory container (experimental)."""
 
@@ -233,31 +227,13 @@ class InventoryContainerSummary(_ItemQueries):
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class InventorySnapshotSummary(_ItemQueries):
-    """Inventory hydration summary with provisional container metadata."""
+    """Canonical inventory state with computed container views."""
 
+    hydration_observed: bool
     items: tuple[SnapshotItem, ...]
-    raw_records: int
-    duplicate_records: int
-    group_counts: tuple[int, ...]
-    inferred_strides: tuple[int, ...]
     currency_balances: tuple[SnapshotItem, ...]
-    containers: tuple[InventoryContainerSummary, ...]
-    unclassified_records: int
-    missing_instance_records: int = 0
-
-    @property
-    def groups(self) -> int:
-        return len(self.group_counts)
-
-    @property
-    def populated_groups(self) -> int:
-        return sum(count > 0 for count in self.group_counts)
-
-    @property
-    def empty_groups(self) -> int:
-        return sum(count == 0 for count in self.group_counts)
 
     @property
     def serialized_records(self) -> int:
@@ -269,8 +245,40 @@ class InventorySnapshotSummary(_ItemQueries):
         return len(self.currency_balances)
 
     @property
-    def identity_complete(self) -> bool:
-        return self.missing_instance_records == 0
+    def unclassified_records(self) -> int:
+        return sum(
+            item.container_code is None
+            for item in (*self.items, *self.currency_balances)
+        )
+
+    @property
+    def containers(self) -> tuple[InventoryContainerSummary, ...]:
+        """Compute provisional container views without duplicating stored state."""
+
+        records = (*self.items, *self.currency_balances)
+        containers: list[InventoryContainerSummary] = []
+        for raw_code, (name, confidence) in _INVENTORY_CONTAINER_LABELS.items():
+            container_records = tuple(
+                item for item in records if item.container_code == raw_code
+            )
+            if not container_records:
+                continue
+            containers.append(
+                InventoryContainerSummary(
+                    raw_code=raw_code,
+                    name=name,
+                    confidence=confidence,
+                    items=tuple(
+                        item
+                        for item in container_records
+                        if not item.is_currency_balance
+                    ),
+                    currency_balances=tuple(
+                        item for item in container_records if item.is_currency_balance
+                    ),
+                )
+            )
+        return tuple(containers)
 
     def container(self, raw_code: int) -> Optional[InventoryContainerSummary]:
         """Look up a provisionally classified container by its raw byte."""
@@ -319,101 +327,39 @@ class InventorySnapshotSummary(_ItemQueries):
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "hydration_observed": self.hydration_observed,
             "occupied_stacks": self.occupied_stacks,
-            "raw_records": self.raw_records,
             "serialized_records": self.serialized_records,
-            "duplicate_records": self.duplicate_records,
-            "groups": self.groups,
-            "populated_groups": self.populated_groups,
-            "empty_groups": self.empty_groups,
-            "group_counts": list(self.group_counts),
-            "inferred_strides": list(self.inferred_strides),
             "currency_balance_records": self.currency_balance_records,
             "unclassified_records": self.unclassified_records,
-            "missing_instance_records": self.missing_instance_records,
-            "identity_complete": self.identity_complete,
-            "containers": [container.to_dict() for container in self.containers],
             "currency_balances": [
                 balance.to_dict() for balance in self.currency_balances
             ],
-            "capacity": None,
             "items": [item.to_dict() for item in self.items],
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class StorageSnapshotSummary(_ItemQueries):
-    """Current selected state plus all-observation diagnostics for one storage."""
+    """Selected current state for one observed storage destination."""
 
     storage_id: int
     name: Optional[str]
     name_confidence: Optional[str]
     items: tuple[SnapshotItem, ...]
-    raw_records: int
-    duplicate_records: int
-    groups: int
-    empty_envelope_seen: bool
-    capacity: Optional[int] = None
-    selected_records: Optional[int] = None
-    superseded_records: int = 0
-    selected_groups: Optional[int] = None
-    superseded_groups: int = 0
-    sweeps_observed: int = 1
-    selected_sweep: Optional[int] = 1
-    current_state_observed: bool = True
-    current_empty: Optional[bool] = None
-    missing_instance_records: int = 0
-    selected_missing_instance_records: int = 0
-    current_identity_complete: Optional[bool] = None
-
-    def __post_init__(self) -> None:
-        # Preserve source and behavioral compatibility for callers constructing
-        # the original summary shape. The accumulator always supplies these
-        # fields explicitly; legacy callers receive the natural one-sweep view.
-        if self.selected_records is None:
-            object.__setattr__(self, "selected_records", self.raw_records)
-        if self.selected_groups is None:
-            object.__setattr__(self, "selected_groups", self.groups)
-        if self.current_empty is None:
-            object.__setattr__(
-                self,
-                "current_empty",
-                self.current_state_observed
-                and self.empty_envelope_seen
-                and not self.items,
-            )
-        if self.current_identity_complete is None:
-            object.__setattr__(
-                self,
-                "current_identity_complete",
-                self.selected_missing_instance_records == 0,
-            )
+    current_state_observed: bool
+    current_empty: Optional[bool]
+    current_identity_complete: Optional[bool]
 
     def to_dict(self) -> dict[str, object]:
         return {
             "storage_id": self.storage_id,
-            "storage_id_hex": f"0x{self.storage_id:08x}",
             "name": self.name,
             "name_confidence": self.name_confidence,
             "occupied_stacks": self.occupied_stacks,
-            "raw_records": self.raw_records,
-            "duplicate_records": self.duplicate_records,
-            "groups": self.groups,
-            "empty_envelope_seen": self.empty_envelope_seen,
-            "selected_records": self.selected_records,
-            "superseded_records": self.superseded_records,
-            "selected_groups": self.selected_groups,
-            "superseded_groups": self.superseded_groups,
-            "sweeps_observed": self.sweeps_observed,
-            "selected_sweep": self.selected_sweep,
             "current_state_observed": self.current_state_observed,
             "current_empty": self.current_empty,
-            "missing_instance_records": self.missing_instance_records,
-            "selected_missing_instance_records": (
-                self.selected_missing_instance_records
-            ),
             "current_identity_complete": self.current_identity_complete,
-            "capacity": self.capacity,
             "items": [item.to_dict() for item in self.items],
         }
 
@@ -561,31 +507,155 @@ class ItemStateProvenance:
         return output
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
+class InventoryHydrationDiagnostics:
+    """Inventory wrapper geometry and selection measurements."""
+
+    raw_records: int
+    duplicate_records: int
+    group_counts: tuple[int, ...]
+    inferred_strides: tuple[int, ...]
+    generations_observed: int
+    source_opcodes: tuple[int, ...]
+    message_lengths: tuple[int, ...]
+
+    @property
+    def groups(self) -> int:
+        return len(self.group_counts)
+
+    @property
+    def populated_groups(self) -> int:
+        return sum(count > 0 for count in self.group_counts)
+
+    @property
+    def empty_groups(self) -> int:
+        return sum(count == 0 for count in self.group_counts)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "raw_records": self.raw_records,
+            "duplicate_records": self.duplicate_records,
+            "groups": self.groups,
+            "populated_groups": self.populated_groups,
+            "empty_groups": self.empty_groups,
+            "group_counts": list(self.group_counts),
+            "inferred_strides": list(self.inferred_strides),
+            "generations_observed": self.generations_observed,
+            "source_opcodes": [
+                f"0x{opcode:04X}" for opcode in self.source_opcodes
+            ],
+            "message_lengths": list(self.message_lengths),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class StorageDestinationDiagnostics:
+    """All-sweep assembly evidence for one numeric storage destination."""
+
+    storage_id: int
+    raw_records: int
+    duplicate_records: int
+    groups: int
+    empty_envelope_seen: bool
+    selected_records: int
+    selected_groups: int
+    sweeps_observed: int
+    selected_sweep: Optional[int]
+    missing_instance_records: int
+    selected_missing_instance_records: int
+    source_opcodes: tuple[int, ...]
+    message_lengths: tuple[int, ...]
+
+    @property
+    def superseded_records(self) -> int:
+        return max(0, self.raw_records - self.selected_records)
+
+    @property
+    def superseded_groups(self) -> int:
+        return max(0, self.groups - self.selected_groups)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "storage_id": self.storage_id,
+            "raw_records": self.raw_records,
+            "duplicate_records": self.duplicate_records,
+            "groups": self.groups,
+            "empty_envelope_seen": self.empty_envelope_seen,
+            "selected_records": self.selected_records,
+            "superseded_records": self.superseded_records,
+            "selected_groups": self.selected_groups,
+            "superseded_groups": self.superseded_groups,
+            "sweeps_observed": self.sweeps_observed,
+            "selected_sweep": self.selected_sweep,
+            "missing_instance_records": self.missing_instance_records,
+            "selected_missing_instance_records": (
+                self.selected_missing_instance_records
+            ),
+            "source_opcodes": [
+                f"0x{opcode:04X}" for opcode in self.source_opcodes
+            ],
+            "message_lengths": list(self.message_lengths),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class StorageHydrationDiagnostics:
+    """Aggregate storage assembly evidence with per-destination detail."""
+
+    records_decoded: int
+    records_without_destination: int
+    sweeps_observed: int
+    selected_sweep: Optional[int]
+    destinations: tuple[StorageDestinationDiagnostics, ...]
+
+    def destination(
+        self,
+        storage_id: int,
+    ) -> Optional[StorageDestinationDiagnostics]:
+        """Return diagnostics for one exact numeric destination key."""
+
+        return next(
+            (
+                diagnostic
+                for diagnostic in self.destinations
+                if diagnostic.storage_id == storage_id
+            ),
+            None,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "records_decoded": self.records_decoded,
+            "records_without_destination": self.records_without_destination,
+            "sweeps_observed": self.sweeps_observed,
+            "selected_sweep": self.selected_sweep,
+            "destinations": [
+                diagnostic.to_dict() for diagnostic in self.destinations
+            ],
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class ItemStateDiagnostics:
     """Advanced capture and selection measurements for troubleshooting."""
 
     frames_seen: int
-    storage_records_decoded: int
-    inventory_generations_observed: int
-    storage_sweeps_observed: int
-    selected_storage_sweep: Optional[int]
     relevant_frames_retained: int
     relevant_bytes_retained: int
     snapshot_records_retained: int
     capture_limits: ItemStateCaptureLimits
+    inventory: InventoryHydrationDiagnostics
+    storage: StorageHydrationDiagnostics
 
     def to_dict(self) -> dict[str, object]:
         return {
             "frames_seen": self.frames_seen,
-            "storage_records_decoded": self.storage_records_decoded,
-            "inventory_generations_observed": self.inventory_generations_observed,
-            "storage_sweeps_observed": self.storage_sweeps_observed,
-            "selected_storage_sweep": self.selected_storage_sweep,
             "relevant_frames_retained": self.relevant_frames_retained,
             "relevant_bytes_retained": self.relevant_bytes_retained,
             "snapshot_records_retained": self.snapshot_records_retained,
             "capture_limits": self.capture_limits.to_dict(),
+            "inventory": self.inventory.to_dict(),
+            "storage": self.storage.to_dict(),
         }
 
 
@@ -623,18 +693,22 @@ class CharacterStateSnapshot:
     @property
     def identity_complete(self) -> bool:
         return (
-            self.inventory.identity_complete
+            self.coverage.inventory_records_missing_instance == 0
             and self.coverage.storage_records_missing_instance == 0
         )
 
     @property
     def hydration_detected(self) -> bool:
-        storage_records_decoded = (
-            self.diagnostics.storage_records_decoded
+        storage_evidence_observed = (
+            self.diagnostics.storage.records_decoded
             if self.diagnostics is not None
             else 0
         )
-        return bool(self.inventory.groups or storage_records_decoded or self.storages)
+        return bool(
+            self.inventory.hydration_observed
+            or storage_evidence_observed
+            or self.storages
+        )
 
     def to_dict(self, *, include_diagnostics: bool = False) -> dict[str, object]:
         output: dict[str, object] = {
@@ -656,6 +730,24 @@ class CharacterStateSnapshot:
 
 
 @dataclass(frozen=True)
+class _InventoryAssembly:
+    summary: InventorySnapshotSummary
+    missing_instance_records: int
+    diagnostics: InventoryHydrationDiagnostics
+
+
+@dataclass(frozen=True)
+class _StorageAssembly:
+    summaries: tuple[StorageSnapshotSummary, ...]
+    diagnostics: tuple[StorageDestinationDiagnostics, ...]
+    records_without_destination: int
+    records_missing_instance: int
+    sweeps_observed: int
+    selected_sweep: Optional[int]
+    unknown_empty_envelopes: int
+
+
+@dataclass(frozen=True)
 class _FrameKey:
     source_ip: str
     source_port: int
@@ -666,6 +758,25 @@ class _FrameKey:
 
 
 @dataclass(frozen=True)
+class _HydrationAnchor:
+    """One validated inventory-wrapper observation anchoring a load epoch."""
+
+    timestamp: float
+    frame_key: _FrameKey
+
+
+@dataclass(frozen=True)
+class _InventoryGeneration:
+    """Latest inventory hydration burst, including recordless wrappers."""
+
+    events: tuple[BDOEvent, ...]
+    anchors: tuple[_HydrationAnchor, ...]
+    start: Optional[float]
+    flow_generation_key: Optional[tuple[str, int, str, int, int]]
+    generations_observed: int
+
+
+@dataclass(frozen=True)
 class _StorageGroupObservation:
     """One decoded nonempty frame or validated count-zero storage wrapper."""
 
@@ -673,6 +784,7 @@ class _StorageGroupObservation:
     frame_key: _FrameKey
     timestamp: float
     opcode: int
+    message_length: Optional[int]
     items: tuple[SnapshotItem, ...]
     raw_records: int
     missing_instance_records: int
@@ -742,6 +854,19 @@ def _frame_flow_generation_key(frame: BDOFrame) -> tuple[str, int, str, int, int
     )
 
 
+def _anchor_flow_generation_key(
+    anchor: _HydrationAnchor,
+) -> tuple[str, int, str, int, int]:
+    key = anchor.frame_key
+    return (
+        key.source_ip,
+        key.source_port,
+        key.destination_ip,
+        key.destination_port,
+        key.flow_generation,
+    )
+
+
 @dataclass(frozen=True)
 class _InventoryRecordMetadata:
     slot: Optional[int]
@@ -767,9 +892,7 @@ def _snapshot_item(
         item_id=event.item_id,
         quantity=event.quantity,
         instance=instance,
-        timestamp=event.timestamp,
-        opcode=event.opcode,
-        message_length=event.message_length,
+        observed_at=event.timestamp,
         base_item_id=event.base_item_id,
         enhancement_level=event.enhancement_level,
         enhancement=event.enhancement,
@@ -1201,18 +1324,22 @@ class _CharacterStateAccumulator:
             neutral_storage_events = tuple(self._neutral_storage_events)
             live_storage_boundaries = tuple(self._live_storage_boundaries)
 
-        (
+        inventory_generation = _latest_inventory_generation(
+            frames,
             inventory_events,
-            generation_start,
-            generations_seen,
-        ) = _latest_inventory_generation(inventory_events)
+            self.inventory_specs,
+        )
+        inventory_events = inventory_generation.events
+        inventory_anchors = inventory_generation.anchors
+        generation_start = inventory_generation.start
+        generations_seen = inventory_generation.generations_observed
         if generation_start is not None:
             # Current captures send the compact inventory hydration first and
             # storage hydration afterward. It is therefore a clean boundary
             # between separate character loads while retaining repeated
             # storage sweeps belonging to the same load.
             selected_flow_generations = {
-                _event_flow_generation_key(event) for event in inventory_events
+                inventory_generation.flow_generation_key
             }
             storage_events = tuple(
                 event
@@ -1249,7 +1376,7 @@ class _CharacterStateAccumulator:
                 _character_storage_snapshot_fallback(
                     frames,
                     neutral_storage_events,
-                    inventory_events,
+                    inventory_anchors,
                     self.storage_specs,
                 )
             )
@@ -1267,7 +1394,7 @@ class _CharacterStateAccumulator:
                 storage_events,
                 neutral_storage_events,
                 live_storage_boundaries,
-                inventory_events,
+                inventory_anchors,
                 self.storage_specs,
             )
             if reconciled_count:
@@ -1275,22 +1402,26 @@ class _CharacterStateAccumulator:
                 fallback_observations = reconciled_observations
                 split_reconciliation_used = True
 
-        inventory = self._inventory_summary(frames, inventory_events)
-        storage_records_missing_instance = sum(
-            event.storage_instance is None for event in storage_events
+        inventory_assembly = self._inventory_summary(
+            frames,
+            inventory_events,
+            generations_observed=generations_seen,
         )
-        (
-            storages,
-            unresolved_storage,
-            storage_sweeps_observed,
-            selected_storage_sweep,
-            unknown_empty_envelopes,
-        ) = self._storage_summaries(
+        inventory = inventory_assembly.summary
+        storage_assembly = self._storage_summaries(
             frames,
             storage_events,
             observations=fallback_observations,
-            hydration_anchors=inventory_events,
+            hydration_anchors=inventory_anchors,
         )
+        storages = storage_assembly.summaries
+        unresolved_storage = storage_assembly.records_without_destination
+        storage_records_missing_instance = (
+            storage_assembly.records_missing_instance
+        )
+        storage_sweeps_observed = storage_assembly.sweeps_observed
+        selected_storage_sweep = storage_assembly.selected_sweep
+        unknown_empty_envelopes = storage_assembly.unknown_empty_envelopes
         warnings = [
             "Initial login and character switch use the same observed hydration "
             "shape; the packet-level trigger is not decoded.",
@@ -1308,7 +1439,7 @@ class _CharacterStateAccumulator:
                 f"{generations_seen} inventory hydration generations were observed; "
                 "the report contains only the latest generation."
             )
-        if not inventory_events:
+        if not inventory.hydration_observed:
             warnings.append(
                 "No inventory snapshot records were decoded; verify that the active "
                 "profile has an inventory opcode, context offset, item instance offset, "
@@ -1320,6 +1451,12 @@ class _CharacterStateAccumulator:
                     "diagnostics contain all observed records, while current contents "
                     "use the latest inferred sweep and may span multiple loads."
                 )
+        elif not inventory_events:
+            warnings.append(
+                "Inventory hydration was observed only through calibrated count-zero "
+                "wrappers; the empty current state is preserved, but no record-level "
+                "container metadata was available."
+            )
         if sparse_fallback_used:
             warnings.append(
                 "Storage hydration was proven by the dedicated character-load "
@@ -1381,7 +1518,7 @@ class _CharacterStateAccumulator:
                 "as empty."
             )
         elif (
-            resolved_health.storage_status == "not_observed" and inventory_events
+            resolved_health.storage_status == "not_observed" and inventory_anchors
         ):
             warnings.append(
                 "Inventory hydration was observed, but the calibrated storage "
@@ -1392,16 +1529,16 @@ class _CharacterStateAccumulator:
             warnings.append(
                 f"{len(unregistered_storage_ids)} storage destination ID(s) are "
                 "not in the town registry. Their numeric identities were preserved, "
-                "but display names and name-based filters require a registry update."
+                "but display names and name-based queries require a registry update."
             )
         if unresolved_storage:
             warnings.append(
                 f"{unresolved_storage} storage snapshot records lacked a numeric "
                 "destination and were excluded from per-storage state."
             )
-        if inventory.missing_instance_records:
+        if inventory_assembly.missing_instance_records:
             warnings.append(
-                f"{inventory.missing_instance_records} inventory snapshot records "
+                f"{inventory_assembly.missing_instance_records} inventory snapshot records "
                 "lacked observed instance identity and were excluded from "
                 "distinct-stack state."
             )
@@ -1452,11 +1589,12 @@ class _CharacterStateAccumulator:
             ),
             coverage=ItemStateCoverage(
                 inventory_records_missing_instance=(
-                    inventory.missing_instance_records
+                    inventory_assembly.missing_instance_records
                 ),
                 storage_records_missing_instance=storage_records_missing_instance,
                 selected_storage_records_missing_instance=sum(
-                    storage.selected_missing_instance_records for storage in storages
+                    diagnostic.selected_missing_instance_records
+                    for diagnostic in storage_assembly.diagnostics
                 ),
                 registered_storage_ids_not_observed=missing_registered,
                 unregistered_storage_ids_observed=tuple(
@@ -1473,14 +1611,18 @@ class _CharacterStateAccumulator:
             warnings=tuple(warnings),
             diagnostics=ItemStateDiagnostics(
                 frames_seen=frames_seen,
-                storage_records_decoded=len(storage_events),
-                inventory_generations_observed=generations_seen,
-                storage_sweeps_observed=storage_sweeps_observed,
-                selected_storage_sweep=selected_storage_sweep,
                 relevant_frames_retained=relevant_frames_retained,
                 relevant_bytes_retained=relevant_bytes_retained,
                 snapshot_records_retained=snapshot_records_retained,
                 capture_limits=self.capture_limits,
+                inventory=inventory_assembly.diagnostics,
+                storage=StorageHydrationDiagnostics(
+                    records_decoded=len(storage_events),
+                    records_without_destination=unresolved_storage,
+                    sweeps_observed=storage_sweeps_observed,
+                    selected_sweep=selected_storage_sweep,
+                    destinations=storage_assembly.diagnostics,
+                ),
             ),
         )
 
@@ -1488,7 +1630,9 @@ class _CharacterStateAccumulator:
         self,
         frames: tuple[BDOFrame, ...],
         events: tuple[BDOEvent, ...],
-    ) -> InventorySnapshotSummary:
+        *,
+        generations_observed: int,
+    ) -> _InventoryAssembly:
         groups: dict[_FrameKey, list[BDOEvent]] = {}
         for event in events:
             groups.setdefault(_event_frame_key(event), []).append(event)
@@ -1537,6 +1681,21 @@ class _CharacterStateAccumulator:
             for spec, frame_groups in multi_groups_by_spec.items()
             if tail_layouts.get(spec) is None
         }
+
+        # A calibrated single-record base and repeat stride also prove the
+        # zero-record prefix. This preserves empty inventory hydration as an
+        # observed state even when the capture contains no occupied records.
+        for candidates in specs_by_opcode.values():
+            for spec in candidates:
+                if (
+                    spec.single_record_message_length is not None
+                    and spec.repeat_stride is not None
+                    and spec.repeat_stride > 0
+                    and spec.single_record_message_length > spec.repeat_stride
+                ):
+                    prefix_candidates.setdefault(spec, set()).add(
+                        spec.single_record_message_length - spec.repeat_stride
+                    )
         metadata_by_record: dict[tuple[_FrameKey, int], _InventoryRecordMetadata] = {}
         for key, group in groups.items():
             frame = frames_by_key.get(key)
@@ -1637,48 +1796,49 @@ class _CharacterStateAccumulator:
         currency_balances = tuple(
             item for item in latest_records if item.is_currency_balance
         )
-        containers: list[InventoryContainerSummary] = []
-        for raw_code, (name, confidence) in _INVENTORY_CONTAINER_LABELS.items():
-            container_records = tuple(
-                item for item in latest_records if item.container_code == raw_code
-            )
-            if not container_records:
-                continue
-            containers.append(
-                InventoryContainerSummary(
-                    raw_code=raw_code,
-                    name=name,
-                    confidence=confidence,
-                    items=tuple(
-                        item
-                        for item in container_records
-                        if not item.is_currency_balance
-                    ),
-                    currency_balances=tuple(
-                        item for item in container_records if item.is_currency_balance
-                    ),
-                )
-            )
-        return InventorySnapshotSummary(
-            items=items,
-            raw_records=len(events),
-            duplicate_records=duplicate_records,
-            group_counts=tuple(frame_counts),
-            inferred_strides=tuple(
-                sorted(
-                    {
-                        stride
-                        for strides in sibling_strides.values()
-                        for stride in strides
-                    }
-                )
-            ),
-            currency_balances=currency_balances,
-            containers=tuple(containers),
-            unclassified_records=sum(
-                item.container_code is None for item in latest_records
+        source_opcodes = {
+            frame.opcode
+            for frame in frames
+            if _frame_key(frame) in counted_keys
+        }
+        message_lengths = {
+            frame.length
+            for frame in frames
+            if _frame_key(frame) in counted_keys
+        }
+        source_opcodes.update(
+            event.opcode for event in events if event.opcode is not None
+        )
+        message_lengths.update(
+            event.message_length
+            for event in events
+            if isinstance(event.message_length, int)
+            and not isinstance(event.message_length, bool)
+        )
+        return _InventoryAssembly(
+            summary=InventorySnapshotSummary(
+                hydration_observed=bool(frame_counts),
+                items=items,
+                currency_balances=currency_balances,
             ),
             missing_instance_records=missing_instance,
+            diagnostics=InventoryHydrationDiagnostics(
+                raw_records=len(events),
+                duplicate_records=duplicate_records,
+                group_counts=tuple(frame_counts),
+                inferred_strides=tuple(
+                    sorted(
+                        {
+                            stride
+                            for strides in sibling_strides.values()
+                            for stride in strides
+                        }
+                    )
+                ),
+                generations_observed=generations_observed,
+                source_opcodes=tuple(sorted(source_opcodes)),
+                message_lengths=tuple(sorted(message_lengths)),
+            ),
         )
 
     def _storage_summaries(
@@ -1687,15 +1847,13 @@ class _CharacterStateAccumulator:
         events: tuple[BDOEvent, ...],
         *,
         observations: Optional[tuple[_StorageGroupObservation, ...]] = None,
-        hydration_anchors: Iterable[BDOEvent] = (),
-    ) -> tuple[
-        tuple[StorageSnapshotSummary, ...],
-        int,
-        int,
-        Optional[int],
-        int,
-    ]:
+        hydration_anchors: Iterable[_HydrationAnchor] = (),
+    ) -> _StorageAssembly:
+        events = tuple(events)
         unresolved = sum(event.storage_id is None for event in events)
+        records_missing_instance = sum(
+            event.storage_instance is None for event in events
+        )
         resolved_events = tuple(
             event for event in events if event.storage_id is not None
         )
@@ -1721,6 +1879,8 @@ class _CharacterStateAccumulator:
         all_records: dict[int, dict[str, SnapshotItem]] = {}
         group_counts: dict[int, int] = {}
         empty_ids: set[int] = set()
+        source_opcodes: dict[int, set[int]] = {}
+        message_lengths: dict[int, set[int]] = {}
         for observation in observations:
             storage_id = observation.storage_id
             raw_counts[storage_id] = (
@@ -1731,6 +1891,11 @@ class _CharacterStateAccumulator:
                 + observation.missing_instance_records
             )
             group_counts[storage_id] = group_counts.get(storage_id, 0) + 1
+            source_opcodes.setdefault(storage_id, set()).add(observation.opcode)
+            if observation.message_length is not None:
+                message_lengths.setdefault(storage_id, set()).add(
+                    observation.message_length
+                )
             if observation.empty:
                 empty_ids.add(storage_id)
             for item in observation.items:
@@ -1745,6 +1910,7 @@ class _CharacterStateAccumulator:
 
         all_ids = set(group_counts)
         summaries: list[StorageSnapshotSummary] = []
+        diagnostics_by_id: dict[int, StorageDestinationDiagnostics] = {}
         for storage_id in all_ids:
             location = storage_location(storage_id)
             selected_block = selected_blocks.get(storage_id)
@@ -1753,7 +1919,7 @@ class _CharacterStateAccumulator:
             selected_records = 0
             selected_groups = 0
             selected_missing_instance_records = 0
-            current_empty = False
+            current_empty: Optional[bool] = None
             if selected_block is not None:
                 selected_records = sum(
                     group.raw_records for group in selected_block.groups
@@ -1782,29 +1948,34 @@ class _CharacterStateAccumulator:
                             items_by_instance.values(), key=lambda item: item.instance
                         )
                     ),
-                    raw_records=raw_count,
-                    duplicate_records=max(
-                        0,
-                        raw_count
-                        - missing_instance_records
-                        - len(all_records.get(storage_id, {})),
-                    ),
-                    groups=groups,
-                    empty_envelope_seen=storage_id in empty_ids,
-                    selected_records=selected_records,
-                    superseded_records=max(0, raw_count - selected_records),
-                    selected_groups=selected_groups,
-                    superseded_groups=max(0, groups - selected_groups),
-                    sweeps_observed=sweeps_by_storage.get(storage_id, 0),
-                    selected_sweep=(selected_sweep if current_state_observed else None),
                     current_state_observed=current_state_observed,
                     current_empty=current_empty,
-                    missing_instance_records=missing_instance_records,
-                    selected_missing_instance_records=(
-                        selected_missing_instance_records
+                    current_identity_complete=(
+                        selected_missing_instance_records == 0
+                        if current_state_observed
+                        else None
                     ),
-                    current_identity_complete=(selected_missing_instance_records == 0),
                 )
+            )
+            diagnostics_by_id[storage_id] = StorageDestinationDiagnostics(
+                storage_id=storage_id,
+                raw_records=raw_count,
+                duplicate_records=max(
+                    0,
+                    raw_count
+                    - missing_instance_records
+                    - len(all_records.get(storage_id, {})),
+                ),
+                groups=groups,
+                empty_envelope_seen=storage_id in empty_ids,
+                selected_records=selected_records,
+                selected_groups=selected_groups,
+                sweeps_observed=sweeps_by_storage.get(storage_id, 0),
+                selected_sweep=(selected_sweep if current_state_observed else None),
+                missing_instance_records=missing_instance_records,
+                selected_missing_instance_records=selected_missing_instance_records,
+                source_opcodes=tuple(sorted(source_opcodes.get(storage_id, ()))),
+                message_lengths=tuple(sorted(message_lengths.get(storage_id, ()))),
             )
 
         summaries.sort(
@@ -1814,12 +1985,16 @@ class _CharacterStateAccumulator:
                 summary.storage_id,
             )
         )
-        return (
-            tuple(summaries),
-            unresolved,
-            len(sweeps),
-            selected_sweep,
-            unknown_empty_envelopes,
+        return _StorageAssembly(
+            summaries=tuple(summaries),
+            diagnostics=tuple(
+                diagnostics_by_id[summary.storage_id] for summary in summaries
+            ),
+            records_without_destination=unresolved,
+            records_missing_instance=records_missing_instance,
+            sweeps_observed=len(sweeps),
+            selected_sweep=selected_sweep,
+            unknown_empty_envelopes=unknown_empty_envelopes,
         )
 
 
@@ -1834,44 +2009,63 @@ def _frame_has_zero_context(frame: BDOFrame, spec: EventSpec) -> bool:
 
 
 def _latest_inventory_generation(
+    frames: tuple[BDOFrame, ...],
     events: tuple[BDOEvent, ...],
-) -> tuple[tuple[BDOEvent, ...], Optional[float], int]:
-    """Select the latest compact inventory-hydration burst in a capture."""
-    if not events:
-        return events, None, 0
+    specs: Iterable[EventSpec],
+) -> _InventoryGeneration:
+    """Select the latest inventory burst, including proven count-zero wrappers."""
+    specs_by_opcode = _spec_candidates_by_opcode(specs)
+    observations = {
+        _HydrationAnchor(event.timestamp, _event_frame_key(event)) for event in events
+    }
+    event_frame_keys = {_event_frame_key(event) for event in events}
+    for frame in frames:
+        frame_key = _frame_key(frame)
+        if frame_key in event_frame_keys:
+            continue
+        empty_matches = [
+            spec
+            for spec in specs_by_opcode.get(frame.opcode, ())
+            if spec.single_record_message_length is not None
+            and spec.repeat_stride is not None
+            and spec.repeat_stride > 0
+            and spec.single_record_message_length > spec.repeat_stride
+            and frame.length == spec.single_record_message_length - spec.repeat_stride
+            and _frame_has_zero_context(frame, spec)
+        ]
+        if len(empty_matches) == 1:
+            observations.add(_HydrationAnchor(frame.context.timestamp, frame_key))
 
-    frame_times = sorted(
-        {(event.timestamp, _event_frame_key(event)) for event in events},
+    if not observations:
+        return _InventoryGeneration(
+            events=events,
+            anchors=(),
+            start=None,
+            flow_generation_key=None,
+            generations_observed=0,
+        )
+
+    ordered = sorted(
+        observations,
         key=lambda item: (
-            item[0],
-            item[1].source_ip,
-            item[1].source_port,
-            item[1].destination_ip,
-            item[1].destination_port,
-            item[1].flow_generation,
-            item[1].stream_sequence is None,
-            item[1].stream_sequence or 0,
+            item.timestamp,
+            item.frame_key.source_ip,
+            item.frame_key.source_port,
+            item.frame_key.destination_ip,
+            item.frame_key.destination_port,
+            item.frame_key.flow_generation,
+            item.frame_key.stream_sequence is None,
+            item.frame_key.stream_sequence or 0,
         ),
     )
-    first_timestamp, first_frame_key = frame_times[0]
-    previous_generation_key = (
-        first_frame_key.source_ip,
-        first_frame_key.source_port,
-        first_frame_key.destination_ip,
-        first_frame_key.destination_port,
-        first_frame_key.flow_generation,
-    )
-    generation_starts = [first_timestamp]
+    first = ordered[0]
+    previous_generation_key = _anchor_flow_generation_key(first)
+    generation_starts = [first.timestamp]
     generation_keys = [previous_generation_key]
-    previous_timestamp = first_timestamp
-    for timestamp, frame_key in frame_times[1:]:
-        generation_key = (
-            frame_key.source_ip,
-            frame_key.source_port,
-            frame_key.destination_ip,
-            frame_key.destination_port,
-            frame_key.flow_generation,
-        )
+    previous_timestamp = first.timestamp
+    for observation in ordered[1:]:
+        timestamp = observation.timestamp
+        generation_key = _anchor_flow_generation_key(observation)
         if (
             timestamp - previous_timestamp > _INVENTORY_GENERATION_GAP_SECONDS
             or generation_key != previous_generation_key
@@ -1883,22 +2077,29 @@ def _latest_inventory_generation(
 
     latest_start = generation_starts[-1]
     latest_key = generation_keys[-1]
-    return (
-        tuple(
+    return _InventoryGeneration(
+        events=tuple(
             event
             for event in events
             if event.timestamp >= latest_start
             and _event_flow_generation_key(event) == latest_key
         ),
-        latest_start,
-        len(generation_starts),
+        anchors=tuple(
+            observation
+            for observation in ordered
+            if observation.timestamp >= latest_start
+            and _anchor_flow_generation_key(observation) == latest_key
+        ),
+        start=latest_start,
+        flow_generation_key=latest_key,
+        generations_observed=len(generation_starts),
     )
 
 
 def _character_storage_snapshot_fallback(
     frames: Iterable[BDOFrame],
     neutral_events: Iterable[BDOEvent],
-    inventory_events: Iterable[BDOEvent],
+    hydration_anchors: Iterable[_HydrationAnchor],
     specs: Iterable[EventSpec],
 ) -> tuple[tuple[BDOEvent, ...], tuple[_StorageGroupObservation, ...]]:
     """Prove a sparse storage hydration cohort inside the dedicated API.
@@ -1913,27 +2114,23 @@ def _character_storage_snapshot_fallback(
 
     frames = tuple(frames)
     neutral_events = tuple(neutral_events)
-    inventory_events = tuple(inventory_events)
-    if not inventory_events:
+    hydration_anchors = tuple(hydration_anchors)
+    if not hydration_anchors:
         return (), ()
 
     anchors: dict[tuple[str, int, str, int, int], float] = {}
-    for event in inventory_events:
-        frame_key = _event_frame_key(event)
-        key = (
-            event.flow.source_ip,
-            event.flow.source_port,
-            event.flow.destination_ip,
-            event.flow.destination_port,
-            frame_key.flow_generation,
+    for hydration_anchor in hydration_anchors:
+        key = _anchor_flow_generation_key(hydration_anchor)
+        anchors[key] = max(
+            anchors.get(key, hydration_anchor.timestamp),
+            hydration_anchor.timestamp,
         )
-        anchors[key] = max(anchors.get(key, event.timestamp), event.timestamp)
 
     observations = _storage_group_observations(
         frames,
         neutral_events,
         specs,
-        hydration_anchors=inventory_events,
+        hydration_anchors=hydration_anchors,
     )
     by_stream: dict[
         tuple[str, int, str, int, int, int],
@@ -2007,16 +2204,11 @@ def _character_storage_snapshot_fallback(
             event.storage_id,
         ) not in selected_records:
             continue
-        extra = dict(event.extra)
-        extra.pop("storage_delta", None)
-        extra["storage_quantity"] = event.quantity
         promoted.append(
             replace(
                 event,
                 event_type="storage_snapshot",
-                storage_operation="snapshot",
-                deposit_origin=None,
-                extra=extra,
+                source=None,
             )
         )
     return tuple(promoted), selected
@@ -2027,7 +2219,7 @@ def _reconcile_split_storage_hydration(
     snapshot_events: Iterable[BDOEvent],
     neutral_events: Iterable[BDOEvent],
     live_boundaries: Iterable[BDOEvent],
-    inventory_events: Iterable[BDOEvent],
+    hydration_anchors: Iterable[_HydrationAnchor],
     specs: Iterable[EventSpec],
 ) -> tuple[
     tuple[BDOEvent, ...],
@@ -2050,15 +2242,18 @@ def _reconcile_split_storage_hydration(
     snapshot_events = tuple(snapshot_events)
     neutral_events = tuple(neutral_events)
     live_boundaries = tuple(live_boundaries)
-    inventory_events = tuple(inventory_events)
+    hydration_anchors = tuple(hydration_anchors)
     specs = tuple(specs)
-    if not snapshot_events or not neutral_events or not inventory_events:
+    if not snapshot_events or not neutral_events or not hydration_anchors:
         return snapshot_events, (), 0
 
     anchors: dict[tuple[str, int, str, int, int], float] = {}
-    for event in inventory_events:
-        key = _event_flow_generation_key(event)
-        anchors[key] = max(anchors.get(key, event.timestamp), event.timestamp)
+    for hydration_anchor in hydration_anchors:
+        key = _anchor_flow_generation_key(hydration_anchor)
+        anchors[key] = max(
+            anchors.get(key, hydration_anchor.timestamp),
+            hydration_anchor.timestamp,
+        )
 
     confirmed_groups = {
         (_event_frame_key(event), event.timestamp, event.storage_id)
@@ -2069,7 +2264,7 @@ def _reconcile_split_storage_hydration(
         frames,
         (*snapshot_events, *neutral_events),
         specs,
-        hydration_anchors=inventory_events,
+        hydration_anchors=hydration_anchors,
     )
 
     boundaries_by_flow: dict[
@@ -2150,16 +2345,11 @@ def _reconcile_split_storage_hydration(
             or group_key not in eligible_groups
         ):
             continue
-        extra = dict(event.extra)
-        extra.pop("storage_delta", None)
-        extra["storage_quantity"] = event.quantity
         promoted.append(
             replace(
                 event,
                 event_type="storage_snapshot",
-                storage_operation="snapshot",
-                deposit_origin=None,
-                extra=extra,
+                source=None,
             )
         )
 
@@ -2186,7 +2376,7 @@ def _reconcile_split_storage_hydration(
         frames,
         reconciled,
         specs,
-        hydration_anchors=inventory_events,
+        hydration_anchors=hydration_anchors,
     )
     return reconciled, reconciled_observations, len(promoted)
 
@@ -2196,7 +2386,7 @@ def _storage_group_observations(
     events: Iterable[BDOEvent],
     specs: Iterable[EventSpec],
     *,
-    hydration_anchors: Iterable[BDOEvent] = (),
+    hydration_anchors: Iterable[_HydrationAnchor] = (),
 ) -> tuple[_StorageGroupObservation, ...]:
     """Merge record-bearing frames and empty wrappers into capture order."""
     frames = tuple(frames)
@@ -2226,6 +2416,7 @@ def _storage_group_observations(
                 frame_key=frame_key,
                 timestamp=timestamp,
                 opcode=group[0].opcode or 0,
+                message_length=group[0].message_length,
                 items=tuple(
                     sorted(
                         items_by_instance.values(),
@@ -2263,6 +2454,7 @@ def _storage_group_observations(
                 frame_key=_frame_key(frame),
                 timestamp=frame.context.timestamp,
                 opcode=frame.opcode,
+                message_length=frame.length,
                 items=(),
                 raw_records=0,
                 missing_instance_records=0,
@@ -2482,7 +2674,7 @@ def _storage_empty_schemas(
     specs: Iterable[EventSpec],
     *,
     frames: Iterable[BDOFrame] = (),
-    hydration_anchors: Iterable[BDOEvent] = (),
+    hydration_anchors: Iterable[_HydrationAnchor] = (),
 ) -> tuple[
     dict[int, tuple[_StorageEmptySchema, ...]],
     dict[tuple[str, int, str, int, int, int], tuple[float, float]],
@@ -2531,13 +2723,13 @@ def _storage_empty_schemas(
     # this only supplies the bounded time window in which those envelopes may
     # represent the same character-load cohort.
     for anchor in hydration_anchors:
-        anchor_key = _event_frame_key(anchor)
+        anchor_key = anchor.frame_key
         for spec in storage_specs:
             window_key = (
-                anchor.flow.source_ip,
-                anchor.flow.source_port,
-                anchor.flow.destination_ip,
-                anchor.flow.destination_port,
+                anchor_key.source_ip,
+                anchor_key.source_port,
+                anchor_key.destination_ip,
+                anchor_key.destination_port,
                 anchor_key.flow_generation,
                 spec.opcode,
             )
@@ -3088,28 +3280,36 @@ def format_character_state(
         "INVENTORY SNAPSHOT",
     ]
     inventory = snapshot.inventory
-    if inventory.groups:
-        lines.extend(
-            [
-                (
-                    f"  {inventory.serialized_records} serialized records: "
-                    f"{inventory.occupied_stacks} occupied item stacks + "
-                    f"{inventory.currency_balance_records} currency balances"
-                ),
-                (
-                    f"  {inventory.groups} groups: {inventory.populated_groups} populated, "
-                    f"{inventory.empty_groups} empty"
-                ),
-                "  group record counts: "
-                + ", ".join(str(count) for count in inventory.group_counts),
-                "  inferred record strides: "
-                + (
-                    ", ".join(str(stride) for stride in inventory.inferred_strides)
-                    if inventory.inferred_strides
-                    else "unavailable"
-                ),
-            ]
+    inventory_diagnostics = diagnostics.inventory if diagnostics is not None else None
+    if inventory.hydration_observed:
+        lines.append(
+            f"  {inventory.serialized_records} serialized records: "
+            f"{inventory.occupied_stacks} occupied item stacks + "
+            f"{inventory.currency_balance_records} currency balances"
         )
+        if inventory_diagnostics is not None:
+            lines.extend(
+                [
+                    (
+                        f"  {inventory_diagnostics.groups} groups: "
+                        f"{inventory_diagnostics.populated_groups} populated, "
+                        f"{inventory_diagnostics.empty_groups} empty"
+                    ),
+                    "  group record counts: "
+                    + ", ".join(
+                        str(count) for count in inventory_diagnostics.group_counts
+                    ),
+                    "  inferred record strides: "
+                    + (
+                        ", ".join(
+                            str(stride)
+                            for stride in inventory_diagnostics.inferred_strides
+                        )
+                        if inventory_diagnostics.inferred_strides
+                        else "unavailable"
+                    ),
+                ]
+            )
         if inventory.containers:
             lines.append("  provisional containers (raw code is authoritative):")
             for container in inventory.containers:
@@ -3120,9 +3320,9 @@ def format_character_state(
                 )
         else:
             lines.append("  container/tab labels: unclassified")
-        if inventory.empty_groups:
+        if inventory_diagnostics is not None and inventory_diagnostics.empty_groups:
             lines.append(
-                f"  {inventory.empty_groups} empty wrappers: unclassified "
+                f"  {inventory_diagnostics.empty_groups} empty wrappers: unclassified "
                 "(no record-level container field)"
             )
         if inventory.unclassified_records:
@@ -3142,14 +3342,18 @@ def format_character_state(
                     f"container={balance.container_name}, "
                     f"slot={balance.inventory_slot})"
                 )
-        if inventory.duplicate_records:
+        if (
+            inventory_diagnostics is not None
+            and inventory_diagnostics.duplicate_records
+        ):
             lines.append(
-                f"  repeated records merged by item instance: {inventory.duplicate_records}"
+                "  repeated records merged by item instance: "
+                f"{inventory_diagnostics.duplicate_records}"
             )
-        if inventory.missing_instance_records:
+        if snapshot.coverage.inventory_records_missing_instance:
             lines.append(
                 f"  identity-unresolved records excluded: "
-                f"{inventory.missing_instance_records}"
+                f"{snapshot.coverage.inventory_records_missing_instance}"
             )
         if show_items:
             for item in inventory.items:
@@ -3165,9 +3369,9 @@ def format_character_state(
 
     lines.extend(["", "STORAGE SNAPSHOT"])
     storage_records_decoded = (
-        diagnostics.storage_records_decoded
+        diagnostics.storage.records_decoded
         if diagnostics is not None
-        else sum(storage.raw_records for storage in snapshot.storages)
+        else None
     )
     if storage_records_decoded or snapshot.storages:
         missing_known_ids = snapshot.coverage.registered_storage_ids_not_observed
@@ -3203,6 +3407,13 @@ def format_character_state(
                 f"{snapshot.storages.empty_count} explicitly empty, "
                 f"{len(missing_known_ids)} not observed"
             )
+        storage_item_line = (
+            f"  {snapshot.storages.occupied_stacks} unique occupied item stacks"
+        )
+        if storage_records_decoded is not None:
+            storage_item_line += (
+                f" from {storage_records_decoded} decoded snapshot records"
+            )
         lines.extend(
             [
                 (
@@ -3210,20 +3421,17 @@ def format_character_state(
                     f"{len(STORAGE_LOCATIONS)} known destinations observed"
                 ),
                 current_state_line,
-                (
-                    f"  {snapshot.storages.occupied_stacks} unique occupied item stacks "
-                    f"from {storage_records_decoded} decoded snapshot records"
-                ),
+                storage_item_line,
                 "  capacity: unavailable (not present in the decoded item wrappers)",
                 "",
             ]
         )
-        if diagnostics is not None and diagnostics.storage_sweeps_observed:
+        if diagnostics is not None and diagnostics.storage.sweeps_observed:
             lines.insert(
                 len(lines) - 1,
                 f"  selected inferred storage sweep "
-                f"{diagnostics.selected_storage_sweep}/"
-                f"{diagnostics.storage_sweeps_observed}",
+                f"{diagnostics.storage.selected_sweep}/"
+                f"{diagnostics.storage.sweeps_observed}",
             )
         if snapshot.coverage.storage_records_missing_instance:
             lines.insert(
@@ -3250,10 +3458,18 @@ def format_character_state(
             lines.append(
                 f"  {label}: {storage.occupied_stacks} occupied item stacks detected"
             )
-            if storage.selected_missing_instance_records:
+            storage_diagnostics = (
+                diagnostics.storage.destination(storage.storage_id)
+                if diagnostics is not None
+                else None
+            )
+            if (
+                storage_diagnostics is not None
+                and storage_diagnostics.selected_missing_instance_records
+            ):
                 lines.append(
                     f"    identity-unresolved current records excluded: "
-                    f"{storage.selected_missing_instance_records}"
+                    f"{storage_diagnostics.selected_missing_instance_records}"
                 )
             if show_items:
                 for item in storage.items:
@@ -3279,7 +3495,10 @@ __all__ = [
     "ItemStateCoverage",
     "ItemStateDiagnostics",
     "ItemStateProvenance",
+    "InventoryHydrationDiagnostics",
     "SnapshotItem",
+    "StorageDestinationDiagnostics",
+    "StorageHydrationDiagnostics",
     "StorageContents",
     "StorageSnapshotSummary",
     "analyze_character_load_pcap",

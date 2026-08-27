@@ -230,6 +230,8 @@ def test_fetch_profile_rejects_runtime_invalid_layout(
             tmp_path / "opcodes.json",
         )
 
+    assert not list(tmp_path.glob(".opcodes.json.*.tmp"))
+
 
 @pytest.mark.parametrize(
     ("field", "value"),
@@ -405,17 +407,30 @@ def test_profile_renderers_normalize_unicode_encoding_failure(
         getattr(remote_profiles_module, renderer_name)({"invalid": "\ud800"})
 
 
-def test_fetch_profile_rejects_redirect_downgrade(
+@pytest.mark.parametrize(
+    ("final_url", "message"),
+    [
+        ("http://profiles.example.test/current.json", "HTTPS"),
+        (
+            "https://user:secret@profiles.example.test/current.json",
+            "credentials",
+        ),
+    ],
+    ids=("downgrade", "credentials"),
+)
+def test_fetch_profile_rejects_unsafe_redirect_target(
+    final_url: str,
+    message: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _serve(
         monkeypatch,
         _envelope(_profile_data()),
-        final_url="http://profiles.example.test/current.json",
+        final_url=final_url,
     )
 
-    with pytest.raises(RemoteProfileError, match="HTTPS"):
+    with pytest.raises(RemoteProfileError, match=message):
         fetch_opcode_profile(
             "https://profiles.example.test/current.json",
             tmp_path / "opcodes.json",

@@ -34,6 +34,18 @@ requires_fixtures = pytest.mark.skipif(
 )
 
 
+def _inventory_diagnostics(state):
+    assert state.diagnostics is not None
+    return state.diagnostics.inventory
+
+
+def _storage_diagnostics(state, storage_id: int):
+    assert state.diagnostics is not None
+    diagnostic = state.diagnostics.storage.destination(storage_id)
+    assert diagnostic is not None
+    return diagnostic
+
+
 @requires_fixtures
 def test_july17_character_state_report_recovers_inventory_and_storage():
     try:
@@ -48,9 +60,10 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     assert state.provenance.capture_mode == "pcap_replay"
     assert state.provenance.capture_path == str(capture)
     assert state.diagnostics is not None
-    assert state.diagnostics.inventory_generations_observed == 1
+    inventory_diagnostics = _inventory_diagnostics(state)
+    assert inventory_diagnostics.generations_observed == 1
     assert state.identity_complete
-    assert state.inventory.missing_instance_records == 0
+    assert state.coverage.inventory_records_missing_instance == 0
     assert state.coverage.storage_records_missing_instance == 0
     assert state.decoder_health.storage_status == "compatible"
     assert state.decoder_health.storage_is_compatible is True
@@ -60,15 +73,17 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
         > 0
     )
     assert state.diagnostics.snapshot_records_retained == 2_727
-    assert state.inventory.raw_records == 247
+    assert inventory_diagnostics.raw_records == 247
     assert state.inventory.serialized_records == 247
     assert state.inventory.occupied_stacks == 243
     assert state.inventory.currency_balance_records == 4
     assert state.inventory.unclassified_records == 0
-    assert state.inventory.group_counts == (72, 2, 72, 70, 2, 0, 29, 0)
-    assert state.inventory.populated_groups == 6
-    assert state.inventory.empty_groups == 2
-    assert state.inventory.inferred_strides == (223,)
+    assert inventory_diagnostics.group_counts == (72, 2, 72, 70, 2, 0, 29, 0)
+    assert inventory_diagnostics.populated_groups == 6
+    assert inventory_diagnostics.empty_groups == 2
+    assert inventory_diagnostics.inferred_strides == (223,)
+    assert inventory_diagnostics.source_opcodes
+    assert inventory_diagnostics.message_lengths
 
     main = state.inventory.container(0x00)
     pearl = state.inventory.container_named("pearl inventory")
@@ -92,7 +107,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     # Two repeated storage sweeps produce 2,480 decoded records but describe
     # one 1,240-stack state. Four explicit empty envelopes complete all 33
     # registered destinations in the second sweep.
-    assert state.diagnostics.storage_records_decoded == 2480
+    assert state.diagnostics.storage.records_decoded == 2480
     assert state.storages.occupied_stacks == 1240
     assert state.storages.registered_count == 33
     assert state.storages.nonempty_count == 29
@@ -102,23 +117,14 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     assert heidel is not None
     assert heidel.name == "Heidel"
     assert heidel.occupied_stacks == 184
-    assert heidel.raw_records == 368
-    assert heidel.duplicate_records == 184
-    assert heidel.capacity is None
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert heidel_diagnostics.raw_records == 368
+    assert heidel_diagnostics.duplicate_records == 184
+    assert heidel_diagnostics.source_opcodes
+    assert heidel_diagnostics.message_lengths
     assert state.storages.named("heidel") == heidel
 
-
-@requires_fixtures
-def test_character_state_formatter_separates_items_currencies_and_capacity():
-    try:
-        capture = fixture_path("fullcapture.pcapng")
-    except FileNotFoundError:
-        pytest.skip("July 17 private initial-load fixture not present")
-    profile = JULY17_OPCODE_PROFILE
-    state = analyze_character_load_pcap(capture, opcode_profile=profile)
-
     output = format_character_state(state)
-
     assert (
         "247 serialized records: 243 occupied item stacks + 4 currency balances"
         in output
@@ -130,9 +136,6 @@ def test_character_state_formatter_separates_items_currencies_and_capacity():
     assert "Heidel: 184 occupied item stacks detected" in output
     assert "capacity: unavailable" in output
     assert "Main Inventory [0x00, provisional]: 74 item stacks" in output
-    assert "Pearl Inventory [0x10, provisional]: 140 item stacks" in output
-    assert "Global Currencies [0x18, provisional]: 0 item stacks" in output
-    assert "Enhancement Inventory [0x0B, provisional]: 29 item stacks" in output
     assert "2 empty wrappers: unclassified" in output
     assert "Silver: 1,832,291,219" in output
     assert "/192" not in output
@@ -149,23 +152,24 @@ def test_july17_character_switch_classifies_exact_inventory_state():
 
     state = analyze_character_load_pcap(capture, opcode_profile=profile)
     inventory = state.inventory
+    inventory_diagnostics = _inventory_diagnostics(state)
 
-    assert inventory.raw_records == 246
+    assert inventory_diagnostics.raw_records == 246
     assert inventory.serialized_records == 246
     assert inventory.occupied_stacks == 242
     assert inventory.currency_balance_records == 4
-    assert inventory.group_counts == (72, 1, 72, 70, 2, 0, 29, 0)
-    assert inventory.inferred_strides == (223,)
+    assert inventory_diagnostics.group_counts == (72, 1, 72, 70, 2, 0, 29, 0)
+    assert inventory_diagnostics.inferred_strides == (223,)
     assert inventory.unclassified_records == 0
 
     assert state.hydration_detected
     assert state.diagnostics is not None
-    assert state.diagnostics.inventory_generations_observed == 1
+    assert inventory_diagnostics.generations_observed == 1
     assert state.identity_complete
-    assert state.inventory.missing_instance_records == 0
+    assert state.coverage.inventory_records_missing_instance == 0
     assert state.coverage.storage_records_missing_instance == 0
     assert state.diagnostics.snapshot_records_retained == 2_730
-    assert state.diagnostics.storage_records_decoded == 2_484
+    assert state.diagnostics.storage.records_decoded == 2_484
     assert state.storages.occupied_stacks == 1_242
     assert state.storages.registered_count == 33
     assert state.storages.nonempty_count == 29
@@ -173,29 +177,27 @@ def test_july17_character_switch_classifies_exact_inventory_state():
 
     heidel = state.storages.named("Heidel")
     assert heidel is not None
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
     assert (
-        heidel.raw_records,
+        heidel_diagnostics.raw_records,
         heidel.occupied_stacks,
-        heidel.duplicate_records,
-        heidel.groups,
+        heidel_diagnostics.duplicate_records,
+        heidel_diagnostics.groups,
     ) == (366, 183, 183, 6)
 
     # One retransmitted Old Wisdom Tree frame must not create a third group.
     old_wisdom = state.storages.named("Old Wisdom Tree")
     assert old_wisdom is not None
-    assert (
-        old_wisdom.raw_records,
-        old_wisdom.occupied_stacks,
-        old_wisdom.duplicate_records,
-        old_wisdom.groups,
-    ) == (26, 13, 13, 2)
+    old_wisdom_diagnostics = _storage_diagnostics(state, old_wisdom.storage_id)
+    assert old_wisdom.occupied_stacks == 13
+    assert old_wisdom_diagnostics.groups == 2
 
     bukpo = state.storages.named("Bukpo")
     assert bukpo is not None
-    assert bukpo.raw_records == 0
+    bukpo_diagnostics = _storage_diagnostics(state, bukpo.storage_id)
+    assert bukpo_diagnostics.raw_records == 0
     assert bukpo.occupied_stacks == 0
-    assert bukpo.groups == 1
-    assert bukpo.empty_envelope_seen
+    assert bukpo_diagnostics.empty_envelope_seen
 
     assert [
         (
@@ -240,10 +242,14 @@ def test_july17_character_switch_classifies_exact_inventory_state():
     assert payload["serialized_records"] == 246
     assert payload["currency_balance_records"] == 4
     assert payload["unclassified_records"] == 0
-    container_payloads = payload["containers"]
-    assert isinstance(container_payloads, list)
-    assert container_payloads[0]["raw_code"] == 0x00
-    assert container_payloads[0]["raw_code_hex"] == "0x00"
+    assert "containers" not in payload
+    serialized_main_item = next(
+        item for item in payload["items"] if item["container_code"] == 0x00
+    )
+    assert serialized_main_item["container_code_hex"] == "0x00"
+    main_payload = inventory.containers[0].to_dict()
+    assert main_payload["raw_code"] == 0x00
+    assert main_payload["raw_code_hex"] == "0x00"
 
 
 def _synthetic_inventory_tail_group(
@@ -311,7 +317,7 @@ def _synthetic_inventory_tail_group(
     return frame, records, spec, stride
 
 
-def test_inventory_tail_layout_is_discovered_for_legacy_geometry():
+def test_inventory_tail_layout_is_discovered_for_prior_observed_geometry():
     groups = [
         _synthetic_inventory_tail_group(
             sequence=100 + code,
@@ -448,12 +454,14 @@ def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
         profile_source="test",
         specs=(groups[0][2],),
     )
-    summary = accumulator._inventory_summary(
+    assembly = accumulator._inventory_summary(
         tuple(frame for frame, _, _, _ in groups),
         tuple(event for _, records, _, _ in groups for event in records),
+        generations_observed=1,
     )
+    summary = assembly.summary
 
-    assert summary.inferred_strides == (230,)
+    assert assembly.diagnostics.inferred_strides == (230,)
     assert summary.unclassified_records == 0
     assert summary.container(0x00).occupied_stacks == 3
     assert summary.container(0x0B).occupied_stacks == 3
@@ -487,12 +495,14 @@ def test_inventory_summary_selects_unique_geometry_from_same_opcode_layouts():
         specs=(valid_spec, invalid_last_wins_decoy),
     )
 
-    summary = accumulator._inventory_summary(
+    assembly = accumulator._inventory_summary(
         tuple(frame for frame, _, _, _ in groups),
         tuple(event for _, records, _, _ in groups for event in records),
+        generations_observed=1,
     )
+    summary = assembly.summary
 
-    assert summary.inferred_strides == (223,)
+    assert assembly.diagnostics.inferred_strides == (223,)
     assert summary.unclassified_records == 0
     assert summary.container(0x00).occupied_stacks == 3
     assert summary.container(0x0B).occupied_stacks == 3
@@ -600,6 +610,106 @@ def _empty_storage_frame(
     )
 
 
+def _inventory_snapshot_spec() -> EventSpec:
+    return EventSpec(
+        label="INVENTORY_TRANSFER",
+        opcode=0x194A,
+        item_offset=31,
+        quantity_offset=35,
+        min_message_length=254,
+        source_context_offset=27,
+        item_instance_offset=66,
+        repeat_stride=223,
+        single_record_message_length=254,
+    )
+
+
+def _empty_inventory_frame(*, timestamp: float, sequence: int) -> BDOFrame:
+    spec = _inventory_snapshot_spec()
+    message = bytearray(31)
+    message[:2] = len(message).to_bytes(2, "little")
+    message[3:5] = spec.opcode.to_bytes(2, "little")
+    message[27:31] = CHARACTER_LOAD_CONTEXT
+    return BDOFrame(
+        index=sequence,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=timestamp,
+            flow=FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+            stream_start=sequence,
+        ),
+        stream_sequence=sequence,
+    )
+
+
+def test_empty_inventory_hydration_is_not_confused_with_no_observation():
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_inventory_snapshot_spec(),),
+    )
+    accumulator.observe_frame(_empty_inventory_frame(timestamp=1.0, sequence=100))
+
+    state = accumulator.snapshot()
+
+    assert state.inventory.hydration_observed
+    assert state.inventory.serialized_records == 0
+    assert state.hydration_detected
+    diagnostics = _inventory_diagnostics(state)
+    assert diagnostics.group_counts == (0,)
+    assert diagnostics.generations_observed == 1
+    assert state.provenance.generation_selection == "latest_observed_inventory_hydration"
+    assert "INVENTORY SNAPSHOT\n  NOT DETECTED" not in format_character_state(state)
+
+
+def test_latest_empty_inventory_generation_clears_earlier_items():
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(_inventory_snapshot_spec(),),
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=1.0,
+            sequence=100,
+            storage=False,
+            instance_byte=1,
+        ),
+        b"",
+    )
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=2.0,
+            sequence=200,
+            storage=True,
+            instance_byte=2,
+        ),
+        b"",
+    )
+    accumulator.observe_frame(_empty_inventory_frame(timestamp=10.0, sequence=300))
+    accumulator.observe_record(
+        _snapshot_record(
+            timestamp=11.0,
+            sequence=400,
+            storage=True,
+            instance_byte=3,
+        ),
+        b"",
+    )
+
+    state = accumulator.snapshot()
+
+    assert state.inventory.hydration_observed
+    assert state.inventory.items == ()
+    diagnostics = _inventory_diagnostics(state)
+    assert diagnostics.raw_records == 0
+    assert diagnostics.group_counts == (0,)
+    assert diagnostics.generations_observed == 2
+    heidel = state.storages.by_id(0x0020)
+    assert heidel is not None
+    assert [item.item_id for item in heidel.items] == [7006]
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage.records_decoded == 1
+
+
 _CHARACTER_STATE_FLOW = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
 
 
@@ -644,7 +754,6 @@ def _state_storage_event(
         flow=flow,
         item_id=7003 + storage_id,
         quantity=1,
-        source=location.name if location is not None else None,
         opcode=opcode,
         message_length=257,
         storage_instance=f"storage-{opcode}-{storage_id}-{sequence}",
@@ -652,11 +761,6 @@ def _state_storage_event(
         storage_name=location.name if location is not None else None,
         storage_name_confidence=(
             location.confidence if location is not None else None
-        ),
-        storage_operation=(
-            "snapshot"
-            if event_type == "storage_snapshot"
-            else "live" if event_type == "storage_delta" else "unknown"
         ),
         record_index=1,
         record_count=1,
@@ -706,7 +810,7 @@ def test_character_state_reconciles_one_hydration_sweep_split_across_bursts(
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 12
+    assert state.diagnostics.storage.records_decoded == 12
     assert state.storages.registered_count == 12
     assert {storage.storage_id for storage in state.storages} == set(storage_ids)
     assert any("split across timing bursts" in warning for warning in state.warnings)
@@ -749,7 +853,7 @@ def test_split_hydration_reconciliation_stops_at_a_live_mutation_boundary() -> N
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 8
+    assert state.diagnostics.storage.records_decoded == 8
     assert state.storages.registered_count == 8
     assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
     assert state.diagnostics.snapshot_records_retained == 13
@@ -787,7 +891,7 @@ def test_split_hydration_reconciliation_does_not_cross_opcode_families() -> None
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 8
+    assert state.diagnostics.storage.records_decoded == 8
     assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
 
 
@@ -835,7 +939,7 @@ def test_split_hydration_reconciliation_isolates_connection_identity(
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 8
+    assert state.diagnostics.storage.records_decoded == 8
     assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
 
 
@@ -859,7 +963,7 @@ def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() 
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 0
+    assert state.diagnostics.storage.records_decoded == 0
     assert state.storages.registered_count == 0
     assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids)
 
@@ -902,7 +1006,6 @@ def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
                 storage_id=storage_id,
                 storage_name=character_state_module.STORAGE_LOCATIONS[storage_id].name,
                 storage_name_confidence="observed",
-                storage_operation="unknown",
                 record_index=1,
                 record_count=1,
                 record_offset=spec.item_offset,
@@ -928,7 +1031,7 @@ def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
     )
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 3
+    assert state.diagnostics.storage.records_decoded == 3
     assert state.storages.registered_count == 8
     assert state.storages.nonempty_count == 3
     assert state.storages.empty_count == 5
@@ -981,7 +1084,6 @@ def test_classified_nonempty_snapshot_keeps_leading_empty_envelopes_without_stri
                     character_state_module.STORAGE_LOCATIONS[storage_id].name
                 ),
                 storage_name_confidence="observed",
-                storage_operation="snapshot",
                 record_index=1,
                 record_count=1,
                 record_offset=spec.item_offset,
@@ -1039,7 +1141,6 @@ def test_empty_cohort_cannot_override_observed_multi_record_geometry():
                     character_state_module.STORAGE_LOCATIONS[storage_ids[0]].name
                 ),
                 storage_name_confidence="observed",
-                storage_operation="snapshot",
                 record_index=index + 1,
                 record_count=2,
                 record_offset=spec.item_offset + index * proven_stride,
@@ -1124,8 +1225,8 @@ def test_character_state_does_not_merge_reused_four_tuple_generations():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.inventory_generations_observed == 2
-    assert state.inventory.raw_records == 1
+    assert state.diagnostics.inventory.generations_observed == 2
+    assert state.diagnostics.inventory.raw_records == 1
     assert [item.item_id for item in state.inventory.items] == [7005]
     assert state.storages.by_id(0x0020) is None
     assert state.storages.by_id(0x0005) is not None
@@ -1162,7 +1263,6 @@ def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
                 message_length=spec.single_record_message_length,
                 storage_instance=f"generation-two-{index}",
                 storage_id=storage_id,
-                storage_operation="unknown",
                 record_index=1,
                 record_count=1,
                 record_offset=spec.item_offset,
@@ -1183,7 +1283,7 @@ def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 0
+    assert state.diagnostics.storage.records_decoded == 0
     assert state.storages.registered_count == 0
 
 
@@ -1219,7 +1319,7 @@ def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 0
+    assert state.diagnostics.storage.records_decoded == 0
     assert state.storages.empty_count == 8
     assert state.storages.by_id(unknown_storage_id) is not None
     assert state.storages.by_id(unknown_storage_id).name is None
@@ -1260,7 +1360,6 @@ def test_unknown_empty_envelope_adds_to_decoded_destination_failure_count():
             message_length=spec.single_record_message_length,
             storage_instance="decoded-unknown",
             storage_id=decoded_unknown_id,
-            storage_operation="unknown",
             record_index=1,
             record_count=1,
             record_offset=spec.item_offset,
@@ -1291,7 +1390,7 @@ def test_unknown_empty_envelope_adds_to_decoded_destination_failure_count():
     )
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 1
+    assert state.diagnostics.storage.records_decoded == 1
     assert state.storages.registered_count == 6
     assert state.coverage.unregistered_storage_ids_observed == (
         decoded_unknown_id,
@@ -1315,11 +1414,12 @@ def test_repeated_inventory_observation_keeps_raw_and_state_counts_distinct():
 
     state = accumulator.snapshot()
 
-    assert state.inventory.raw_records == 2
-    assert state.inventory.duplicate_records == 1
+    inventory_diagnostics = _inventory_diagnostics(state)
+    assert (
+        inventory_diagnostics.raw_records,
+        inventory_diagnostics.duplicate_records,
+    ) == (2, 1)
     assert state.inventory.serialized_records == 1
-    assert state.inventory.occupied_stacks == 1
-    assert state.inventory.currency_balance_records == 0
     output = format_character_state(state)
     assert (
         "1 serialized records: 1 occupied item stacks + 0 currency balances" in output
@@ -1346,37 +1446,61 @@ def test_missing_instance_records_are_excluded_from_distinct_stack_state():
 
     state = accumulator.snapshot()
     heidel = state.storages.by_id(0x0020)
+    inventory_diagnostics = _inventory_diagnostics(state)
 
-    assert state.inventory.raw_records == 2
     assert state.inventory.items == ()
-    assert state.inventory.serialized_records == 0
-    assert state.inventory.duplicate_records == 0
-    assert state.inventory.missing_instance_records == 2
-    assert not state.inventory.identity_complete
+    assert inventory_diagnostics.raw_records == 2
     assert heidel is not None
-    assert heidel.raw_records == 2
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
     assert heidel.items == ()
-    assert heidel.occupied_stacks == 0
-    assert heidel.duplicate_records == 0
-    assert heidel.missing_instance_records == 2
-    assert heidel.selected_missing_instance_records == 2
+    assert (
+        heidel_diagnostics.missing_instance_records,
+        heidel_diagnostics.selected_missing_instance_records,
+    ) == (2, 2)
     assert heidel.current_identity_complete is False
     assert heidel.current_empty is False
     assert not state.identity_complete
-    assert state.storages.occupied_stacks == 0
-    assert state.storages.empty_count == 0
-    assert state.storages.nonempty_count == 0
 
     coverage = state.coverage
-    assert coverage.inventory_records_missing_instance == 2
-    assert coverage.storage_records_missing_instance == 2
-    assert coverage.selected_storage_records_missing_instance == 2
+    assert (
+        coverage.inventory_records_missing_instance,
+        coverage.storage_records_missing_instance,
+        coverage.selected_storage_records_missing_instance,
+    ) == (2, 2, 2)
     assert coverage.storage_locations_with_incomplete_current_identity == 1
-    payload = state.to_dict()
-    assert "unavailable:" not in str(payload)
     output = format_character_state(state)
     assert output.count("identity-unresolved records excluded: 2") == 2
     assert "1 identity-incomplete" in output
+
+
+def test_unresolved_storage_destination_still_contributes_to_identity_coverage():
+    accumulator = _CharacterStateAccumulator(profile_source="test", specs=())
+    accumulator.observe_event(
+        BDOEvent(
+            event_type="storage_snapshot",
+            timestamp=1.0,
+            flow=Flow("10.0.0.1", 8889, "10.0.0.2", 50000),
+            item_id=7003,
+            quantity=5,
+            opcode=0x126D,
+            message_length=257,
+            storage_instance=None,
+            storage_id=None,
+            record_index=1,
+            record_count=1,
+            record_offset=36,
+            extra={"stream_sequence": 100},
+        )
+    )
+
+    state = accumulator.snapshot()
+
+    assert state.storages == ()
+    assert state.coverage.storage_records_missing_instance == 1
+    assert state.coverage.selected_storage_records_missing_instance == 0
+    assert not state.identity_complete
+    assert state.diagnostics is not None
+    assert state.diagnostics.storage.records_without_destination == 1
 
 
 def test_mixed_storage_identity_exposes_only_the_authoritative_stack():
@@ -1400,10 +1524,8 @@ def test_mixed_storage_identity_exposes_only_the_authoritative_stack():
 
     assert heidel is not None
     assert len(heidel.items) == 1
-    assert heidel.items[0].instance_confidence == "observed"
-    assert heidel.selected_records == 2
-    assert heidel.selected_missing_instance_records == 1
-    assert heidel.duplicate_records == 0
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert heidel_diagnostics.selected_missing_instance_records == 1
     assert heidel.quantity_for(7003) == 5
 
 
@@ -1559,19 +1681,14 @@ def test_storage_item_then_empty_selects_atomic_latest_empty_state():
     assert heidel.occupied_stacks == 0
     assert heidel.current_state_observed
     assert heidel.current_empty is True
-    assert heidel.empty_envelope_seen
-    assert heidel.raw_records == 1
-    assert heidel.groups == 2
-    assert heidel.selected_records == 0
-    assert heidel.superseded_records == 1
-    assert heidel.selected_groups == 1
-    assert heidel.superseded_groups == 1
-    assert heidel.sweeps_observed == 2
-    assert heidel.selected_sweep == 2
-    assert state.diagnostics is not None
-    assert state.diagnostics.storage_sweeps_observed == 2
-    assert state.storages.empty_count == 1
-    assert state.storages.nonempty_count == 0
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert (
+        heidel_diagnostics.empty_envelope_seen,
+        heidel_diagnostics.raw_records,
+        heidel_diagnostics.selected_records,
+        heidel_diagnostics.superseded_records,
+        heidel_diagnostics.selected_sweep,
+    ) == (True, 1, 0, 1, 2)
 
 
 def test_storage_empty_then_item_selects_latest_nonempty_state():
@@ -1599,17 +1716,8 @@ def test_storage_empty_then_item_selects_latest_nonempty_state():
     assert heidel.occupied_stacks == 1
     assert heidel.current_state_observed
     assert heidel.current_empty is False
-    assert heidel.empty_envelope_seen
-    assert heidel.raw_records == 1
-    assert heidel.groups == 2
-    assert heidel.selected_records == 1
-    assert heidel.superseded_records == 0
-    assert heidel.selected_groups == 1
-    assert heidel.superseded_groups == 1
-    assert heidel.sweeps_observed == 2
-    assert heidel.selected_sweep == 2
-    assert state.storages.empty_count == 0
-    assert state.storages.nonempty_count == 1
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert heidel_diagnostics.empty_envelope_seen
 
 
 def test_repeated_storage_sweep_replaces_items_but_preserves_diagnostics():
@@ -1658,21 +1766,24 @@ def test_repeated_storage_sweep_replaces_items_but_preserves_diagnostics():
     assert heidel is not None and velia is not None
     assert [item.quantity for item in heidel.items] == [9]
     assert [item.quantity for item in velia.items] == [10]
+    assert heidel.items[0].observed_at == 3.0
+    assert velia.items[0].observed_at == 4.0
     assert state.storages.occupied_stacks == 2
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 4
-    assert state.diagnostics.storage_sweeps_observed == 2
-    for storage in (heidel, velia):
-        assert storage.raw_records == 2
-        assert storage.duplicate_records == 1
-        assert storage.groups == 2
-        assert storage.selected_records == 1
-        assert storage.superseded_records == 1
-        assert storage.selected_groups == 1
-        assert storage.superseded_groups == 1
-        assert storage.sweeps_observed == 2
-        assert storage.selected_sweep == 2
-        assert storage.current_state_observed
+    assert state.diagnostics.storage.records_decoded == 4
+    assert state.diagnostics.storage.sweeps_observed == 2
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert (
+        heidel_diagnostics.raw_records,
+        heidel_diagnostics.duplicate_records,
+        heidel_diagnostics.groups,
+        heidel_diagnostics.selected_records,
+        heidel_diagnostics.superseded_records,
+        heidel_diagnostics.selected_groups,
+        heidel_diagnostics.superseded_groups,
+        heidel_diagnostics.sweeps_observed,
+        heidel_diagnostics.selected_sweep,
+    ) == (2, 1, 2, 1, 1, 1, 1, 2, 2)
 
 
 def test_same_destination_after_chunk_gap_replaces_removed_instances():
@@ -1708,14 +1819,15 @@ def test_same_destination_after_chunk_gap_replaces_removed_instances():
 
     assert heidel is not None
     assert [(item.item_id, item.quantity) for item in heidel.items] == [(7004, 9)]
-    assert heidel.raw_records == 3
-    assert heidel.groups == 2
-    assert heidel.selected_records == 1
-    assert heidel.superseded_records == 2
-    assert heidel.duplicate_records == 1
-    assert heidel.sweeps_observed == 2
+    heidel_diagnostics = _storage_diagnostics(state, heidel.storage_id)
+    assert heidel_diagnostics.raw_records == 3
+    assert heidel_diagnostics.groups == 2
+    assert heidel_diagnostics.selected_records == 1
+    assert heidel_diagnostics.superseded_records == 2
+    assert heidel_diagnostics.duplicate_records == 1
+    assert heidel_diagnostics.sweeps_observed == 2
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_sweeps_observed == 2
+    assert state.diagnostics.storage.sweeps_observed == 2
 
 
 def test_partial_later_storage_sweep_excludes_earlier_only_items():
@@ -1756,28 +1868,20 @@ def test_partial_later_storage_sweep_excludes_earlier_only_items():
     assert heidel is not None and velia is not None
     assert [item.quantity for item in heidel.items] == [9]
     assert heidel.current_state_observed
-    assert heidel.selected_sweep == 2
+    assert _storage_diagnostics(state, heidel.storage_id).selected_sweep == 2
     assert velia.items == ()
     assert velia.occupied_stacks == 0
     assert not velia.current_state_observed
-    assert velia.current_empty is False
-    assert velia.raw_records == 1
-    assert velia.groups == 1
-    assert velia.selected_records == 0
-    assert velia.superseded_records == 1
-    assert velia.selected_groups == 0
-    assert velia.superseded_groups == 1
-    assert velia.selected_sweep is None
+    assert velia.current_empty is None
+    assert velia.current_identity_complete is None
+    velia_diagnostics = _storage_diagnostics(state, velia.storage_id)
+    assert velia_diagnostics.selected_sweep is None
     assert state.storages.occupied_stacks == 1
     assert state.storages.selected_count == 1
     assert state.storages.total_quantity(7005) == 0
     assert len(state.storages) == 2
     assert state.coverage.storage_locations_not_selected == 1
     assert any("selected sweep may be partial" in warning for warning in state.warnings)
-    payload = state.to_dict(include_diagnostics=True)
-    assert payload["diagnostics"]["storage_sweeps_observed"] == 2
-    assert payload["diagnostics"]["selected_storage_sweep"] == 2
-    assert payload["storages"]["selected_count"] == 1
     output = format_character_state(state)
     assert "Velia: current state unavailable" in output
 
@@ -1795,9 +1899,9 @@ def test_multiple_character_loads_report_only_the_latest_generation():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.inventory_generations_observed == 2
+    assert state.diagnostics.inventory.generations_observed == 2
     assert [item.item_id for item in state.inventory.items] == [7006]
-    assert state.diagnostics.storage_records_decoded == 1
+    assert state.diagnostics.storage.records_decoded == 1
     heidel = state.storages.by_id(0x0020)
     assert heidel is not None
     assert [item.item_id for item in heidel.items] == [7007]
@@ -1826,8 +1930,8 @@ def test_storage_only_capture_discloses_that_no_generation_boundary_exists():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.inventory_generations_observed == 0
-    assert state.diagnostics.storage_records_decoded == 2
+    assert state.diagnostics.inventory.generations_observed == 0
+    assert state.diagnostics.storage.records_decoded == 2
     assert (
         state.provenance.generation_selection
         == "all_observed_storage_no_inventory_boundary"

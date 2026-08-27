@@ -52,20 +52,17 @@ def test_storage_location_metadata_preserves_mapping_confidence():
     assert storage_location(0xDEADBEEF) is None
 
 
-def test_live_storage_delta_exposes_destination_fields_and_legacy_context():
+def test_live_storage_delta_exposes_canonical_destination_fields():
     event = toolkit_event_from_record(
         _storage_record(context=bytes.fromhex("20000000"), operation="live")
     )
 
     assert event.event_type == "storage_delta"
-    assert event.source == "Heidel"
+    assert event.source is None
     assert event.raw_context == "0x20000000"
     assert event.storage_id == 0x0020
     assert event.storage_name == "Heidel"
     assert event.storage_name_confidence == "observed"
-    assert event.storage_operation == "live"
-    assert event.deposit_origin is None
-    assert event.to_dict()["extra"]["storage_delta"] == 1
 
 
 def test_angavu_storage_delta_uses_registered_town_name():
@@ -78,11 +75,13 @@ def test_angavu_storage_delta_uses_registered_town_name():
     )
 
     assert event.event_type == "storage_delta"
-    assert event.source == "Angavu Outpost"
+    assert event.source is None
     assert event.storage_id == 0x06C5
     assert event.storage_name == "Angavu Outpost"
     assert event.storage_name_confidence == "observed"
     assert EventFilter(event_types={"storage_delta"}).allows(event)
+    assert EventFilter(storage_ids={0x06C5}).allows(event)
+    assert not EventFilter(storage_ids={0x0020}).allows(event)
 
 
 def test_initial_load_snapshot_is_not_a_deposit_event():
@@ -91,18 +90,13 @@ def test_initial_load_snapshot_is_not_a_deposit_event():
     )
 
     assert event.event_type == "storage_snapshot"
-    assert event.source == "Olvia"
+    assert event.source is None
     assert event.storage_id == 0x0058
     assert event.storage_name == "Olvia"
-    assert event.storage_operation == "snapshot"
-    assert event.deposit_origin is None
-    assert "storage_delta" not in event.extra
-    assert event.extra["storage_quantity"] == 1
     assert "STORAGE_SNAPSHOT" in event.format_human()
+    assert "destination='Olvia'" in event.format_human()
     assert "storage_id=0x00000058" in event.format_human()
-    assert "storage_name='Olvia'" in event.format_human()
     assert "storage_name_confidence=observed" in event.format_human()
-    assert "storage_operation=snapshot" in event.format_human()
 
 
 def test_unknown_storage_key_remains_visible_without_inventing_a_name():
@@ -113,8 +107,10 @@ def test_unknown_storage_key_remains_visible_without_inventing_a_name():
     assert event.storage_id == 0xDEADBEEF
     assert event.storage_name is None
     assert event.storage_name_confidence is None
-    assert event.source == "UNKNOWN_STORAGE(0xdeadbeef)"
+    assert event.source is None
     assert event.raw_context == "0xefbeadde"
+    assert "destination='UNKNOWN_STORAGE(0xdeadbeef)'" in event.format_human()
+    assert EventFilter(storage_ids={0xDEADBEEF}).allows(event)
 
 
 def test_unrecognized_current_wrapper_operation_fails_closed():
@@ -123,10 +119,7 @@ def test_unrecognized_current_wrapper_operation_fails_closed():
     )
 
     assert event.event_type == "storage_record"
-    assert event.storage_operation == "unknown"
-    assert event.deposit_origin is None
-    assert "storage_delta" not in event.extra
-    assert "storage_quantity" not in event.extra
+    assert event.source is None
     assert not EventFilter(
         event_types={"item_received", "storage_delta"}
     ).allows(event)
@@ -194,4 +187,21 @@ def test_zero_storage_context_is_not_promoted_to_a_location_key():
     assert event.event_type == "storage_record"
     assert event.storage_id is None
     assert event.storage_name is None
-    assert event.source == "Character Load"
+    assert event.source is None
+
+
+def test_storage_id_filter_composes_with_other_fields_using_and_semantics():
+    event = toolkit_event_from_record(
+        _storage_record(context=bytes.fromhex("20000000"), operation="live")
+    )
+
+    event_filter = EventFilter.from_values(
+        event_types={"storage_delta"},
+        storage_ids={0x0020},
+        item_ids={8508},
+    )
+    assert event_filter.storage_ids == frozenset({0x0020})
+    assert event_filter.allows(event)
+    assert not EventFilter(
+        event_types={"storage_snapshot"}, storage_ids={0x0020}
+    ).allows(event)

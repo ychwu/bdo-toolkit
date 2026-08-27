@@ -57,14 +57,9 @@ def test_initial_game_load_is_separated_from_live_storage_activity(tmp_path):
     snapshots = [event for event in events if event.event_type == "storage_snapshot"]
     live = [event for event in events if event.event_type == "storage_delta"]
 
-    assert all(event.storage_operation == "snapshot" for event in snapshots)
-    assert all(event.deposit_origin is None for event in snapshots)
-    assert all("storage_delta" not in event.extra for event in snapshots)
-    assert all("storage_quantity" in event.extra for event in snapshots)
+    assert all(event.source is None for event in snapshots)
 
-    assert all(event.storage_operation == "live" for event in live)
-    assert all(event.deposit_origin == "worker" for event in live)
-    assert all("storage_delta" in event.extra for event in live)
+    assert all(event.source == "Worker Production" for event in live)
 
     # Arehaza has 25 occupied slots per hydration.  The first three records do
     # not carry the old FF marker, so this also locks count/length stride
@@ -156,14 +151,16 @@ def test_august_character_switch_hydration_is_not_live_activity(tmp_path):
     assert state.inventory.currency_balance_records == 4
     assert state.inventory.unclassified_records == 0
     assert state.diagnostics is not None
-    assert state.diagnostics.storage_records_decoded == 2452
+    assert state.diagnostics.storage.records_decoded == 2452
     assert len(state.storages) == 33
     assert state.storages.empty_count == 4
     assert state.storages.named("Arehaza").occupied_stacks == 25
 
 
 @requires_fixtures
-def test_august_controlled_deposit_keeps_town_and_opcode_free_worker_origin(tmp_path):
+def test_august_controlled_deposit_keeps_destination_and_opcode_free_worker_origin(
+    tmp_path,
+):
     try:
         capture = fixture_path("velia_7003_qty5.pcapng")
     except FileNotFoundError:
@@ -173,14 +170,14 @@ def test_august_controlled_deposit_keeps_town_and_opcode_free_worker_origin(tmp_
     events = list(replay_pcap(capture, opcode_profile=profile))
 
     assert [
-        (event.item_id, event.quantity, event.source, event.deposit_origin)
+        (event.item_id, event.quantity, event.storage_name, event.source)
         for event in events
     ] == [
-        (7003, 5, "Velia", "manual"),
-        (4003, 20, "Heidel", "worker"),
-        (7702, 31, "Velia", "worker"),
+        (7003, 5, "Velia", "Player Inventory"),
+        (4003, 20, "Heidel", "Worker Production"),
+        (7702, 31, "Velia", "Worker Production"),
     ]
-    workers = [event for event in events if event.deposit_origin == "worker"]
+    workers = [event for event in events if event.source == "Worker Production"]
     assert all(
         event.extra["deposit_origin_evidence"]["companion_chain"]["known_family"]
         is False

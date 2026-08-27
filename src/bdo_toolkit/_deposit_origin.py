@@ -7,11 +7,11 @@ delta's pre-record prefix. The relationship survived a patch that changed
 every involved opcode, length, and token offset, so classification does not
 trust raw opcode values.
 
-Missing or conflicting evidence produces ``unknown`` on an already-live
+Missing or conflicting evidence leaves ``source=None`` on an already-live
 ``storage_delta``. A neutral ``storage_record`` is promoted to a live delta
 only when the same independent evidence proves a manual or worker mutation;
-otherwise it remains neutral. Storage context bytes identify the destination
-storage, not whether a player or worker caused it.
+otherwise it remains neutral. Storage context bytes identify the endpoint,
+not whether player inventory or worker production supplied the item.
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ from .profiles import OriginCompanionFamily
 ORIGIN_WORKER = "worker"
 ORIGIN_MANUAL = "manual"
 ORIGIN_UNKNOWN = "unknown"
+SOURCE_WORKER_PRODUCTION = "Worker Production"
+SOURCE_PLAYER_INVENTORY = "Player Inventory"
 
 
 @dataclass(frozen=True)
@@ -1529,7 +1531,6 @@ class DepositOriginTracker:
                 # proves that this unfamiliar wire mode is nevertheless a
                 # live mutation. Preserve that inference in additive audit
                 # metadata and promote before EventFilter is applied.
-                extra["storage_delta"] = original.quantity
                 extra["storage_operation_evidence"] = {
                     "wire_operation": "unknown",
                     "inferred_operation": "live",
@@ -1541,10 +1542,13 @@ class DepositOriginTracker:
             event = dataclasses.replace(
                 original,
                 event_type=("storage_delta" if was_neutral else original.event_type),
-                storage_operation=(
-                    "live" if was_neutral else original.storage_operation
+                source=(
+                    SOURCE_WORKER_PRODUCTION
+                    if origin == ORIGIN_WORKER
+                    else SOURCE_PLAYER_INVENTORY
+                    if origin == ORIGIN_MANUAL
+                    else None
                 ),
-                deposit_origin=origin,
                 extra=extra,
             )
             self._queue_emit(event)

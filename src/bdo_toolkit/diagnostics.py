@@ -11,9 +11,9 @@ class DecoderDiagnostic:
     """One deduplicated decoder-compatibility warning.
 
     Diagnostics are deliberately not :class:`BDOEvent` objects and therefore
-    bypass event filters.  A town-filtered production app can learn that its
-    profile stopped resolving destinations even when no matching event can be
-    delivered.
+    bypass event filters. A storage-ID-filtered production app can learn that
+    its profile stopped resolving destinations even when no matching event can
+    be delivered.
     """
 
     code: str
@@ -21,7 +21,7 @@ class DecoderDiagnostic:
     severity: str = "warning"
     subsystem: str = "storage"
     opcode: Optional[int] = None
-    requested_sources: tuple[str, ...] = ()
+    requested_storage_ids: tuple[int, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

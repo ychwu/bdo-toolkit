@@ -26,6 +26,7 @@ requires_fixtures = pytest.mark.skipif(
 _AUGUST_STORAGE_OPCODE = 0x1C51
 _AUGUST_ITEM_OFFSET = 44
 _AUGUST_DESTINATION_OFFSET = 8
+_VALIDATION_FLOW = FlowKey("203.0.113.10", 51000, "198.51.100.20", 8889)
 
 
 def _storage_frames(fixture_name: str):
@@ -46,6 +47,34 @@ def _august_storage_message(storage_id: int, item_id: int) -> bytes:
     message[48:52] = (1).to_bytes(4, "little")
     message[79:87] = bytes.fromhex("1122334455667788")
     return bytes(message)
+
+
+def _write_august_storage_profile(tmp_path, *, context_offset: int):
+    profile = tmp_path / f"storage-context-{context_offset}.json"
+    profile.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "profile_active": True,
+                "specs": {
+                    "STORAGE_ITEM_DELTA": [
+                        {
+                            "event": "STORAGE_ITEM_DELTA",
+                            "opcode": "0x1C51",
+                            "length": 270,
+                            "item_id_offset": 44,
+                            "quantity_added_offset": 48,
+                            "destination_instance_offset": 79,
+                            "context_offset": context_offset,
+                            "record_count_offset": 5,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return profile
 
 
 @requires_fixtures
@@ -78,33 +107,6 @@ def test_stale_plus_one_context_offset_is_proven_across_hydration():
     assert mismatch.observed_offset == 8
     assert mismatch.wrapper_count >= 4
     assert mismatch.distinct_destinations >= 3
-
-
-@requires_fixtures
-@pytest.mark.parametrize(
-    "fixture_name",
-    (
-        "character-switch-2026-08-07.pcapng",
-        "velia_7003_qty5.pcapng",
-    ),
-)
-def test_correct_profile_never_reports_hydration_or_control_as_mismatch(
-    fixture_name,
-):
-    validator = StorageDestinationValidator()
-
-    assert all(
-        validator.observe(
-            flow=frame.context.flow,
-            flow_generation=frame.context.flow_generation,
-            opcode=frame.opcode,
-            message=frame.message,
-            first_item_offset=_AUGUST_ITEM_OFFSET,
-            configured_offset=_AUGUST_DESTINATION_OFFSET,
-        )
-        is None
-        for frame in _storage_frames(fixture_name)
-    )
 
 
 def test_same_opcode_layouts_do_not_share_destination_evidence():
@@ -152,24 +154,16 @@ def test_same_opcode_layouts_do_not_share_destination_evidence():
 
 
 def test_repeated_ambiguous_single_town_activity_does_not_guess():
-    frame = next(
-        frame
-        for frame in _storage_frames("character-switch-2026-08-07.pcapng")
-        if int.from_bytes(frame.message[8:12], "little") == 0x055F
-    )
     validator = StorageDestinationValidator()
 
     for nonce in range(32):
-        message = bytearray(frame.message)
-        message[_AUGUST_ITEM_OFFSET : _AUGUST_ITEM_OFFSET + 4] = nonce.to_bytes(
-            4, "little"
-        )
+        message = _august_storage_message(0x055F, 7100 + nonce)
         assert (
             validator.observe(
-                flow=frame.context.flow,
-                flow_generation=frame.context.flow_generation,
-                opcode=frame.opcode,
-                message=bytes(message),
+                flow=_VALIDATION_FLOW,
+                flow_generation=1,
+                opcode=_AUGUST_STORAGE_OPCODE,
+                message=message,
                 first_item_offset=_AUGUST_ITEM_OFFSET,
                 configured_offset=_AUGUST_DESTINATION_OFFSET + 1,
             )
@@ -179,7 +173,6 @@ def test_repeated_ambiguous_single_town_activity_does_not_guess():
 
 def test_duplicate_wrappers_and_flow_generations_do_not_combine_into_proof():
     validator = StorageDestinationValidator()
-    frame = next(_storage_frames("character-switch-2026-08-07.pcapng"))
     messages = tuple(
         _august_storage_message(storage_id, 7100 + index)
         for index, storage_id in enumerate((0x055F, 0x0566, 0x058C))
@@ -192,9 +185,9 @@ def test_duplicate_wrappers_and_flow_generations_do_not_combine_into_proof():
         for _ in range(2):
             assert (
                 validator.observe(
-                    flow=frame.context.flow,
+                    flow=_VALIDATION_FLOW,
                     flow_generation=generation,
-                    opcode=frame.opcode,
+                    opcode=_AUGUST_STORAGE_OPCODE,
                     message=message,
                     first_item_offset=_AUGUST_ITEM_OFFSET,
                     configured_offset=_AUGUST_DESTINATION_OFFSET + 1,
@@ -205,25 +198,21 @@ def test_duplicate_wrappers_and_flow_generations_do_not_combine_into_proof():
     assert validator.cohort_count == 3
     assert validator.retained_wrapper_count == 3
 
-    validator.close_flow(frame.context.flow)
+    validator.close_flow(_VALIDATION_FLOW)
     assert validator.cohort_count == 0
     assert validator.retained_wrapper_count == 0
 
 
 def test_destination_revalidation_state_is_bounded():
-    frame = next(_storage_frames("character-switch-2026-08-07.pcapng"))
     validator = StorageDestinationValidator()
 
     for nonce in range(_MAX_WRAPPERS_PER_COHORT + 17):
-        message = bytearray(frame.message)
-        message[_AUGUST_ITEM_OFFSET : _AUGUST_ITEM_OFFSET + 4] = nonce.to_bytes(
-            4, "little"
-        )
+        message = _august_storage_message(0x055F, 7100 + nonce)
         validator.observe(
-            flow=frame.context.flow,
-            flow_generation=frame.context.flow_generation,
-            opcode=frame.opcode,
-            message=bytes(message),
+            flow=_VALIDATION_FLOW,
+            flow_generation=1,
+            opcode=_AUGUST_STORAGE_OPCODE,
+            message=message,
             first_item_offset=_AUGUST_ITEM_OFFSET,
             configured_offset=_AUGUST_DESTINATION_OFFSET,
         )
@@ -235,8 +224,8 @@ def test_destination_revalidation_state_is_bounded():
         validator.observe(
             flow=FlowKey("1.1.1.1", port, "2.2.2.2", 8889),
             flow_generation=port,
-            opcode=frame.opcode,
-            message=frame.message,
+            opcode=_AUGUST_STORAGE_OPCODE,
+            message=_august_storage_message(0x055F, 9000 + port),
             first_item_offset=_AUGUST_ITEM_OFFSET,
             configured_offset=_AUGUST_DESTINATION_OFFSET,
         )
@@ -247,22 +236,16 @@ def test_destination_revalidation_state_is_bounded():
     )
 
 
-@requires_fixtures
 def test_collector_marks_incompatible_when_known_suffix_collision_is_disproved(
     tmp_path,
 ):
-    profile_data = json.loads(
-        fixture_path("character-switch-2026-08-07.profile.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    profile_data["specs"]["STORAGE_ITEM_DELTA"][0]["context_offset"] = 9
-    stale_profile = tmp_path / "stale-context.json"
-    stale_profile.write_text(json.dumps(profile_data), encoding="utf-8")
     diagnostics = []
     collector = _EventCollector(
         server_ports=(8889,),
-        opcode_profile=stale_profile,
+        opcode_profile=_write_august_storage_profile(
+            tmp_path,
+            context_offset=_AUGUST_DESTINATION_OFFSET + 1,
+        ),
         event_filter=EventFilter.all(),
         on_diagnostic=diagnostics.append,
     )

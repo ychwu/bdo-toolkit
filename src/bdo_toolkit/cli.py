@@ -55,6 +55,18 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _storage_id(value: str) -> int:
+    try:
+        number = int(value, 16 if value.lower().startswith("0x") else 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected a decimal or 0x-prefixed integer: {value!r}"
+        ) from exc
+    if not 1 <= number <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError("value must be between 1 and 0xFFFFFFFF")
+    return number
+
+
 def _nonnegative_float(value: str) -> float:
     try:
         number = float(value)
@@ -123,7 +135,18 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="sources",
         metavar="SOURCE",
-        help='only yield this source (repeatable), e.g. "Heidel"',
+        help=(
+            'only yield this semantic source (repeatable), e.g. "Mob Drop" '
+            'or "Worker Production"'
+        ),
+    )
+    parser.add_argument(
+        "--storage-id",
+        action="append",
+        dest="storage_ids",
+        type=_storage_id,
+        metavar="ID",
+        help="only yield this storage destination ID (repeatable; decimal or 0x...)",
     )
     parser.add_argument(
         "--item-id",
@@ -138,15 +161,6 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="emit newline-delimited JSON instead of human-readable lines",
     )
-    parser.add_argument(
-        "--deposit-origin",
-        choices=("worker", "manual", "unknown"),
-        default=None,
-        help=(
-            "only yield storage_delta events with this classified deposit "
-            "origin (worker deposits vs manual deposits)"
-        ),
-    )
 
 
 def _writer(args: argparse.Namespace):
@@ -155,14 +169,19 @@ def _writer(args: argparse.Namespace):
 
 def _decode_filter(args: argparse.Namespace) -> EventFilter | None:
     if not any(
-        (args.event_types, args.sources, args.item_ids, args.deposit_origin)
+        (
+            args.event_types,
+            args.sources,
+            args.storage_ids,
+            args.item_ids,
+        )
     ):
         return None
     return EventFilter(
         event_types=args.event_types,
         sources=args.sources,
+        storage_ids=args.storage_ids,
         item_ids=args.item_ids,
-        deposit_origins={args.deposit_origin} if args.deposit_origin else None,
     )
 
 
@@ -810,7 +829,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "write discovered specs to this opcodes.json, replacing the "
+            "write discovered specs to this local profile path, replacing the "
             "applicable existing entries (default: dry run)"
         ),
     )

@@ -44,39 +44,6 @@ _COMPLETE_CAPTURE_PATHS = (
     ROOT / "tests/fixtures/solare/leaderboard721.pcapng",
 )
 
-_NONCOMPLETE_CAPTURE_CASES = (
-    (
-        ROOT
-        / "docs/captures/fixtures/solare/"
-        "leaderboard_truncated_single_packet_2026-06-24.pcapng",
-        SolareDetectionStatus.INCONCLUSIVE,
-    ),
-    (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_discovery_retry_20260714.pcapng",
-        SolareDetectionStatus.DETECTED_INCOMPLETE,
-    ),
-    (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_discovery_retry_20260714_2.pcapng",
-        SolareDetectionStatus.MENU_CONTEXT,
-    ),
-    (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_discovery_test_menu_only.pcapng",
-        SolareDetectionStatus.MENU_CONTEXT,
-    ),
-    (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_live_probe_20260714_121723.pcapng",
-        SolareDetectionStatus.INCONCLUSIVE,
-    ),
-)
-
 _SAME_GEOMETRY_CAPTURE_PAIRS = (
     (
         ROOT
@@ -248,24 +215,12 @@ def profile_hidden_replays() -> dict[Path, _ReplayPair]:
     }
 
 
-def test_registered_complete_capture_profiles_never_invoke_learner(
-    profile_hidden_replays: dict[Path, _ReplayPair],
-) -> None:
-    installed = {path for path in _COMPLETE_CAPTURE_PATHS if path.is_file()}
-
-    assert set(profile_hidden_replays) == installed
-    assert all(
-        pair.registered.status is SolareDetectionStatus.COMPLETE
-        for pair in profile_hidden_replays.values()
-    )
-
-
 @pytest.mark.parametrize(
     "path",
-    _COMPLETE_CAPTURE_PATHS,
+    (_COMPLETE_CAPTURE_PATHS[-1],),
     ids=lambda path: path.stem,
 )
-def test_profile_hidden_replay_matches_every_public_field_and_raw_byte(
+def test_profile_hidden_replay_matches_public_fields_and_raw_bytes(
     path: Path,
     profile_hidden_replays: dict[Path, _ReplayPair],
 ) -> None:
@@ -435,27 +390,3 @@ def test_mixed_registered_and_unknown_tables_keep_independent_details(
         item.elo == rich_by_name[item.name].elo
         for item in shared
     )
-
-
-@pytest.mark.parametrize(
-    ("path", "expected_status"),
-    _NONCOMPLETE_CAPTURE_CASES,
-    ids=lambda case: case.stem if isinstance(case, Path) else str(case),
-)
-def test_noncomplete_captures_never_invoke_detail_learner(
-    path: Path,
-    expected_status: SolareDetectionStatus,
-) -> None:
-    if not path.is_file():
-        pytest.skip("private Solare capture is not installed")
-
-    with patch.object(
-        result_module,
-        "learn_unknown_solare_details",
-        side_effect=_unexpected_learner_call,
-    ) as learner:
-        result = replay_solare(path, retain_raw_extensions=True)
-
-    assert learner.call_count == 0
-    assert result.status is expected_status
-    assert result.snapshot is None

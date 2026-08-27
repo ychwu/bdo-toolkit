@@ -71,6 +71,21 @@ Source matching is exact and case-sensitive. Item decoding requires one
 explicit local opcode profile matching the captured game patch; the wheel does
 not contain a default profile and capture never downloads one implicitly.
 
+Storage destinations use their numeric protocol identity instead of `source`:
+
+```python
+heidel_activity = EventFilter(
+    event_types={"storage_delta"},
+    storage_ids={0x0020},
+)
+```
+
+For live storage additions, `source` is `"Player Inventory"`,
+`"Worker Production"`, or `None` when the producing source is unresolved.
+`storage_id` is the authoritative endpoint identity and `storage_name` is
+optional display metadata. `event_type` distinguishes live `storage_delta`,
+hydrated `storage_snapshot`, and unresolved `storage_record` records.
+
 For current NA/EU live traffic, install a maintainer-verified profile from a
 trusted endpoint as an explicit setup step:
 

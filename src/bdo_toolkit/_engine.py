@@ -93,22 +93,15 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
     ):
         storage_id = int.from_bytes(event.source_context_candidate, "little")
     location = storage_location(storage_id) if is_storage else None
-    source = source_label(event.source_context_candidate, event.default_context)
-    if storage_id is not None:
-        source = (
-            location.name
-            if location is not None
-            else f"UNKNOWN_STORAGE(0x{storage_id:08x})"
-        )
+    source = (
+        None
+        if is_storage
+        else source_label(event.source_context_candidate, event.default_context)
+    )
 
     extra = {}
     if event.stream_sequence is not None:
         extra["stream_sequence"] = event.stream_sequence
-    if is_storage and event.storage_operation == "snapshot":
-        extra["storage_quantity"] = event.quantity
-    elif is_storage and event.storage_operation == "live":
-        extra["storage_delta"] = event.quantity
-
     return BDOEvent(
         event_type=_event_type_for_record(event),
         timestamp=event.context.timestamp,
@@ -135,7 +128,6 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         storage_name_confidence=(
             location.confidence if location is not None else None
         ),
-        storage_operation=event.storage_operation,
         record_index=event.record_index,
         record_count=event.record_count,
         record_offset=event.record_offset,

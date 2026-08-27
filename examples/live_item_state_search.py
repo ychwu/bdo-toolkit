@@ -42,7 +42,7 @@ def main() -> None:
 
     print(f"{TARGET_LABEL} (item_id={TARGET_ITEM_ID})")
     inventory_total: int | None = None
-    if snapshot.inventory.groups:
+    if snapshot.inventory.hydration_observed:
         inventory_total = snapshot.inventory.quantity_for(TARGET_ITEM_ID)
         print(f"Character inventory: {inventory_total}")
     else:
@@ -64,7 +64,10 @@ def main() -> None:
     if inventory_total is not None and storage_total is not None:
         print(f"Observed total: {inventory_total + storage_total}")
 
-    if snapshot.inventory.groups and not snapshot.inventory.identity_complete:
+    if (
+        snapshot.inventory.hydration_observed
+        and snapshot.coverage.inventory_records_missing_instance
+    ):
         print(
             "Warning: some inventory records were excluded "
             "because identity was missing"

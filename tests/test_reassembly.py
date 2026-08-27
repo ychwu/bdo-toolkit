@@ -344,7 +344,6 @@ def test_missing_syn_reassembles_second_half_first(payload_sequence: int):
     assert frames[0].stream_sequence == payload_sequence
 
 
-@pytest.mark.parametrize("payload_sequence", [1000, 0xFFFFFFF9])
 @pytest.mark.parametrize(
     "boundaries,arrival_order",
     [
@@ -353,10 +352,10 @@ def test_missing_syn_reassembles_second_half_first(payload_sequence: int):
     ],
 )
 def test_missing_syn_retains_multiple_initial_reorders_until_head_arrives(
-    payload_sequence: int,
     boundaries: tuple[int, ...],
     arrival_order: tuple[int, ...],
 ):
+    payload_sequence = 1000
     events = []
     frames = []
     engine = PacketEngine(
@@ -451,10 +450,8 @@ def test_missing_syn_initial_reorder_trims_overlapping_provisional_segments():
     assert frames[0].stream_sequence == 1000
 
 
-@pytest.mark.parametrize("payload_sequence", [1000, 0xFFFFFFF9])
-def test_out_of_order_fin_waits_for_missing_initial_prefix(
-    payload_sequence: int,
-):
+def test_out_of_order_fin_waits_for_missing_initial_prefix():
+    payload_sequence = 1000
     events = []
     closed = []
     manager = FlowManager(

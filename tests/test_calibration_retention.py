@@ -9,6 +9,7 @@ import pytest
 from bdo_toolkit import calibration as calibration_module
 from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
 from bdo_toolkit.calibration import (
+    CalibrationRetention,
     CalibrationResult,
     CalibrationSession,
     calibrate_and_update,
@@ -220,14 +221,13 @@ def test_live_retention_keeps_newest_tail_and_reports_truncation(
     result = session.stop()
 
     assert result.frames_scanned == 3
-    assert result.frames_observed == 5
-    assert result.frames_retained == 3
-    assert result.frames_discarded == 2
-    assert result.bytes_observed == 50
-    assert result.bytes_retained == 30
-    assert result.bytes_discarded == 20
-    assert result.retention_truncated
-    assert result.retention_status.frames_retained == 3
+    assert result.retention.frames_observed == 5
+    assert result.retention.frames_retained == 3
+    assert result.retention.frames_discarded == 2
+    assert result.retention.bytes_observed == 50
+    assert result.retention.bytes_retained == 30
+    assert result.retention.bytes_discarded == 20
+    assert result.retention.truncated
     assert result.to_json_dict()["retention"] == {
         "frames_observed": 5,
         "frames_retained": 3,
@@ -321,10 +321,70 @@ def test_offline_result_reports_complete_unbounded_retention() -> None:
 
     result = calibrate_frames(frames, item_id=7003)
 
-    assert result.frames_scanned == result.frames_observed == 2
-    assert not result.retention_truncated
-    assert not result.retention_status.bounded
-    assert result.retention_status.bytes_observed == 22
+    assert result.frames_scanned == result.retention.frames_retained == 2
+    assert result.retention.frames_observed == 2
+    assert not result.retention.truncated
+    assert not result.retention.bounded
+    assert result.retention.bytes_observed == 22
+
+
+def test_calibration_retention_rejects_inconsistent_accounting() -> None:
+    valid: dict[str, object] = {
+        "frames_observed": 3,
+        "frames_retained": 2,
+        "frames_discarded": 1,
+        "bytes_observed": 30,
+        "bytes_retained": 20,
+        "bytes_discarded": 10,
+    }
+    invalid_cases = (
+        ({**valid, "frames_observed": -1}, "non-negative integer"),
+        ({**valid, "frames_observed": 4}, "must equal frames_observed"),
+        ({**valid, "bytes_observed": None}, "all set or all None"),
+        ({**valid, "bytes_observed": 31}, "must equal bytes_observed"),
+        ({**valid, "max_retained_frames": 0}, "positive integer"),
+        ({**valid, "max_retained_frames": 1}, "exceeds max_retained_frames"),
+        ({**valid, "max_retained_bytes": 19}, "exceeds max_retained_bytes"),
+    )
+
+    for kwargs, message in invalid_cases:
+        with pytest.raises(ValueError, match=message):
+            CalibrationRetention(**kwargs)  # type: ignore[arg-type]
+
+
+def test_result_rejects_retention_that_does_not_match_scored_frames() -> None:
+    retention = CalibrationRetention(5, 3, 2, 50, 30, 20)
+
+    with pytest.raises(ValueError, match="frames_scanned"):
+        CalibrationResult((), (), 4, retention=retention)
+
+
+def test_bounded_live_result_reports_retention_without_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        calibration_module,
+        "LivePacketCapture",
+        _FakeLivePacketCapture,
+    )
+    session = CalibrationSession(
+        item_id=7003,
+        context_frames=1,
+        max_retained_frames=3,
+        max_retained_bytes=1_000,
+    )
+    session.start()
+    session._retain_frame(_frame(bytearray(10), index=0))
+    session._retain_frame(_frame(bytearray(12), index=1))
+
+    result = session.stop()
+
+    assert result.frames_scanned == 2
+    assert result.retention.frames_observed == 2
+    assert result.retention.frames_retained == 2
+    assert result.retention.frames_discarded == 0
+    assert result.retention.bounded
+    assert not result.retention.truncated
 
 
 def test_calibrate_and_update_forwards_live_retention_options(
@@ -335,7 +395,12 @@ def test_calibrate_and_update_forwards_live_retention_options(
 
     def fake_calibrate_live(**kwargs: object) -> CalibrationResult:
         seen.update(kwargs)
-        return CalibrationResult(specs=(), ignored=(), frames_scanned=0)
+        return CalibrationResult(
+            specs=(),
+            ignored=(),
+            frames_scanned=0,
+            retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+        )
 
     monkeypatch.setattr(calibration_module, "calibrate_live", fake_calibrate_live)
 
@@ -356,7 +421,12 @@ def test_calibrate_live_forwards_retention_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: dict[str, object] = {}
-    canned = CalibrationResult(specs=(), ignored=(), frames_scanned=0)
+    canned = CalibrationResult(
+        specs=(),
+        ignored=(),
+        frames_scanned=0,
+        retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+    )
 
     class FakeSession:
         def __init__(self, **kwargs: object) -> None:

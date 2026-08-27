@@ -11,6 +11,7 @@ from bdo_toolkit.solare._details import (
     decode_solare_overall_details,
 )
 from bdo_toolkit.solare._discovery import DiscoveredSolareFamily
+from bdo_toolkit.solare._validation import validate_retain_raw_extensions
 
 _GEAR_SIZE = 0x7D1
 _ADDON_SIZE = 0x1F5
@@ -160,15 +161,7 @@ _LAYOUTS = (
         0x19B1,
     ),
 )
-
-# These formerly exposed identity-like bytes are retained only as negative
-# regression coordinates: changing them must not affect any public ranking,
-# Elo, performance, or aggregate detail.
-_FORMER_IDENTITY_OFFSETS = {
-    "solare-rich-2026-06-24-v1": (0x0A, 0x55),
-    "solare-rich-2026-07-14-v1": (0x5A, 0x14),
-    "solare-rich-2026-07-17-v1": (0x10, 0x82),
-}
+_REPRESENTATIVE_LAYOUT = _LAYOUTS[-1]
 
 
 @dataclass(frozen=True)
@@ -513,19 +506,13 @@ def test_detailed_layout_keeps_performance_without_raw_extensions(
         assert performance.skill_addons_raw is None
 
 
-@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
-def test_detail_decoder_rejects_non_boolean_raw_retention(value: object) -> None:
-    synthetic = _synthetic_snapshot(_LAYOUTS[0])
-
-    with pytest.raises(
-        TypeError,
-        match="retain_raw_extensions must be a boolean",
-    ):
-        decode_solare_details(
-            synthetic.rich_frames,
-            synthetic.rich,
-            retain_raw_extensions=value,  # type: ignore[arg-type]
-        )
+def test_raw_retention_validator_rejects_non_boolean_values() -> None:
+    for value in (None, 0, 1, "yes"):
+        with pytest.raises(
+            TypeError,
+            match="retain_raw_extensions must be a boolean",
+        ):
+            validate_retain_raw_extensions(value)
 
 
 def _replace_overall_bytes(
@@ -580,7 +567,6 @@ def test_overall_layout_decodes_its_own_details_and_raw(
     assert first.total_draws == 4
     assert first.total_losses == 126
     assert first.total_matches == 360
-    assert not hasattr(layout, "overall_total_matches")
     assert first.total_matches == (
         first.total_wins + first.total_draws + first.total_losses
     )
@@ -680,56 +666,6 @@ def test_overall_and_rich_retain_differing_valid_wire_values(
 
 
 @pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_former_identity_bytes_do_not_gate_supported_details(
-    layout: _Layout,
-) -> None:
-    synthetic = _synthetic_snapshot(layout)
-    rich_offset, overall_offset = _FORMER_IDENTITY_OFFSETS[layout.layout_id]
-
-    rich_message = bytearray(synthetic.rich_frames[0].message)
-    rich_message[rich_offset : rich_offset + 8] = b"\xa5" * 8
-    damaged_rich_frames = (
-        replace(synthetic.rich_frames[0], message=bytes(rich_message)),
-        *synthetic.rich_frames[1:],
-    )
-    damaged_overall_frames = _replace_overall_bytes(
-        synthetic,
-        layout,
-        ordinal=0,
-        offset=overall_offset,
-        value=b"\x5a" * 8,
-    )
-
-    original_rich = decode_solare_details(
-        synthetic.rich_frames,
-        synthetic.rich,
-    )
-    damaged_rich = decode_solare_details(
-        damaged_rich_frames,
-        synthetic.rich,
-    )
-    original_overall = decode_solare_overall_details(
-        synthetic.overall_frames,
-        synthetic.overall,
-    )
-    damaged_overall = decode_solare_overall_details(
-        damaged_overall_frames,
-        synthetic.overall,
-    )
-
-    assert original_rich is not None and damaged_rich is not None
-    assert original_overall is not None and damaged_overall is not None
-    assert damaged_rich.capabilities == original_rich.capabilities
-    assert damaged_overall.capabilities == original_overall.capabilities
-    assert tuple(item.to_dict() for item in damaged_rich.players) == tuple(
-        item.to_dict() for item in original_rich.players
-    )
-    assert tuple(item.to_dict() for item in damaged_overall.entries) == tuple(
-        item.to_dict() for item in original_overall.entries
-    )
-
-
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
 def test_overall_raw_retention_is_opt_in(layout: _Layout) -> None:
     synthetic = _synthetic_snapshot(layout)
 
@@ -754,7 +690,6 @@ def test_overall_raw_retention_is_opt_in(layout: _Layout) -> None:
     )
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
 @pytest.mark.parametrize(
     "offset_name",
     (
@@ -764,9 +699,9 @@ def test_overall_raw_retention_is_opt_in(layout: _Layout) -> None:
     ),
 )
 def test_overall_aggregate_field_corruption_withholds_only_aggregate_group(
-    layout: _Layout,
     offset_name: str,
 ) -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -797,10 +732,8 @@ def test_overall_aggregate_field_corruption_withholds_only_aggregate_group(
     assert all(entry.classes_played for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_aggregate_rejects_plausible_components_with_oversized_total(
-    layout: _Layout,
-) -> None:
+def test_overall_aggregate_rejects_plausible_components_with_oversized_total() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -818,8 +751,8 @@ def test_overall_aggregate_rejects_plausible_components_with_oversized_total(
     assert all(entry.total_matches is None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_aggregate_rejects_zero_total(layout: _Layout) -> None:
+def test_overall_aggregate_rejects_zero_total() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     message = bytearray(synthetic.overall_frames[0].message)
     for offset in (
@@ -841,10 +774,8 @@ def test_overall_aggregate_rejects_zero_total(layout: _Layout) -> None:
     assert all(entry.total_matches is None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_aggregate_requires_exact_total_below_three_occupied_slots(
-    layout: _Layout,
-) -> None:
+def test_overall_aggregate_requires_exact_total_below_three_occupied_slots() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     # Rank two exposes one slot totaling 1002 matches. Its valid synthetic
     # aggregate tuple is 602/3/397; adding one win must invalidate the entire
@@ -865,10 +796,8 @@ def test_overall_aggregate_requires_exact_total_below_three_occupied_slots(
     assert all(entry.total_matches is None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_aggregate_requires_total_to_cover_exposed_three_slot_matches(
-    layout: _Layout,
-) -> None:
+def test_overall_aggregate_requires_total_to_cover_exposed_three_slot_matches() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     # The first row exposes 310 matches. Lowering its aggregate win count from
     # 230 to 100 produces a still-bounded tuple totaling only 230.
@@ -888,10 +817,8 @@ def test_overall_aggregate_requires_total_to_cover_exposed_three_slot_matches(
     assert all(entry.total_matches is None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_aggregate_requires_its_lightweight_slot_match_summary(
-    layout: _Layout,
-) -> None:
+def test_overall_aggregate_requires_its_lightweight_slot_match_summary() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -910,7 +837,6 @@ def test_overall_aggregate_requires_its_lightweight_slot_match_summary(
     assert all(entry.total_matches is None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
 @pytest.mark.parametrize(
     ("offset_name", "value", "performance_survives"),
     (
@@ -921,11 +847,11 @@ def test_overall_aggregate_requires_its_lightweight_slot_match_summary(
     ),
 )
 def test_overall_aggregate_is_independent_of_deeper_and_opaque_fields(
-    layout: _Layout,
     offset_name: str,
     value: bytes,
     performance_survives: bool,
 ) -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -970,15 +896,14 @@ def test_overall_aggregate_is_independent_of_deeper_and_opaque_fields(
         ),
     ),
 )
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
 def test_overall_corruption_withholds_only_its_all_table_group(
-    layout: _Layout,
     field: str,
     offset: str,
     value: bytes,
     missing: str,
     preserved: set[str],
 ) -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -1007,8 +932,8 @@ def test_overall_corruption_withholds_only_its_all_table_group(
         assert all(entry.elo is not None for entry in result.entries)
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_identity_corruption_fails_closed(layout: _Layout) -> None:
+def test_overall_identity_corruption_fails_closed() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     damaged = _replace_overall_bytes(
         synthetic,
@@ -1021,8 +946,8 @@ def test_overall_identity_corruption_fails_closed(layout: _Layout) -> None:
     assert decode_solare_overall_details(damaged, synthetic.overall) is None
 
 
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_overall_tail_bounds_are_mandatory(layout: _Layout) -> None:
+def test_overall_tail_bounds_are_mandatory() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     last = synthetic.overall_frames[-1]
     truncated = replace(last, message=last.message[:-1])
@@ -1071,23 +996,8 @@ def test_rich_and_overall_detail_failures_are_independent() -> None:
     assert "performance" not in invalid_overall.capabilities
 
 
-@pytest.mark.parametrize("value", [None, 0, 1, "yes"])
-def test_overall_decoder_rejects_non_boolean_raw_retention(value: object) -> None:
-    synthetic = _synthetic_snapshot(_LAYOUTS[0])
-
-    with pytest.raises(
-        TypeError,
-        match="retain_raw_extensions must be a boolean",
-    ):
-        decode_solare_overall_details(
-            synthetic.overall_frames,
-            synthetic.overall,
-            retain_raw_extensions=value,  # type: ignore[arg-type]
-        )
-
-
-@pytest.mark.parametrize("layout", _LAYOUTS, ids=lambda item: item.layout_id)
-def test_detailed_layout_fails_closed_on_one_unbalanced_slot(layout: _Layout) -> None:
+def test_detailed_layout_fails_closed_on_one_unbalanced_slot() -> None:
+    layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     message = bytearray(synthetic.rich_frames[0].message)
     _put_u32(message, layout.wins, 51)

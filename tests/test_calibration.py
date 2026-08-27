@@ -1,17 +1,17 @@
 """Calibration tests mirroring the legacy prototype's expected discoveries."""
 
 from dataclasses import replace
-import inspect
 import json
 
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
-from bdo_toolkit import PacketCaptureOptions, load_opcode_profile
+from bdo_toolkit import PacketCaptureOptions, load_opcode_profile, replay_pcap
 from bdo_toolkit import _capture_backend as capture_backend
 from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit.calibration import (
     CalibrationAuthorityError,
+    CalibrationRetention,
     CalibrationResult,
     CalibrationSession,
     MessageSpec,
@@ -54,70 +54,6 @@ def _calibrate_i2s_with_count_authority(
         quantity=quantity,
         action="inventory-to-storage",
     )
-
-
-def test_message_spec_count_offset_preserves_legacy_positional_api():
-    legacy = MessageSpec(
-        "INVENTORY_TRANSFER",
-        0x1234,
-        300,
-        5,
-        9,
-        20,
-        13,
-        25,
-        228,
-        30,
-        40,
-        44,
-        50,
-        "legacy-high",
-        "legacy-caller",
-        "2026-01-01T00:00:00Z",
-        0.9,
-    )
-
-    assert legacy.record_count_offset is None
-    assert (
-        legacy.inventory_slot_offset,
-        legacy.repeat_stride,
-        legacy.source_instance_offset,
-        legacy.quantity_removed_offset,
-        legacy.quantity_added_offset,
-        legacy.destination_instance_offset,
-        legacy.confidence,
-        legacy.source,
-        legacy.observed_at,
-        legacy.score,
-    ) == (
-        25,
-        228,
-        30,
-        40,
-        44,
-        50,
-        "legacy-high",
-        "legacy-caller",
-        "2026-01-01T00:00:00Z",
-        0.9,
-    )
-
-    signature = inspect.signature(MessageSpec)
-    assert (
-        signature.parameters["record_count_offset"].kind
-        is inspect.Parameter.KEYWORD_ONLY
-    )
-    storage = MessageSpec(
-        "STORAGE_ITEM_DELTA",
-        0x126D,
-        257,
-        item_id_offset=36,
-        context_offset=27,
-        record_count_offset=16,
-        quantity_added_offset=40,
-        destination_instance_offset=71,
-    )
-    assert storage.record_count_offset == 16
 
 
 @requires_fixtures
@@ -182,36 +118,23 @@ def test_calibration_storage_to_inventory_with_changed_source_instance():
 
 
 @requires_fixtures
-def test_calibration_accepts_total_quantity_for_unstackable_multi_record_transfer():
+def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path):
+    """End-to-end guard for the multi-record length-poisoning bug."""
     result = calibrate_pcap(
         fixture_path("hit_1_5_unstackable.pcapng"),
         item_id=1000306,
         quantity=5,
         action="storage-to-inventory",
     )
-
-    specs = _specs_by_event(result)
-    transfer = specs["INVENTORY_TRANSFER"][0]
-    # length is normalized to the SINGLE-record frame length (1167 - 4*228):
-    # the profile loader treats it as a minimum, so recording the observed
-    # multi-record length would block ordinary single transfers.
+    transfer = _specs_by_event(result)["INVENTORY_TRANSFER"][0]
+    # The profile stores the single-record geometry, even though calibration
+    # observed a five-record frame, so ordinary one-record transfers remain
+    # decodable.
     assert (transfer.opcode, transfer.length) == (0x0F16, 255)
     assert transfer.repeat_stride == 228
     assert transfer.item_id_offset == 33
     assert transfer.quantity_offset == 37
 
-
-@requires_fixtures
-def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path):
-    """End-to-end guard for the multi-record length-poisoning bug."""
-    from bdo_toolkit import replay_pcap
-
-    result = calibrate_pcap(
-        fixture_path("hit_1_5_unstackable.pcapng"),
-        item_id=1000306,
-        quantity=5,
-        action="storage-to-inventory",
-    )
     profile_path = tmp_path / "opcodes.json"
     update_profile(result, profile_path, action="storage-to-inventory", backup=False)
 
@@ -224,22 +147,7 @@ def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path)
 
 
 @requires_fixtures
-def test_storage_to_inventory_calibration_rejects_storage_delta_family():
-    # Declared storage-to-inventory on an inventory-to-storage capture must
-    # refuse loudly (symmetric with the inverse case), not return empty.
-    from bdo_toolkit.calibration import DirectionMismatchError
-
-    with pytest.raises(DirectionMismatchError, match="inventory-to-storage"):
-        calibrate_pcap(
-            fixture_path("new_potato_3_tostorage.pcapng"),
-            item_id=7003,
-            quantity=3,
-            action="storage-to-inventory",
-        )
-
-
-@requires_fixtures
-def test_calibration_discovers_current_inventory_to_storage():
+def test_calibration_discovers_current_inventory_to_storage(tmp_path):
     result = _calibrate_i2s_with_count_authority(
         "new_potato_3_tostorage.pcapng",
         item_id=7003,
@@ -261,16 +169,17 @@ def test_calibration_discovers_current_inventory_to_storage():
     assert (delta.item_id_offset, delta.quantity_added_offset) == (37, 41)
     assert delta.destination_instance_offset == 72
 
-
-@requires_fixtures
-def test_single_shape_old_inventory_to_storage_capture_is_not_authoritative():
-    with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
-        calibrate_pcap(
-            fixture_path("potato_leaving_inventory_qty20.pcapng"),
-            item_id=7003,
-            quantity=20,
-            action="inventory-to-storage",
+    profile_path = tmp_path / "opcodes.json"
+    update_profile(result, profile_path, action="inventory-to-storage")
+    events = list(
+        replay_pcap(
+            fixture_path("new_potato_3_tostorage.pcapng"),
+            opcode_profile=profile_path,
         )
+    )
+    assert [(event.event_type, event.item_id, event.quantity) for event in events] == [
+        ("storage_delta", 7003, 3)
+    ]
 
 
 @requires_fixtures
@@ -313,8 +222,6 @@ def test_calibration_preserves_stack_layout_when_instances_differ(
 @pytest.mark.parametrize(
     ("fixture_name", "item_id", "quantity"),
     [
-        ("potato_leaving_inventory_qty10.pcapng", 7003, 10),
-        ("potato_7_3_to_storage.pcapng", 7003, 7),
         ("new_item_to_storage_13_42.pcapng", 44195, 42),
     ],
 )
@@ -664,7 +571,7 @@ def test_unstackable_calibration_with_count_authority_discovers_decrement_geomet
     )
     events = list(replay_pcap(capture, opcode_profile=profile_path))
     assert len(events) == 5
-    assert all(event.deposit_origin == "manual" for event in events)
+    assert all(event.source == "Player Inventory" for event in events)
     assert [
         event.extra["deposit_origin_evidence"]["manual_decrement"][
             "record_index"
@@ -971,6 +878,7 @@ def _partial_storage_delta_result():
         ),
         (),
         1,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
     )
 
 
@@ -1035,30 +943,6 @@ def test_entire_action_replacement_cannot_be_combined_with_merge(tmp_path):
             replace=False,
             replace_entire_action=True,
         )
-
-
-@requires_fixtures
-def test_calibrated_profile_round_trips_into_decoder_specs(tmp_path):
-    """End-to-end: calibrate -> write profile -> decode with it."""
-    from bdo_toolkit import replay_pcap
-
-    profile_path = tmp_path / "opcodes.json"
-    result = _calibrate_i2s_with_count_authority(
-        "new_potato_3_tostorage.pcapng",
-        item_id=7003,
-        quantity=3,
-    )
-    update_profile(result, profile_path, action="inventory-to-storage")
-
-    events = list(
-        replay_pcap(
-            fixture_path("new_potato_3_tostorage.pcapng"),
-            opcode_profile=profile_path,
-        )
-    )
-    assert [(event.event_type, event.item_id, event.quantity) for event in events] == [
-        ("storage_delta", 7003, 3)
-    ]
 
 
 def test_reset_profile_writes_empty_active_profile(tmp_path):

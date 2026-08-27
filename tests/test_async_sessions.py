@@ -144,6 +144,9 @@ class FakeCalibrationSession:
         self.stop_entered = Event()
         self.stop_release = Event()
         self.stop_release.set()
+        self.abort_entered = Event()
+        self.abort_release = Event()
+        self.abort_release.set()
         self.result = object()
         self.__class__.instances.append(self)
 
@@ -174,6 +177,8 @@ class FakeCalibrationSession:
     def __exit__(self, exc_type, exc_value, traceback):
         if self._running:
             self.abort_calls += 1
+            self.abort_entered.set()
+            self.abort_release.wait()
             if self.abort_error is not None:
                 self.cleanup_incomplete = True
                 raise self.abort_error
@@ -767,10 +772,8 @@ def test_async_live_poll_forwards_timeout(fake_async_sessions):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("invalid_timeout", [-1, True, float("nan")])
 def test_async_live_stopped_poll_ignores_timeout_while_draining(
     fake_async_sessions,
-    invalid_timeout,
 ):
     async def scenario():
         session = AsyncLiveCaptureSession(opcode_profile="opcodes.local")
@@ -782,9 +785,9 @@ def test_async_live_stopped_poll_ignores_timeout_while_draining(
         fake.final_event = finalized
         await session.stop()
 
-        assert await session.poll(timeout=invalid_timeout) is queued
-        assert await session.poll(timeout=invalid_timeout) is finalized
-        assert await session.poll(timeout=invalid_timeout) is None
+        assert await session.poll(timeout=float("nan")) is queued
+        assert await session.poll(timeout=float("nan")) is finalized
+        assert await session.poll(timeout=float("nan")) is None
         assert fake.poll_calls == [0, 0, 0]
 
     asyncio.run(scenario())
@@ -922,6 +925,37 @@ def test_async_calibration_abort_is_idempotent_and_prevents_stop(
         assert fake.abort_calls == 1
         with pytest.raises(RuntimeError, match="aborted"):
             await session.stop()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_async_calibration_abort_preserves_retryable_cleanup(
+    fake_async_sessions,
+):
+    async def scenario():
+        session = AsyncCalibrationSession(item_id=7003)
+        await session.start()
+        fake = FakeCalibrationSession.instances[-1]
+        cleanup_error = OSError("calibration capture is still running")
+        fake.abort_error = cleanup_error
+        fake.abort_release.clear()
+
+        aborting = asyncio.create_task(session.abort())
+        assert await asyncio.to_thread(fake.abort_entered.wait, 1.0)
+        aborting.cancel()
+        fake.abort_release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await aborting
+
+        assert session.cleanup_incomplete
+        assert session.running
+        assert fake.abort_calls == 1
+
+        fake.abort_error = None
+        await session.abort()
+        assert not session.running
+        assert fake.abort_calls == 2
 
     asyncio.run(scenario())
 

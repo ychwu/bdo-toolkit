@@ -11,7 +11,7 @@ from bdo_toolkit import DecoderDiagnostic, EventFilter, capture_live
 PROFILE = Path(__file__).resolve().parents[1] / "opcodes.local"
 WORKER_PRODUCTIONS = EventFilter(
     event_types={"storage_delta"},
-    deposit_origins={"worker"},
+    sources={"Worker Production"},
 )
 
 
@@ -39,10 +39,24 @@ def main() -> None:
         event_filter=WORKER_PRODUCTIONS,
         on_diagnostic=report_decoder_problem,
     ):
+        destination = (
+            event.storage_name
+            or (
+                f"0x{event.storage_id:08x}"
+                if event.storage_id is not None
+                else "unknown"
+            )
+        )
+        storage_id = (
+            f"0x{event.storage_id:08x}"
+            if event.storage_id is not None
+            else "unavailable"
+        )
         print(
-            f"source={event.source!r} item_id={event.item_id} "
-            f"quantity={event.quantity} "
-            f"deposit_origin={event.deposit_origin}",
+            f"source={event.source!r} destination={destination!r} "
+            f"storage_id={storage_id} "
+            f"item_id={event.item_id} "
+            f"quantity={event.quantity}",
             flush=True,
         )
 

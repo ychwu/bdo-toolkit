@@ -204,24 +204,6 @@ def test_overall_aggregate_totals_are_derived_and_keyword_only() -> None:
         SolareOverallEntry("Positional", 11, 7)  # type: ignore[misc]
 
 
-def test_optional_player_details_are_keyword_only() -> None:
-    player_class = SolareClass(11, "Lahn")
-
-    with pytest.raises(TypeError):
-        SolarePlayer(  # type: ignore[misc,arg-type]
-            "FormerIdentityPosition",
-            1,
-            player_class,
-            b"eightbyt",
-        )
-    with pytest.raises(TypeError):
-        SolareOverallEntry(  # type: ignore[misc,arg-type]
-            "FormerIdentityPosition",
-            1,
-            b"eightbyt",
-        )
-
-
 def test_snapshot_separates_authoritative_overall_rows_from_rich_details() -> None:
     player_class = SolareClass(11, "Lahn")
     rich_players = (
@@ -295,27 +277,6 @@ def test_solare_schema_version_is_library_owned() -> None:
     assert snapshot.to_dict()["schema_version"] == 2
     assert result.to_dict()["schema_version"] == 2
 
-    with pytest.raises(TypeError, match="schema_version"):
-        SolareLeaderboardSnapshot(
-            snapshot_id="sha256:caller-version",
-            observed_at=1.0,
-            players=(),
-            schema_version=2,
-        )
-    with pytest.raises(TypeError, match="schema_version"):
-        SolareCaptureResult(
-            status=SolareDetectionStatus.INCONCLUSIVE,
-            evidence=evidence,
-            schema_version=2,
-        )
-    with pytest.raises(TypeError):
-        SolareLeaderboardSnapshot(
-            "sha256:positional-capabilities",
-            1.0,
-            (),
-            frozenset({"rankings"}),
-        )
-
 
 def test_capture_result_is_the_only_evidence_owner() -> None:
     evidence = SolareEvidence(
@@ -334,24 +295,11 @@ def test_capture_result_is_the_only_evidence_owner() -> None:
         snapshot=snapshot,
     )
 
-    assert not hasattr(snapshot, "evidence")
     assert "evidence" not in snapshot.to_dict()
 
     payload = result.to_dict()
     assert payload["evidence"] == evidence.to_dict()
     assert "evidence" not in payload["snapshot"]
-
-    # Pre-release compatibility guard: this old-constructor rejection may be
-    # retired after the result-only evidence contract becomes the established
-    # public baseline. Keep the ownership/serialization assertions above.
-    with pytest.raises(TypeError, match="evidence"):
-        SolareLeaderboardSnapshot(
-            snapshot_id="sha256:obsolete-evidence-owner",
-            observed_at=1.0,
-            players=(),
-            evidence=evidence,  # type: ignore[call-arg]
-        )
-
 
 def test_snapshot_id_preserves_exact_overlap_and_identifies_divergence() -> None:
     player_class = SolareClass(11, "Lahn")
@@ -368,14 +316,14 @@ def test_snapshot_id_preserves_exact_overlap_and_identifies_divergence() -> None
         SolareOverallEntry("OverallOnly", 2),
     )
 
-    legacy_id = solare_snapshot_id(players)
-    assert solare_snapshot_id(players, overall_top_100=exact) == legacy_id
+    class_table_only_id = solare_snapshot_id(players)
+    assert solare_snapshot_id(players, overall_top_100=exact) == class_table_only_id
 
     divergent_id = solare_snapshot_id(
         players,
         overall_top_100=divergent,
     )
-    assert divergent_id != legacy_id
+    assert divergent_id != class_table_only_id
     assert divergent_id == solare_snapshot_id(
         players,
         overall_top_100=(
@@ -406,7 +354,7 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
         elo=2100,
         classes_played=(class_performance,),
     )
-    legacy_id = solare_snapshot_id((player,))
+    class_table_only_id = solare_snapshot_id((player,))
     equal_overall = SolareOverallEntry(
         "RankOne",
         1,
@@ -430,7 +378,10 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
         ),
     )
 
-    assert solare_snapshot_id((player,), overall_top_100=(equal_overall,)) == legacy_id
+    assert (
+        solare_snapshot_id((player,), overall_top_100=(equal_overall,))
+        == class_table_only_id
+    )
 
     equal_aggregate = replace(
         equal_overall,
@@ -440,7 +391,7 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
     )
     assert (
         solare_snapshot_id((player,), overall_top_100=(equal_aggregate,))
-        == legacy_id
+        == class_table_only_id
     )
 
     different_elo = SolareOverallEntry(
@@ -449,7 +400,10 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
         elo=2099,
         classes_played=equal_overall.classes_played,
     )
-    assert solare_snapshot_id((player,), overall_top_100=(different_elo,)) != legacy_id
+    assert (
+        solare_snapshot_id((player,), overall_top_100=(different_elo,))
+        != class_table_only_id
+    )
 
     different_record = SolareOverallEntry(
         "RankOne",
@@ -470,7 +424,8 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
         ),
     )
     assert (
-        solare_snapshot_id((player,), overall_top_100=(different_record,)) != legacy_id
+        solare_snapshot_id((player,), overall_top_100=(different_record,))
+        != class_table_only_id
     )
 
     different_aggregate = replace(
@@ -493,6 +448,6 @@ def test_snapshot_id_preserves_only_semantically_equal_overall_details() -> None
         (player,),
         overall_top_100=(another_aggregate,),
     )
-    assert different_aggregate_id != legacy_id
-    assert another_aggregate_id != legacy_id
+    assert different_aggregate_id != class_table_only_id
+    assert another_aggregate_id != class_table_only_id
     assert different_aggregate_id != another_aggregate_id

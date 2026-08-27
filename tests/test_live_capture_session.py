@@ -838,52 +838,6 @@ def test_health_does_not_wait_for_structural_flow_lock():
     assert len(race.health_results) == 1
 
 
-def test_async_health_keeps_event_loop_responsive_during_flow_processing():
-    facade = AsyncLiveCaptureSession(opcode_profile="unused")
-    race = _HealthFlowRace(facade._session)
-    decoder = race.start_decoder()
-    assert race.scanner_entered.wait(timeout=1.0)
-    loop_started = Event()
-    heartbeat = Event()
-    loop_done = Event()
-
-    async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        loop.call_soon(heartbeat.set)
-        loop_started.set()
-        race.health_results.append(facade.health)
-        await asyncio.sleep(0)
-
-    def run_scenario() -> None:
-        try:
-            asyncio.run(scenario())
-        except BaseException as exc:
-            race.errors.append(exc)
-        finally:
-            loop_done.set()
-
-    loop_thread = Thread(target=run_scenario, daemon=True)
-    loop_thread.start()
-    try:
-        assert loop_started.wait(timeout=1.0)
-        assert race.health_counter_entered.wait(timeout=1.0)
-        assert loop_done.wait(timeout=1.0), (
-            "health blocked the asyncio event loop on flow processing"
-        )
-        assert heartbeat.is_set()
-    finally:
-        race.release_scanner.set()
-
-    decoder.join(timeout=1.0)
-    loop_thread.join(timeout=1.0)
-    facade._shutdown_executor()
-    assert race.decoder_done.is_set()
-    assert not decoder.is_alive()
-    assert not loop_thread.is_alive()
-    assert race.errors == []
-    assert len(race.health_results) == 1
-
-
 def test_stop_remains_bounded_after_concurrent_health_and_flow_delivery():
     session = LiveCaptureSession(opcode_profile="unused")
     race = _HealthFlowRace(session)

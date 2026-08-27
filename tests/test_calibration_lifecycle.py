@@ -10,7 +10,11 @@ from bdo_toolkit import PacketCaptureOptions
 from bdo_toolkit import _capture_backend as capture_backend
 from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit import calibration as calibration_module
-from bdo_toolkit.calibration import CalibrationResult, CalibrationSession
+from bdo_toolkit.calibration import (
+    CalibrationRetention,
+    CalibrationResult,
+    CalibrationSession,
+)
 
 
 class _ReadySniffer:
@@ -546,7 +550,12 @@ def test_calibrate_live_polls_and_propagates_background_failure(
 
         def stop(self) -> CalibrationResult:
             state["stopped"] = True
-            return CalibrationResult((), (), 0)
+            return CalibrationResult(
+                (),
+                (),
+                0,
+                retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+            )
 
     monkeypatch.setattr(calibration_module, "CalibrationSession", FakeSession)
     monkeypatch.setattr(

@@ -194,8 +194,8 @@ def test_july17_profile_decodes_generated_batches() -> None:
         (event.item_id, event.quantity, event.record_index, event.record_count)
         for event in storage
     ] == [(4802, 1, 1, 2), (4003, 21, 2, 2)]
-    assert {event.source for event in storage} == {"Heidel"}
-    assert {event.deposit_origin for event in storage} == {"worker"}
+    assert {event.storage_name for event in storage} == {"Heidel"}
+    assert {event.source for event in storage} == {"Worker Production"}
     assert all(
         event.extra["deposit_origin_evidence"]["companion_chain"]["known_family"]
         is True
@@ -220,9 +220,8 @@ def test_july17_profile_uses_current_decrement_for_manual_deposit() -> None:
         7307,
         8,
     )
-    assert event.source == "Heidel"
-    assert event.storage_operation == "live"
-    assert event.deposit_origin == "manual"
+    assert event.source == "Player Inventory"
+    assert event.storage_name == "Heidel"
     assert event.extra["storage_operation_evidence"]["signal"] == (
         "matching_decrement"
     )
@@ -251,7 +250,7 @@ def test_july17_profile_does_not_match_the_disproved_offset_19() -> None:
     assert len(events) == 1
     event = events[0]
     assert event.event_type == "storage_record"
-    assert event.deposit_origin is None
+    assert event.source is None
 
 
 @pytest.mark.skipif(
@@ -272,7 +271,7 @@ def test_july17_profile_uses_exact_manual_instance_evidence() -> None:
 
     assert len(events) == 1
     event = events[0]
-    assert event.deposit_origin == "manual"
+    assert event.source == "Player Inventory"
     manual = event.extra["deposit_origin_evidence"]["manual_decrement"]
     assert manual["source_instance_offset"] == 35
     assert manual["match_kind"] == "instance-and-quantity"

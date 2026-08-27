@@ -5,7 +5,7 @@ all five before finishing the session. These are user-performed actions while
 the session passively captures traffic.
 
 This example updates transfer-profile families only; it does not calibrate
-LOOT_PREVIEW. Default profile updates preserve unrelated existing families.
+LOOT_PREVIEW. By default, profile updates preserve unrelated existing families.
 """
 
 from __future__ import annotations
