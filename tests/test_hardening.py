@@ -1052,6 +1052,47 @@ def test_partial_auto_calibration_cannot_preserve_stale_storage_silently(tmp_pat
     assert path.read_text(encoding="utf-8") == original
 
 
+def test_auto_calibration_missing_decrement_cannot_write_profile(tmp_path):
+    path = tmp_path / "opcodes.json"
+    original = '{"sentinel": true}\n'
+    path.write_text(original, encoding="utf-8")
+    incomplete = CalibrationResult(
+        specs=(
+            MessageSpec(
+                "INVENTORY_TRANSFER",
+                0x2222,
+                255,
+                item_id_offset=34,
+                quantity_offset=38,
+                item_instance_offset=69,
+                context_offset=21,
+            ),
+            MessageSpec(
+                "STORAGE_ITEM_DELTA",
+                0x3333,
+                257,
+                item_id_offset=36,
+                quantity_added_offset=40,
+                destination_instance_offset=71,
+                context_offset=27,
+                record_count_offset=16,
+            ),
+        ),
+        ignored=(),
+        frames_scanned=1,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
+    )
+
+    with pytest.raises(
+        CalibrationAuthorityError,
+        match="SOURCE_STACK_DECREMENT",
+    ):
+        update_profile(incomplete, path)
+
+    assert path.read_text(encoding="utf-8") == original
+    assert tuple(tmp_path.iterdir()) == (path,)
+
+
 def test_profile_dedupe_includes_context_and_inventory_slot(tmp_path):
     first = MessageSpec(
         "INVENTORY_TRANSFER",

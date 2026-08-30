@@ -1278,8 +1278,9 @@ def update_profile(
     """Persist promoted specs into a local opcode profile file.
 
     By default, only the event families represented by the supplied specs are
-    cleared first.  This lets a partial calibration update its proven families
-    without erasing valid companion evidence that the capture did not find.
+    cleared first.  Explicit-action and raw-spec callers can therefore apply a
+    reviewed partial update without erasing unrelated evidence. Automatic
+    transfer results must contain every runtime-required transfer family.
     Pass ``replace_entire_action=True`` for an explicit reset of every family
     belonging to ``action``. Pass ``replace=False`` only for an intentional
     advanced merge that preserves and deduplicates existing specs. The
@@ -1311,14 +1312,19 @@ def update_profile(
         }
         observed_events = {spec.event for spec in specs}
         if observed_events & transfer_events:
-            required = {"INVENTORY_TRANSFER", "STORAGE_ITEM_DELTA"}
+            required = {
+                "INVENTORY_TRANSFER",
+                "SOURCE_STACK_DECREMENT",
+                "STORAGE_ITEM_DELTA",
+            }
             missing = sorted(required - observed_events)
             if missing:
                 raise CalibrationAuthorityError(
                     "auto calibration is incomplete and cannot safely replace a "
-                    "post-patch profile; missing primary family/families: "
-                    f"{', '.join(missing)}. Capture both transfer directions, "
-                    "including an unstackable multi-record deposit into storage, "
+                    "post-patch profile; missing required runtime family/families: "
+                    f"{', '.join(missing)}. Capture the complete guided transfer "
+                    "sequence so both directions and the source-stack decrement "
+                    "are observed, including an unstackable multi-record deposit, "
                     "or pass the matching explicit action only for an intentional "
                     "reviewed partial update. No profile was written."
                 )

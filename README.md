@@ -86,16 +86,18 @@ For live storage additions, `source` is `"Player Inventory"`,
 optional display metadata. `event_type` distinguishes live `storage_delta`,
 hydrated `storage_snapshot`, and unresolved `storage_record` records.
 
-For current NA/EU live traffic, install a maintainer-verified profile from a
-trusted endpoint as an explicit setup step:
+For NA/EU live traffic, local calibration is the recommended patch-day setup.
+As an alternative, explicitly install the latest maintainer-verified profile
+from a trusted endpoint:
 
 ```powershell
 bdo-toolkit profile fetch https://ychwu.github.io/bdo-toolkit-profiles/channels/na-eu/stable.json --output opcodes.local
 ```
 
-The maintained channel is for the current NA/EU patch only. Historical replay
+The stable channel contains the latest manually promoted NA/EU profile and can
+lag a weekly game patch. Calibrate locally when it does. Historical replay
 needs a saved matching-era profile. Capture and replay never fetch profiles
-implicitly; see [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-api)
+implicitly; see [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-fetch)
 for the Python API, validation, trust, and installation contract.
 
 For app-controlled start and stop, background workers, or complete shutdown
@@ -165,10 +167,11 @@ classified and does not use item calibration.
   patch. Every item capture, replay, and character-state API requires an
   explicit local profile; those decode APIs never fetch or refresh one.
   Recalibrate instead of combining opcode generations.
-- **Remote stable channel is current-only:** fetching the maintainer-verified
-  NA/EU stable profile is an explicit network and file-write operation. Pin a saved
-  immutable matching-era profile for historical replay and deterministic
-  tests.
+- **Remote stable channel is manually promoted:** fetching the latest
+  maintainer-verified NA/EU stable profile is an explicit network and file-write
+  operation, and that profile can lag a weekly patch. Calibrate locally for
+  patch-day continuity. Pin a saved immutable matching-era profile for
+  historical replay and deterministic tests.
 - **Region compatibility:** testing and validation currently cover NA/EU only.
   Other regional services are unverified, may use different packet layouts,
   and have unknown compatibility.
@@ -199,7 +202,7 @@ integration contracts, failure behavior, examples, and patch guidance.
 | Integrate with asyncio | [Asyncio integration](https://ychwu.github.io/bdo-toolkit/#asyncio) |
 | Query character-load inventory and storage | [Item-state overview](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
 | Capture or replay Arena of Solare | [Solare overview](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
-| Install, inspect, or pin an item profile | [Profiles](https://ychwu.github.io/bdo-toolkit/#profiles) and [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-api) |
+| Install, inspect, or pin an item profile | [Profiles](https://ychwu.github.io/bdo-toolkit/#profiles) and [Profile fetching & loading](https://ychwu.github.io/bdo-toolkit/#profile-fetch) |
 | Recover item decoding after a patch | [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) |
 | Diagnose failures or review compatibility | [Errors](https://ychwu.github.io/bdo-toolkit/#errors) and [Stability](https://ychwu.github.io/bdo-toolkit/#stability) |
 
