@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar, Iterable, Optional
 
+from .._capture_runtime import CaptureEndpoint, _capture_is_clean
+
 _SOLARE_SCHEMA_VERSION = 2
 
 
@@ -286,19 +288,8 @@ class SolareFamilyLayout:
 
 
 @dataclass(frozen=True)
-class SolareCaptureEndpoint:
-    """Resolved network-capture target used by a live Solare session."""
-
-    interface: Optional[str]
-    local_ip: Optional[str]
-    bpf_filter: Optional[str]
-
-    def to_dict(self) -> dict[str, Optional[str]]:
-        return {
-            "interface": self.interface,
-            "local_ip": self.local_ip,
-            "bpf_filter": self.bpf_filter,
-        }
+class SolareCaptureEndpoint(CaptureEndpoint):
+    """Solare-specific public spelling of the shared capture endpoint."""
 
 
 @dataclass(frozen=True)
@@ -329,12 +320,12 @@ class SolareCaptureHealth:
 
     @property
     def capture_is_clean(self) -> bool:
-        return (
-            self.tcp_gap_resets == 0
-            and (self.pcap_dropped in (None, 0))
-            and (self.pcap_interface_dropped in (None, 0))
-            and self.packet_queue_overflows == 0
-            and self.flow_state_evictions == 0
+        return _capture_is_clean(
+            tcp_gap_resets=self.tcp_gap_resets,
+            pcap_dropped=self.pcap_dropped,
+            pcap_interface_dropped=self.pcap_interface_dropped,
+            packet_queue_overflows=self.packet_queue_overflows,
+            flow_state_evictions=self.flow_state_evictions,
         )
 
     def to_dict(self) -> dict[str, object]:

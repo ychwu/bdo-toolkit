@@ -23,6 +23,7 @@ from ._capture_runtime import (
     CaptureStats,
     LivePacketCapture,
     _attach_cleanup_owner,
+    _capture_is_clean,
 )
 from ._deposit_origin import DecrementSpec, DepositOriginTracker
 from ._engine import PacketEngine, toolkit_event_from_record
@@ -102,12 +103,12 @@ class LiveCaptureHealth:
     def capture_is_clean(self) -> bool:
         """Whether known acquisition-loss indicators remained clear."""
 
-        return (
-            self.packet_queue_overflows == 0
-            and self.tcp_gap_resets == 0
-            and self.flow_state_evictions == 0
-            and self.pcap_dropped in (None, 0)
-            and self.pcap_interface_dropped in (None, 0)
+        return _capture_is_clean(
+            tcp_gap_resets=self.tcp_gap_resets,
+            pcap_dropped=self.pcap_dropped,
+            pcap_interface_dropped=self.pcap_interface_dropped,
+            packet_queue_overflows=self.packet_queue_overflows,
+            flow_state_evictions=self.flow_state_evictions,
         )
 
     def to_dict(self) -> dict[str, object]:

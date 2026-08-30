@@ -142,9 +142,6 @@ def test_fetch_profile_verifies_and_installs_one_get_envelope(
         "https://cdn.example.test/profiles/naeu-2026-07-17-r1.json"
     )
     assert result.revision == "naeu-2026-07-17-r1"
-    assert result.profile_sha256 == hashlib.sha256(
-        _canonical_profile(profile)
-    ).hexdigest()
     assert result.etag == '"profile-r1"'
     assert result.backup_path is None
     assert json.loads(destination.read_text(encoding="utf-8")) == profile

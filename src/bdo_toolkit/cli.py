@@ -241,7 +241,6 @@ def _run_profile_fetch(args: argparse.Namespace) -> int:
         f"installed opcode profile revision {result.revision} at {result.path}",
         file=sys.stderr,
     )
-    print(f"profile sha256: {result.profile_sha256}", file=sys.stderr)
     if result.backup_path is not None:
         print(f"backup at {result.backup_path}", file=sys.stderr)
     return 0

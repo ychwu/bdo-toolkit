@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -75,17 +76,18 @@ def test_profile_fetch_cli_forwards_verification_controls(
     capsys,
 ):
     destination = tmp_path / "opcodes.json"
-    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
+    profile = replace(
+        load_opcode_profile(JULY17_OPCODE_PROFILE),
+        path=destination,
+    )
     observed = {}
 
     def fake_fetch(url, output, **kwargs):
         observed.update(url=url, output=output, **kwargs)
         return ProfileFetchResult(
-            path=destination,
             profile=profile,
             source_url=url,
             revision="naeu-2026-07-17-r1",
-            profile_sha256="a" * 64,
             etag='"profile-r1"',
             backup_path=None,
         )
@@ -117,10 +119,10 @@ def test_profile_fetch_cli_forwards_verification_controls(
     }
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "installed opcode profile revision naeu-2026-07-17-r1" in captured.err
-    assert "profile sha256: " + "a" * 64 in captured.err
-    assert "source etag" not in captured.err
-    assert '"profile-r1"' not in captured.err
+    assert captured.err == (
+        "installed opcode profile revision naeu-2026-07-17-r1 "
+        f"at {destination}\n"
+    )
 
 
 @pytest.mark.parametrize(

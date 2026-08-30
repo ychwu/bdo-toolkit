@@ -11,6 +11,7 @@ from bdo_toolkit.solare import (
     AsyncLiveSolareSession,
     LiveSolareSession,
     SolareCaptureEndpoint,
+    SolareCaptureHealth,
     SolareCaptureResult,
     SolareClass,
     SolareClassPerformance,
@@ -48,6 +49,41 @@ def test_capture_endpoint_is_a_public_serializable_value() -> None:
         "local_ip": "192.0.2.50",
         "bpf_filter": "tcp",
     }
+    assert isinstance(endpoint, bdo_toolkit.CaptureEndpoint)
+    assert endpoint == SolareCaptureEndpoint(
+        interface="capture-adapter",
+        local_ip="192.0.2.50",
+        bpf_filter="tcp",
+    )
+    assert endpoint != bdo_toolkit.CaptureEndpoint(
+        interface="capture-adapter",
+        local_ip="192.0.2.50",
+        bpf_filter="tcp",
+    )
+
+
+@pytest.mark.parametrize(
+    ("health_change", "expected"),
+    (
+        ({}, True),
+        ({"pcap_dropped": None, "pcap_interface_dropped": None}, True),
+        ({"pcap_dropped": 0, "pcap_interface_dropped": 0}, True),
+        ({"tcp_gap_resets": 1}, False),
+        ({"pcap_dropped": 1}, False),
+        ({"pcap_interface_dropped": 1}, False),
+        ({"packet_queue_overflows": 1}, False),
+        ({"flow_state_evictions": 1}, False),
+    ),
+)
+def test_capture_health_types_share_the_integrity_truth_table(
+    health_change: dict[str, object],
+    expected: bool,
+) -> None:
+    core_health = bdo_toolkit.LiveCaptureHealth(**health_change)
+    solare_health = SolareCaptureHealth(**health_change)
+
+    assert core_health.capture_is_clean is expected
+    assert solare_health.capture_is_clean is expected
 
 
 def test_opaque_extensions_are_literal_bytes_and_json_is_opt_in() -> None:

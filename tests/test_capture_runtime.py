@@ -146,6 +146,20 @@ def test_runtime_resolves_default_endpoint_and_positive_bpf(monkeypatch):
     assert not capture.running
 
 
+def test_capture_endpoint_is_a_public_serializable_value() -> None:
+    endpoint = runtime.CaptureEndpoint(
+        interface="capture-adapter",
+        local_ip="192.0.2.50",
+        bpf_filter="tcp",
+    )
+
+    assert endpoint.to_dict() == {
+        "interface": "capture-adapter",
+        "local_ip": "192.0.2.50",
+        "bpf_filter": "tcp",
+    }
+
+
 def test_runtime_python_filter_restricts_source_port_and_destination():
     capture = runtime.LivePacketCapture(
         capture_options=PacketCaptureOptions(

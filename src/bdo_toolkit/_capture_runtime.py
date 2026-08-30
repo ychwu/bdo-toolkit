@@ -29,6 +29,25 @@ DEFAULT_STARTUP_TIMEOUT_SECONDS = 10.0
 _CAPTURE_JOIN_TIMEOUT_SECONDS = 2.0
 
 
+def _capture_is_clean(
+    *,
+    tcp_gap_resets: int,
+    pcap_dropped: Optional[int],
+    pcap_interface_dropped: Optional[int],
+    packet_queue_overflows: int,
+    flow_state_evictions: int,
+) -> bool:
+    """Apply the shared acquisition-loss predicate used by public health types."""
+
+    return (
+        tcp_gap_resets == 0
+        and pcap_dropped in (None, 0)
+        and pcap_interface_dropped in (None, 0)
+        and packet_queue_overflows == 0
+        and flow_state_evictions == 0
+    )
+
+
 def _attach_cleanup_owner(
     error: BaseException,
     owner: object,
@@ -66,6 +85,15 @@ class CaptureEndpoint:
     interface: Optional[str]
     local_ip: Optional[str]
     bpf_filter: Optional[str]
+
+    def to_dict(self) -> dict[str, Optional[str]]:
+        """Return the resolved endpoint as a JSON-ready mapping."""
+
+        return {
+            "interface": self.interface,
+            "local_ip": self.local_ip,
+            "bpf_filter": self.bpf_filter,
+        }
 
 
 @dataclass(frozen=True)

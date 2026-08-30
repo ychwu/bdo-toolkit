@@ -37,13 +37,17 @@ class RemoteProfileError(ProfileError):
 class ProfileFetchResult:
     """Result of installing one verified remote opcode-profile envelope."""
 
-    path: Path
     profile: OpcodeProfile
     source_url: str
     revision: str
-    profile_sha256: str
     etag: Optional[str]
     backup_path: Optional[Path]
+
+    @property
+    def path(self) -> Path:
+        """Installed destination, canonically owned by the loaded profile."""
+
+        return self.profile.path
 
 
 class _HttpsOnlyRedirectHandler(HTTPRedirectHandler):
@@ -163,11 +167,9 @@ def fetch_opcode_profile(
 
     installed_profile = replace(installed_profile, path=destination_path)
     return ProfileFetchResult(
-        path=destination_path,
         profile=installed_profile,
         source_url=source_url,
         revision=revision,
-        profile_sha256=actual_digest,
         etag=etag,
         backup_path=backup_path,
     )
