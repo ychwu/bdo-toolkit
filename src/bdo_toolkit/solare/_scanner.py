@@ -47,6 +47,48 @@ class SolareDiscoveryStreamScanner:
         if self._reset_callback is not None:
             self._reset_callback()
 
+    def can_anchor_at_start(self, data: bytes) -> bool:
+        """Return whether byte zero already satisfies the discovery sync proof."""
+
+        def header_length(offset: int) -> Optional[int]:
+            if offset + BDO_HEADER_SIZE > len(data):
+                return None
+            message_length = _u16le(data, offset)
+            if not BDO_HEADER_SIZE <= message_length <= BDO_MAX_FRAME_SIZE:
+                return -1
+            if data[offset + 2] != 0:
+                return -1
+            return message_length
+
+        position = 0
+        generic_chain = True
+        for index in range(DISCOVERY_SYNC_HEADERS):
+            message_length = header_length(position)
+            if message_length is None or message_length < BDO_HEADER_SIZE:
+                generic_chain = False
+                break
+            if index != DISCOVERY_SYNC_HEADERS - 1:
+                if position + message_length > len(data):
+                    generic_chain = False
+                    break
+                position += message_length
+        if generic_chain:
+            return True
+
+        first_length = header_length(0)
+        if first_length is None or not (
+            DISCOVERY_MIN_FRAME_LENGTH
+            <= first_length
+            <= DISCOVERY_MAX_FRAME_LENGTH
+        ):
+            return False
+        second_offset = first_length
+        return (
+            header_length(second_offset) == first_length
+            and second_offset + BDO_HEADER_SIZE <= len(data)
+            and _u16le(data, 3) == _u16le(data, second_offset + 3)
+        )
+
     def feed(self, data: bytes, context: PacketContext) -> None:
         if not data:
             return

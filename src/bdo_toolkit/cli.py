@@ -11,8 +11,10 @@ from typing import Optional
 from . import __version__
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from .capture import capture_live, replay_pcap
+from .diagnostics import DecoderDiagnostic
 from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
+    CalibrationAuthorityError,
     CALIBRATION_ACTIONS,
     CalibrationResult,
     DirectionMismatchError,
@@ -25,6 +27,11 @@ from .origin_learning import (
     CompanionObservation,
     OriginLearner,
     promote_origin_candidates,
+)
+from .remote_profiles import (
+    DEFAULT_REMOTE_PROFILE_MAX_BYTES,
+    DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS,
+    fetch_opcode_profile,
 )
 from .filters import EventFilter
 from .writers import ConsoleEventWriter, JsonlEventWriter
@@ -48,6 +55,18 @@ def _positive_int(value: str) -> int:
     return number
 
 
+def _storage_id(value: str) -> int:
+    try:
+        number = int(value, 16 if value.lower().startswith("0x") else 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected a decimal or 0x-prefixed integer: {value!r}"
+        ) from exc
+    if not 1 <= number <= 0xFFFFFFFF:
+        raise argparse.ArgumentTypeError("value must be between 1 and 0xFFFFFFFF")
+    return number
+
+
 def _nonnegative_float(value: str) -> float:
     try:
         number = float(value)
@@ -55,6 +74,13 @@ def _nonnegative_float(value: str) -> float:
         raise argparse.ArgumentTypeError(f"expected a number: {value!r}") from exc
     if not math.isfinite(number) or number < 0:
         raise argparse.ArgumentTypeError("value must be finite and non-negative")
+    return number
+
+
+def _positive_float(value: str) -> float:
+    number = _nonnegative_float(value)
+    if number == 0:
+        raise argparse.ArgumentTypeError("value must be greater than zero")
     return number
 
 
@@ -87,8 +113,8 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--profile",
         type=Path,
-        default=None,
-        help="path to a local opcodes.json (default: bundled profile)",
+        required=True,
+        help="path to the active opcode profile",
     )
     parser.add_argument(
         "--ports",
@@ -109,7 +135,18 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         dest="sources",
         metavar="SOURCE",
-        help='only yield this source (repeatable), e.g. "Heidel"',
+        help=(
+            'only yield this semantic source (repeatable), e.g. "Mob Drop" '
+            'or "Worker Production"'
+        ),
+    )
+    parser.add_argument(
+        "--storage-id",
+        action="append",
+        dest="storage_ids",
+        type=_storage_id,
+        metavar="ID",
+        help="only yield this storage destination ID (repeatable; decimal or 0x...)",
     )
     parser.add_argument(
         "--item-id",
@@ -124,15 +161,6 @@ def _add_decode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="emit newline-delimited JSON instead of human-readable lines",
     )
-    parser.add_argument(
-        "--deposit-origin",
-        choices=("worker", "manual", "unknown"),
-        default=None,
-        help=(
-            "only yield storage_delta events with this classified deposit "
-            "origin (worker deposits vs manual deposits)"
-        ),
-    )
 
 
 def _writer(args: argparse.Namespace):
@@ -141,14 +169,27 @@ def _writer(args: argparse.Namespace):
 
 def _decode_filter(args: argparse.Namespace) -> EventFilter | None:
     if not any(
-        (args.event_types, args.sources, args.item_ids, args.deposit_origin)
+        (
+            args.event_types,
+            args.sources,
+            args.storage_ids,
+            args.item_ids,
+        )
     ):
         return None
     return EventFilter(
         event_types=args.event_types,
         sources=args.sources,
+        storage_ids=args.storage_ids,
         item_ids=args.item_ids,
-        deposit_origins={args.deposit_origin} if args.deposit_origin else None,
+    )
+
+
+def _report_decoder_diagnostic(diagnostic: DecoderDiagnostic) -> None:
+    print(
+        f"decoder {diagnostic.severity} [{diagnostic.code}]: "
+        f"{diagnostic.message}",
+        file=sys.stderr,
     )
 
 
@@ -160,6 +201,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         opcode_profile=args.profile,
         ports=args.ports,
         event_filter=_decode_filter(args),
+        on_diagnostic=_report_decoder_diagnostic,
     ):
         writer.write(event)
         count += 1
@@ -179,10 +221,28 @@ def _run_live(args: argparse.Namespace) -> int:
             ),
             event_filter=_decode_filter(args),
             capture_seconds=args.capture_seconds,
+            on_diagnostic=_report_decoder_diagnostic,
         ):
             writer.write(event)
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def _run_profile_fetch(args: argparse.Namespace) -> int:
+    result = fetch_opcode_profile(
+        args.url,
+        args.output,
+        timeout=args.timeout,
+        max_bytes=args.max_bytes,
+        backup=args.backup,
+    )
+    print(
+        f"installed opcode profile revision {result.revision} at {result.path}",
+        file=sys.stderr,
+    )
+    if result.backup_path is not None:
+        print(f"backup at {result.backup_path}", file=sys.stderr)
     return 0
 
 
@@ -271,6 +331,7 @@ def _print_calibration_result(result: CalibrationResult, verbose: bool) -> None:
             "quantity_offset",
             "item_instance_offset",
             "context_offset",
+            "record_count_offset",
             "inventory_slot_offset",
             "repeat_stride",
             "source_instance_offset",
@@ -318,8 +379,14 @@ def _run_calibrate(args: argparse.Namespace) -> int:
 
     if args.action == "auto":
         instruction = (
-            f"move item {args.item_id} from storage to inventory and back "
-            "(either order)"
+            f"with five matching unstackable items having raw ID {args.item_id}: "
+            "perform the in-game actions deposit 1, deposit 4, then withdraw "
+            "all 5 while capture passively listens"
+        )
+    elif args.action == "inventory-to-storage":
+        instruction = (
+            f"deposit matching item {args.item_id} records using at least "
+            "two different batch counts"
         )
     else:
         instruction = f"perform the {args.action} action with item {args.item_id} once"
@@ -353,7 +420,7 @@ def _run_calibrate(args: argparse.Namespace) -> int:
                 capture_seconds=args.capture_seconds,
                 min_confidence=args.min_confidence,
             )
-    except DirectionMismatchError as exc:
+    except (DirectionMismatchError, CalibrationAuthorityError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -376,12 +443,16 @@ def _run_calibrate(args: argparse.Namespace) -> int:
         print("nothing to write", file=sys.stderr)
         return 1
 
-    update = update_profile(
-        result,
-        args.write,
-        action=args.action,
-        replace=not args.merge,
-    )
+    try:
+        update = update_profile(
+            result,
+            args.write,
+            action=args.action,
+            replace=not args.merge,
+        )
+    except CalibrationAuthorityError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print(update.summary(), file=sys.stderr)
     return 0
 
@@ -487,6 +558,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    profile = subparsers.add_parser(
+        "profile",
+        help="retrieve and manage explicit opcode profiles",
+    )
+    profile_subparsers = profile.add_subparsers(
+        dest="profile_command",
+        required=True,
+    )
+    profile_fetch = profile_subparsers.add_parser(
+        "fetch",
+        help="fetch, verify, and atomically install a remote opcode profile",
+        description=(
+            "Fetch, verify, and atomically install a remote opcode profile. "
+            "Use only one writer per output path; cross-process locking is "
+            "the caller's responsibility."
+        ),
+    )
+    profile_fetch.add_argument("url", help="HTTPS URL of a profile envelope")
+    profile_fetch.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="local profile path to create or replace",
+    )
+    profile_fetch.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS,
+        metavar="SECONDS",
+        help=(
+            "network timeout in seconds "
+            f"(default: {DEFAULT_REMOTE_PROFILE_TIMEOUT_SECONDS:g})"
+        ),
+    )
+    profile_fetch.add_argument(
+        "--max-bytes",
+        type=_positive_int,
+        default=DEFAULT_REMOTE_PROFILE_MAX_BYTES,
+        metavar="BYTES",
+        help=(
+            "maximum accepted response size "
+            f"(default: {DEFAULT_REMOTE_PROFILE_MAX_BYTES})"
+        ),
+    )
+    profile_fetch.add_argument(
+        "--no-backup",
+        dest="backup",
+        action="store_false",
+        help="replace an existing output without preserving a backup",
+    )
+    profile_fetch.set_defaults(func=_run_profile_fetch, backup=True)
+
     replay = subparsers.add_parser(
         "replay", help="decode a .pcap/.pcapng file into events"
     )
@@ -517,7 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     solare = subparsers.add_parser(
         "solare",
-        help="capture or replay an opcode-agnostic Arena of Solare snapshot",
+        help="capture or replay an experimental Arena of Solare snapshot",
+        description="Experimental Arena of Solare leaderboard capture and replay.",
     )
     solare_subparsers = solare.add_subparsers(
         dest="solare_command",
@@ -527,6 +652,7 @@ def build_parser() -> argparse.ArgumentParser:
     solare_replay = solare_subparsers.add_parser(
         "replay",
         help="discover a Solare leaderboard in a .pcap/.pcapng file",
+        description="Replay a capture with the Experimental Arena of Solare API.",
     )
     solare_replay.add_argument("pcap", type=Path, help="capture file to inspect")
     solare_replay.add_argument(
@@ -555,6 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     solare_live = solare_subparsers.add_parser(
         "live",
         help="listen until a complete Solare snapshot is confirmed",
+        description="Capture one result with the Experimental Arena of Solare API.",
     )
     solare_live.add_argument(
         "--ports",
@@ -653,13 +780,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--item-id",
         type=_positive_int,
         required=True,
-        help="decimal item id used for the calibration action (Potato: 7003)",
+        help="decimal item id used for calibration (use matching unstackables)",
     )
     calibrate.add_argument(
         "--qty",
         type=_positive_int,
         default=None,
-        help="expected quantity for the action",
+        help=(
+            "expected per-record quantity (normally 1 for unstackables); "
+            "omit for a loot-preview item whose displayed quantity is random"
+        ),
     )
     calibrate.add_argument(
         "--action",
@@ -667,10 +797,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "calibration workflow (default: auto). auto detects both transfer "
-            "directions from packet structure -- just move the item to storage "
-            "and back. Explicit directions are strict and refuse a capture whose "
-            "structure contradicts the declared action. loot-preview is a "
-            "separate optional gathering calibration."
+            "directions from packet structure. With five matching unstackables "
+            "and --qty 1, the user deposits 1, deposits 4, then withdraws all 5 "
+            "while capture listens; --qty remains the value in each record, not "
+            "the batch size. "
+            "Explicit directions are strict and refuse a capture whose structure "
+            "contradicts the declared action. loot-preview is a separate optional "
+            "gathering calibration; watch a known item id and omit --qty when its "
+            "preview quantity is random."
         ),
     )
     calibrate.add_argument(
@@ -694,7 +828,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help=(
-            "write discovered specs to this opcodes.json, replacing the "
+            "write discovered specs to this local profile path, replacing the "
             "applicable existing entries (default: dry run)"
         ),
     )
@@ -727,8 +861,8 @@ def build_parser() -> argparse.ArgumentParser:
     reset.add_argument(
         "--calibration-item-id",
         type=_positive_int,
-        default=7003,
-        help="item id recorded in the fresh profile (default: 7003)",
+        default=15156,
+        help="item id recorded in the fresh profile (default: 15156)",
     )
     reset.set_defaults(func=_run_reset_profile)
 

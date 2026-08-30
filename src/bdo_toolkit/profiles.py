@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Optional
+
+
+OPCODE_PROFILE_SCHEMA_VERSION = 1
 
 
 class ProfileError(ValueError):
@@ -53,11 +58,25 @@ class OpcodeProfile:
 
     path: Path
     active: bool
-    version: Optional[int]
+    version: int
     updated_at: Optional[str]
     calibration_item_id: Optional[int]
-    specs: dict[str, list[dict[str, Any]]]
+    specs: Mapping[str, tuple[Mapping[str, Any], ...]]
     origin_companion_families: tuple[OriginCompanionFamily, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "specs",
+            MappingProxyType(
+                {
+                    event: tuple(
+                        _freeze_profile_mapping(entry) for entry in entries
+                    )
+                    for event, entries in self.specs.items()
+                }
+            ),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,31 +85,25 @@ class OpcodeProfile:
             "version": self.version,
             "updated_at": self.updated_at,
             "calibration_item_id": self.calibration_item_id,
-            "specs": self.specs,
+            "specs": {
+                event: [_thaw_profile_value(entry) for entry in entries]
+                for event, entries in self.specs.items()
+            },
             "origin_companion_families": [
                 family.to_dict() for family in self.origin_companion_families
             ],
         }
 
 
-def default_profile_path() -> Path:
-    """Path to the opcode profile bundled with the package.
+def load_opcode_profile(path: str | Path) -> OpcodeProfile:
+    """Load and validate one explicit, app-owned opcode profile."""
 
-    The bundled profile reflects the last calibration performed by the toolkit
-    maintainers and can go stale after a game patch. Pass an explicit path to
-    ``load_opcode_profile``/``replay_pcap``/``capture_live`` to use a locally
-    calibrated profile instead.
-    """
-    return Path(__file__).resolve().parent / "data" / "opcodes.json"
-
-
-def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
-    profile_path = Path(path) if path is not None else default_profile_path()
+    profile_path = Path(path)
     if not profile_path.is_file():
         raise FileNotFoundError(f"Opcode profile does not exist: {profile_path}")
     try:
         data = json.loads(profile_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeError) as exc:
+    except (json.JSONDecodeError, RecursionError, UnicodeError) as exc:
         raise ProfileError(f"Could not parse opcodes JSON {profile_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ProfileError(f"Opcodes JSON {profile_path} must be a top-level object")
@@ -100,12 +113,15 @@ def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
         raise ProfileError(f"profile_active in {profile_path} must be a boolean")
 
     version_value = data.get("version")
-    if version_value is not None and (
+    if (
         isinstance(version_value, bool)
         or not isinstance(version_value, int)
-        or version_value < 1
+        or version_value != OPCODE_PROFILE_SCHEMA_VERSION
     ):
-        raise ProfileError(f"version in {profile_path} must be a positive integer")
+        raise ProfileError(
+            f"version in {profile_path} must be "
+            f"{OPCODE_PROFILE_SCHEMA_VERSION}"
+        )
 
     updated_at_value = data.get("updated_at")
     if updated_at_value is not None and not isinstance(updated_at_value, str):
@@ -152,15 +168,45 @@ def load_opcode_profile(path: str | Path | None = None) -> OpcodeProfile:
         _origin_companion_family(profile_path, index, entry)
         for index, entry in enumerate(raw_families)
     )
+    immutable_specs = MappingProxyType(
+        {
+            event: tuple(_freeze_profile_mapping(entry) for entry in entries)
+            for event, entries in normalized_specs.items()
+        }
+    )
     return OpcodeProfile(
         path=profile_path,
         active=active_value,
         version=version_value,
         updated_at=updated_at_value,
         calibration_item_id=calibration_item_value,
-        specs=normalized_specs,
+        specs=immutable_specs,
         origin_companion_families=families,
     )
+
+
+def _freeze_profile_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _freeze_profile_value(item) for key, item in value.items()}
+    )
+
+
+def _freeze_profile_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _freeze_profile_mapping(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_profile_value(item) for item in value)
+    return value
+
+
+def _thaw_profile_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _thaw_profile_value(item) for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_thaw_profile_value(item) for item in value]
+    return value
 
 
 def _profile_opcode(value: object, location: str) -> int:
@@ -273,6 +319,7 @@ def _validate_profile_entry(
         "quantity_offset",
         "item_instance_offset",
         "context_offset",
+        "record_count_offset",
         "inventory_slot_offset",
         "source_instance_offset",
         "quantity_removed_offset",
@@ -287,6 +334,19 @@ def _validate_profile_entry(
             raise ProfileError(
                 f"{field_name} in {location} must be a non-negative integer or null"
             )
+    if event == "STORAGE_ITEM_DELTA":
+        item_offset = entry.get("item_id_offset")
+        context_offset = entry.get("context_offset")
+        count_offset = entry.get("record_count_offset")
+        if isinstance(item_offset, int) and not isinstance(item_offset, bool):
+            if context_offset is not None and context_offset + 4 > item_offset:
+                raise ProfileError(
+                    f"context_offset in {location} must end before item_id_offset"
+                )
+            if count_offset is not None and count_offset + 2 > item_offset:
+                raise ProfileError(
+                    f"record_count_offset in {location} must end before item_id_offset"
+                )
     repeat_stride = entry.get("repeat_stride")
     if repeat_stride is not None and (
         isinstance(repeat_stride, bool)

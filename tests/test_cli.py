@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
 import pytest
 
-from bdo_toolkit import cli
+from fixture_paths import JULY17_OPCODE_PROFILE
+from bdo_toolkit import (
+    ProfileFetchResult,
+    __version__,
+    cli,
+    load_opcode_profile,
+)
 from bdo_toolkit._protocol import FlowKey
-from bdo_toolkit.calibration import CalibrationResult, MessageSpec
+from bdo_toolkit.calibration import (
+    CalibrationRetention,
+    CalibrationResult,
+    MessageSpec,
+)
 from bdo_toolkit.origin_learning import CompanionObservation
 from bdo_toolkit.solare import (
     SolareCaptureResult,
@@ -28,13 +39,116 @@ def test_replay_invalid_capture_is_a_clean_cli_error(tmp_path, capsys):
     path = tmp_path / "invalid.pcapng"
     path.write_bytes(b"not a capture")
 
-    exit_code = cli.main(["replay", str(path)])
+    exit_code = cli.main(
+        [
+            "replay",
+            str(path),
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+        ]
+    )
 
     captured = capsys.readouterr()
     assert exit_code == 2
     assert captured.out == ""
     assert "error: Could not read capture" in captured.err
     assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["replay", "session.pcapng"],
+        ["live", "--capture-seconds", "0"],
+    ],
+)
+def test_item_decode_cli_requires_explicit_profile(argv, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(argv)
+
+    assert exc_info.value.code == 2
+    assert "--profile" in capsys.readouterr().err
+
+
+def test_profile_fetch_cli_forwards_verification_controls(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    destination = tmp_path / "opcodes.json"
+    profile = replace(
+        load_opcode_profile(JULY17_OPCODE_PROFILE),
+        path=destination,
+    )
+    observed = {}
+
+    def fake_fetch(url, output, **kwargs):
+        observed.update(url=url, output=output, **kwargs)
+        return ProfileFetchResult(
+            profile=profile,
+            source_url=url,
+            revision="naeu-2026-07-17-r1",
+            etag='"profile-r1"',
+            backup_path=None,
+        )
+
+    monkeypatch.setattr(cli, "fetch_opcode_profile", fake_fetch)
+
+    exit_code = cli.main(
+        [
+            "profile",
+            "fetch",
+            "https://profiles.example.test/current.json",
+            "--output",
+            str(destination),
+            "--timeout",
+            "2.5",
+            "--max-bytes",
+            "4096",
+            "--no-backup",
+        ]
+    )
+
+    assert exit_code == 0
+    assert observed == {
+        "url": "https://profiles.example.test/current.json",
+        "output": destination,
+        "timeout": 2.5,
+        "max_bytes": 4096,
+        "backup": False,
+    }
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "installed opcode profile revision naeu-2026-07-17-r1 "
+        f"at {destination}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_item_id"),
+    [
+        ([], 15156),
+        (["--calibration-item-id", "7003"], 7003),
+    ],
+)
+def test_reset_profile_cli_metadata_item_default_and_override(
+    tmp_path,
+    capsys,
+    extra_args,
+    expected_item_id,
+):
+    profile = tmp_path / "opcodes.json"
+
+    exit_code = cli.main(["reset-profile", str(profile), *extra_args])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "reset" in captured.err
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    assert data["calibration_item_id"] == expected_item_id
+    assert data["profile_active"] is True
+    assert all(not entries for entries in data["specs"].values())
 
 
 @pytest.mark.parametrize(
@@ -58,12 +172,14 @@ def test_calibrate_cli_writes_mocked_result(
                 quantity_added_offset=41,
                 destination_instance_offset=72,
                 context_offset=8,
+                record_count_offset=6,
                 repeat_stride=226,
             ),
         ),
         ignored=(),
         frames_scanned=1,
         calibration_item_id=99123,
+        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
     )
     monkeypatch.setattr(cli, "calibrate_pcap", lambda *args, **kwargs: result)
     real_update_profile = cli.update_profile
@@ -83,6 +199,8 @@ def test_calibrate_cli_writes_mocked_result(
             "unused.pcapng",
             "--item-id",
             "99123",
+            "--action",
+            "inventory-to-storage",
             "--write",
             str(profile),
             *write_mode,
@@ -103,8 +221,28 @@ def test_calibrate_cli_writes_mocked_result(
         ["calibrate", "--item-id", "0"],
         ["calibrate", "--item-id", "1", "--qty", "0"],
         ["calibrate", "--item-id", "1", "--min-confidence", "nan"],
-        ["live", "--capture-seconds", "-1"],
-        ["live", "--event-queue-size", "0"],
+        [
+            "live",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--capture-seconds",
+            "-1",
+        ],
+        [
+            "live",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--event-queue-size",
+            "0",
+        ],
+        [
+            "replay",
+            "session.pcapng",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--storage-id",
+            "0",
+        ],
         [
             "origin-learn",
             "--profile",
@@ -120,11 +258,35 @@ def test_cli_rejects_invalid_numeric_arguments(argv):
     assert exc_info.value.code == 2
 
 
+def test_decode_cli_accepts_decimal_and_hex_storage_ids():
+    args = cli.build_parser().parse_args(
+        [
+            "replay",
+            "session.pcapng",
+            "--profile",
+            str(JULY17_OPCODE_PROFILE),
+            "--storage-id",
+            "32",
+            "--storage-id",
+            "0x58",
+            "--storage-id",
+            "00032",
+            "--source",
+            "Worker Production",
+        ]
+    )
+
+    event_filter = cli._decode_filter(args)
+    assert event_filter is not None
+    assert event_filter.storage_ids == frozenset({0x0020, 0x0058})
+    assert event_filter.sources == frozenset({"Worker Production"})
+
+
 def test_cli_version(capsys):
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["--version"])
     assert exc_info.value.code == 0
-    assert "bdo-toolkit 0.1.0" in capsys.readouterr().out
+    assert f"bdo-toolkit {__version__}" in capsys.readouterr().out
 
 
 def _complete_solare_result() -> SolareCaptureResult:
@@ -142,7 +304,6 @@ def _complete_solare_result() -> SolareCaptureResult:
         snapshot_id=solare_snapshot_id((player,)),
         observed_at=1234.5,
         players=(player,),
-        evidence=evidence,
     )
     return SolareCaptureResult(
         status=SolareDetectionStatus.COMPLETE,

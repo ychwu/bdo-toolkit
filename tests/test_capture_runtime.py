@@ -64,6 +64,35 @@ class _FakeSniffer:
         callback(packet)
 
 
+class _ControlledThread:
+    def __init__(self, *, alive: bool = True) -> None:
+        self.ident = 1234
+        self.alive = alive
+        self.join_calls: list[float | None] = []
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout)
+
+
+class _UncooperativeSniffer(_FakeSniffer):
+    failure = OSError("backend stop request failed")
+
+    def start(self) -> None:
+        self.running = True
+        self.thread = _ControlledThread()
+        callback = self.kwargs.get("started_callback")
+        if callable(callback):
+            callback()
+
+    def stop(self, join: bool = True) -> None:
+        self.stop_calls += 1
+        assert join is False
+        raise self.failure
+
+
 @pytest.fixture(autouse=True)
 def capture_fakes(monkeypatch):
     _FakeSniffer.instances.clear()
@@ -115,6 +144,20 @@ def test_runtime_resolves_default_endpoint_and_positive_bpf(monkeypatch):
     assert stats == runtime.CaptureStats()
     assert capture.stopped
     assert not capture.running
+
+
+def test_capture_endpoint_is_a_public_serializable_value() -> None:
+    endpoint = runtime.CaptureEndpoint(
+        interface="capture-adapter",
+        local_ip="192.0.2.50",
+        bpf_filter="tcp",
+    )
+
+    assert endpoint.to_dict() == {
+        "interface": "capture-adapter",
+        "local_ip": "192.0.2.50",
+        "bpf_filter": "tcp",
+    }
 
 
 def test_runtime_python_filter_restricts_source_port_and_destination():
@@ -347,6 +390,139 @@ def test_callback_failure_is_retained_as_the_first_error():
     assert capture.error is callback_failure
     with pytest.raises(ValueError, match="decoder rejected"):
         capture.raise_if_failed()
+
+
+def test_raising_stop_still_closes_socket_joins_and_retains_retry_owner(
+    monkeypatch,
+):
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    capture_socket = FakeSocket()
+    monkeypatch.setattr(runtime, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        runtime,
+        "_open_enlarged_windows_socket",
+        lambda **kwargs: capture_socket,
+    )
+    monkeypatch.setattr(runtime, "_new_async_sniffer", _UncooperativeSniffer)
+    capture = runtime.LivePacketCapture(
+        capture_options=PacketCaptureOptions(interface="test-interface"),
+        on_packet=lambda packet: None,
+    )
+    capture.start()
+    sniffer = _UncooperativeSniffer.instances[-1]
+    thread = sniffer.thread
+    assert isinstance(thread, _ControlledThread)
+
+    with pytest.raises(RuntimeError, match="cleanup is incomplete") as caught:
+        capture.stop()
+
+    assert caught.value.__cause__ is _UncooperativeSniffer.failure
+    assert sniffer.stop_calls == 1
+    assert thread.join_calls == [runtime._CAPTURE_JOIN_TIMEOUT_SECONDS]
+    assert capture_socket.close_calls == 1
+    assert not capture.stopped
+    assert capture.cleanup_incomplete
+    assert capture.cleanup_error is caught.value
+    assert capture.error is _UncooperativeSniffer.failure
+    assert capture._capture is sniffer
+
+    # A later control-plane attempt can complete once the non-cooperative
+    # native backend actually exits. The original failure remains observable.
+    thread.alive = False
+    sniffer.running = False
+    capture.stop()
+    assert capture.stopped
+    assert not capture.cleanup_incomplete
+    assert capture.cleanup_error is None
+    with pytest.raises(OSError) as retained:
+        capture.raise_if_failed()
+    assert retained.value is _UncooperativeSniffer.failure
+
+
+def test_socket_close_failure_keeps_handle_for_a_cleanup_retry(monkeypatch):
+    failure = OSError("capture socket close failed")
+
+    class RetrySocket:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise failure
+
+    capture_socket = RetrySocket()
+    monkeypatch.setattr(runtime, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        runtime,
+        "_open_enlarged_windows_socket",
+        lambda **kwargs: capture_socket,
+    )
+    capture = runtime.LivePacketCapture(
+        capture_options=PacketCaptureOptions(interface="test-interface"),
+        on_packet=lambda packet: None,
+    )
+    capture.start()
+
+    with pytest.raises(RuntimeError, match="capture socket did not close") as caught:
+        capture.stop()
+
+    assert caught.value.__cause__ is failure
+    assert capture._capture_socket is capture_socket
+    assert capture.cleanup_incomplete
+    assert not capture.stopped
+
+    capture.stop()
+    assert capture_socket.close_calls == 2
+    assert capture._capture_socket is None
+    assert capture.stopped
+
+
+def test_startup_failure_retains_an_unstopped_backend_for_cleanup_retry(
+    monkeypatch,
+):
+    class NeverReadyUncooperativeSniffer(_UncooperativeSniffer):
+        def start(self) -> None:
+            self.running = True
+            self.thread = _ControlledThread()
+
+    monkeypatch.setattr(
+        runtime,
+        "_new_async_sniffer",
+        NeverReadyUncooperativeSniffer,
+    )
+    capture = runtime.LivePacketCapture(
+        capture_options=PacketCaptureOptions(interface="test-interface"),
+        on_packet=lambda packet: None,
+        startup_timeout=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="timed out") as startup:
+        capture.start()
+
+    sniffer = NeverReadyUncooperativeSniffer.instances[-1]
+    thread = sniffer.thread
+    assert isinstance(thread, _ControlledThread)
+    assert capture.cleanup_incomplete
+    assert capture.running
+    assert capture._capture is sniffer
+    assert thread.join_calls == [runtime._CAPTURE_JOIN_TIMEOUT_SECONDS]
+    assert any(
+        "startup cleanup also failed" in note
+        for note in getattr(startup.value, "__notes__", ())
+    )
+
+    thread.alive = False
+    sniffer.running = False
+    capture.stop()
+    assert capture.stopped
+    assert not capture.cleanup_incomplete
 
 
 @pytest.mark.parametrize(

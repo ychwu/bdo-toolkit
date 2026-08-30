@@ -76,6 +76,8 @@ class BDOEvent:
     flow: Flow
     item_id: int
     quantity: int
+    # Known semantic origin, producing system, or event context. Storage
+    # endpoint identity belongs exclusively to storage_id/name fields.
     source: Optional[str] = None
     raw_context: Optional[str] = None
     opcode: Optional[int] = None
@@ -93,18 +95,20 @@ class BDOEvent:
     record_count: Optional[int] = None
     record_offset: Optional[int] = None
     confidence: Optional[str] = None
-    # "worker" | "manual" | "unknown" on storage_delta events, None elsewhere.
-    # Classified from packet structure; the per-signal audit trail stays in
-    # extra["deposit_origin_evidence"]. Graduated from extra 2026-07-08.
-    deposit_origin: Optional[str] = None
     extra: Mapping[str, Any] = field(default_factory=dict)
     storage_id: Optional[int] = None
     storage_name: Optional[str] = None
     storage_name_confidence: Optional[str] = None
-    # "snapshot" for initial-load state synchronization, "live" for a
-    # storage mutation, "unknown" for a recognized wrapper with unfamiliar
-    # semantics, and None when an older layout cannot expose the distinction.
-    storage_operation: Optional[str] = None
+    # Internal TCP connection-lifetime identity. This must not affect the
+    # public event schema, equality, or hashing; stateful classifiers use it to
+    # keep reconnects that reuse one four-tuple isolated.
+    _flow_generation: int = field(
+        default=0,
+        kw_only=True,
+        repr=False,
+        compare=False,
+        hash=False,
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "extra", _freeze_value(self.extra))
@@ -149,12 +153,10 @@ class BDOEvent:
             "storage_id": self.storage_id,
             "storage_name": self.storage_name,
             "storage_name_confidence": self.storage_name_confidence,
-            "storage_operation": self.storage_operation,
             "record_index": self.record_index,
             "record_count": self.record_count,
             "record_offset": self.record_offset,
             "confidence": self.confidence,
-            "deposit_origin": self.deposit_origin,
         }
         for key, value in optional.items():
             if value is not None:
@@ -168,17 +170,28 @@ class BDOEvent:
             getattr(self, field_info.name)
             for field_info in dataclasses.fields(self)
             if field_info.name != "extra"
+            and field_info.compare
+            and field_info.hash is not False
         )
         return hash((values, _hashable_value(self.extra)))
 
     def format_human(self) -> str:
-        parts = [
-            f"[{self.timestamp_text}]",
-            self.event_type.upper(),
-            f"source={self.source!r}" if self.source else "source=None",
-            f"item_id={self.item_id}",
-            f"quantity={self.quantity}",
-        ]
+        parts = [f"[{self.timestamp_text}]", self.event_type.upper()]
+        is_storage = self.event_type in {
+            "storage_delta",
+            "storage_snapshot",
+            "storage_record",
+        }
+        if self.source is not None:
+            parts.append(f"source={self.source!r}")
+        if is_storage:
+            if self.storage_name is not None:
+                parts.append(f"destination={self.storage_name!r}")
+            elif self.storage_id is not None:
+                parts.append(
+                    f"destination='UNKNOWN_STORAGE(0x{self.storage_id:08x})'"
+                )
+        parts.extend((f"item_id={self.item_id}", f"quantity={self.quantity}"))
         if self.base_item_id is not None:
             parts.append(f"base_item_id={self.base_item_id}")
         if self.enhancement_level is not None:
@@ -193,15 +206,9 @@ class BDOEvent:
             parts.append(f"storage_instance={self.storage_instance}")
         if self.storage_id is not None:
             parts.append(f"storage_id=0x{self.storage_id:08x}")
-        if self.storage_name is not None:
-            parts.append(f"storage_name={self.storage_name!r}")
         if self.storage_name_confidence is not None:
             parts.append(
                 f"storage_name_confidence={self.storage_name_confidence}"
             )
-        if self.storage_operation is not None:
-            parts.append(f"storage_operation={self.storage_operation}")
-        if self.deposit_origin is not None:
-            parts.append(f"deposit_origin={self.deposit_origin}")
         return " ".join(parts)
 

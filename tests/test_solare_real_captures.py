@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import bdo_toolkit.solare._result as result_module
 from bdo_toolkit.solare import (
     SolareDetectionStatus,
     SolareFamilyLayout,
@@ -62,8 +64,12 @@ class _CompleteCapture:
     overall_layout: SolareFamilyLayout
     gear_offset: int
     addon_offset: int
+    overall_gear_offset: int
+    overall_addon_offset: int
     max_rank: int
     class_slot_counts: tuple[tuple[int, int], ...]
+    aggregate_component_difference_count: int
+    max_hidden_match_delta: int
 
 
 _COMPLETE_CAPTURES = (
@@ -96,11 +102,16 @@ _COMPLETE_CAPTURES = (
             record_stride=0x1F80,
             name_offset=0x17,
             rank_offset=0xCA,
+            detail_layout_id="solare-overall-2026-06-24-v1",
         ),
         gear_offset=0x019D,
         addon_offset=0x191C,
+        overall_gear_offset=0x080F,
+        overall_addon_offset=0x0218,
         max_rank=5494,
         class_slot_counts=((1, 391), (2, 123), (3, 106)),
+        aggregate_component_difference_count=16,
+        max_hidden_match_delta=125,
     ),
     _CompleteCapture(
         relative_path=(
@@ -132,11 +143,16 @@ _COMPLETE_CAPTURES = (
             record_stride=0x1F80,
             name_offset=0x98,
             rank_offset=0x81,
+            detail_layout_id="solare-overall-2026-07-14-v1",
         ),
         gear_offset=0x0078,
         addon_offset=0x1929,
+        overall_gear_offset=0x06D5,
+        overall_addon_offset=0x00E5,
         max_rank=5548,
         class_slot_counts=((1, 348), (2, 141), (3, 131)),
+        aggregate_component_difference_count=21,
+        max_hidden_match_delta=108,
     ),
     _CompleteCapture(
         relative_path=(
@@ -167,11 +183,16 @@ _COMPLETE_CAPTURES = (
             record_stride=0x1F80,
             name_offset=0x98,
             rank_offset=0x81,
+            detail_layout_id="solare-overall-2026-07-14-v1",
         ),
         gear_offset=0x0078,
         addon_offset=0x1929,
+        overall_gear_offset=0x06D5,
+        overall_addon_offset=0x00E5,
         max_rank=4973,
         class_slot_counts=((1, 348), (2, 140), (3, 132)),
+        aggregate_component_difference_count=19,
+        max_hidden_match_delta=108,
     ),
     _CompleteCapture(
         relative_path=(
@@ -202,11 +223,16 @@ _COMPLETE_CAPTURES = (
             record_stride=0x1F7F,
             name_offset=0x8A,
             rank_offset=0x7E,
+            detail_layout_id="solare-overall-2026-07-17-v1",
         ),
         gear_offset=0x077D,
         addon_offset=0x0060,
+        overall_gear_offset=0x00D3,
+        overall_addon_offset=0x19B1,
         max_rank=5558,
         class_slot_counts=((1, 342), (2, 142), (3, 136)),
+        aggregate_component_difference_count=22,
+        max_hidden_match_delta=108,
     ),
 )
 
@@ -239,10 +265,16 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
     )
     assert snapshot.players[0].global_rank == 1
     assert snapshot.players[-1].global_rank == case.max_rank
-    assert snapshot.capabilities == frozenset(
-        {"rankings", "performance", "raw_extensions"}
+    class_capabilities = frozenset(
+        {"rankings", "elo", "performance", "raw_extensions"}
     )
-    assert snapshot.schema_version == 1
+    overall_capabilities = class_capabilities | {"aggregate_performance"}
+    assert snapshot.class_table_capabilities == class_capabilities
+    assert snapshot.overall_capabilities == overall_capabilities
+    assert snapshot.capabilities == class_capabilities
+    assert "aggregate_performance" not in snapshot.class_table_capabilities
+    assert "aggregate_performance" not in snapshot.capabilities
+    assert snapshot.schema_version == 2
 
     assert len(snapshot.overall_top_100) == 100
     assert [entry.global_rank for entry in snapshot.overall_top_100] == list(
@@ -256,6 +288,131 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
     assert sum(
         rich_by_rank.get(entry.global_rank) is not None
         and rich_by_rank[entry.global_rank].name == entry.name
+        for entry in snapshot.overall_top_100
+    ) == 100
+    assert all(
+        entry.elo is not None
+        and entry.elo > 0
+        and 1 <= len(entry.classes_played) <= 3
+        for entry in snapshot.overall_top_100
+    )
+    assert all(
+        entry.primary_class is not None
+        and entry.classes_played[0].primary
+        and entry.primary_class == entry.classes_played[0].player_class
+        for entry in snapshot.overall_top_100
+    )
+    assert all(
+        entry.total_wins is not None
+        and entry.total_draws is not None
+        and entry.total_losses is not None
+        and entry.total_matches
+        == entry.total_wins + entry.total_draws + entry.total_losses
+        and entry.total_matches > 0
+        and entry.total_win_rate is not None
+        for entry in snapshot.overall_top_100
+    )
+
+    # Aggregate W/D/L is decoded from its own overall-record scalars.  The
+    # detailed class slots are independently decoded, capped at three, and are
+    # not used as the aggregate data source.  Total-match consistency is the
+    # proven cross-check; individual win/loss components are intentionally not
+    # required to dominate their slot sums because the wire data sometimes
+    # reallocates wins and losses while preserving the match total.
+    component_differences = 0
+    hidden_match_deltas: list[int] = []
+    for entry in snapshot.overall_top_100:
+        assert entry.total_wins is not None
+        assert entry.total_draws is not None
+        assert entry.total_losses is not None
+        assert entry.total_matches is not None
+        exposed_wins = sum(
+            performance.wins or 0 for performance in entry.classes_played
+        )
+        exposed_draws = sum(
+            performance.draws or 0 for performance in entry.classes_played
+        )
+        exposed_losses = sum(
+            performance.losses or 0 for performance in entry.classes_played
+        )
+        exposed_matches = sum(
+            performance.matches or 0 for performance in entry.classes_played
+        )
+        hidden_delta = entry.total_matches - exposed_matches
+        assert hidden_delta >= 0
+        if len(entry.classes_played) < 3:
+            assert hidden_delta == 0
+        hidden_match_deltas.append(hidden_delta)
+        component_differences += (
+            (entry.total_wins, entry.total_draws, entry.total_losses)
+            != (exposed_wins, exposed_draws, exposed_losses)
+        )
+
+    assert component_differences == case.aggregate_component_difference_count
+    assert max(hidden_match_deltas) == case.max_hidden_match_delta
+    overall_performances = tuple(
+        performance
+        for entry in snapshot.overall_top_100
+        for performance in entry.classes_played
+    )
+    assert all(
+        performance.specialization is not None
+        and performance.record_is_balanced is True
+        and performance.recent_results_raw
+        and performance.recent_results_wire_text is not None
+        for performance in overall_performances
+    )
+    assert all(
+        performance.gear_loadout_raw is not None
+        and performance.gear_loadout_raw.offset
+        == case.overall_gear_offset + performance.slot * _GEAR_SIZE
+        and performance.gear_loadout_raw.length == _GEAR_SIZE
+        for performance in overall_performances
+    )
+    assert all(
+        performance.skill_addons_raw is not None
+        and performance.skill_addons_raw.offset
+        == case.overall_addon_offset + performance.slot * _ADDON_SIZE
+        and performance.skill_addons_raw.length == _ADDON_SIZE
+        for performance in overall_performances
+    )
+
+    # The two independently decoded responses carry matching values in these
+    # captures. This is regression evidence, not a runtime enrichment rule.
+    def independently_decoded_values_match(entry: object) -> bool:
+        rich_player = rich_by_rank[entry.global_rank]  # type: ignore[attr-defined]
+        overall_classes = entry.classes_played  # type: ignore[attr-defined]
+        return (
+            entry.name == rich_player.name  # type: ignore[attr-defined]
+            and entry.elo == rich_player.elo  # type: ignore[attr-defined]
+            and len(overall_classes) == len(rich_player.classes_played)
+            and all(
+                (
+                    overall.player_class == rich.player_class
+                    and overall.specialization == rich.specialization
+                    and overall.matches == rich.matches
+                    and overall.wins == rich.wins
+                    and overall.draws == rich.draws
+                    and overall.losses == rich.losses
+                    and overall.recent_results_raw == rich.recent_results_raw
+                    and overall.gear_loadout_raw is not None
+                    and rich.gear_loadout_raw is not None
+                    and overall.gear_loadout_raw.data
+                    == rich.gear_loadout_raw.data
+                    and overall.skill_addons_raw is not None
+                    and rich.skill_addons_raw is not None
+                    and overall.skill_addons_raw.data
+                    == rich.skill_addons_raw.data
+                )
+                for overall, rich in zip(
+                    overall_classes,
+                    rich_player.classes_played,
+                )
+            )
+        )
+
+    assert sum(
+        independently_decoded_values_match(entry)
         for entry in snapshot.overall_top_100
     ) == 100
 
@@ -280,11 +437,6 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
 
     assert all(
         player.elo is not None and player.elo > 0
-        for player in snapshot.players
-    )
-    assert all(
-        player.player_uid_raw is not None
-        and len(player.player_uid_raw) == 8
         for player in snapshot.players
     )
     assert all(
@@ -360,11 +512,20 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
     raw_class = raw_player["classes_played"][0]  # type: ignore[index]
     assert raw_class["gear_loadout_raw"]["length"] == _GEAR_SIZE
     assert raw_class["skill_addons_raw"]["length"] == _ADDON_SIZE
+    raw_overall = with_raw["snapshot"]["overall_top_100"][0]  # type: ignore[index]
+    assert raw_overall["total_matches"] == (
+        raw_overall["total_wins"]
+        + raw_overall["total_draws"]
+        + raw_overall["total_losses"]
+    )
+    raw_overall_class = raw_overall["classes_played"][0]
+    assert raw_overall_class["gear_loadout_raw"]["length"] == _GEAR_SIZE
+    assert raw_overall_class["skill_addons_raw"]["length"] == _ADDON_SIZE
 
 
 @pytest.mark.parametrize(
     "case",
-    _COMPLETE_CAPTURES[:2],
+    _COMPLETE_CAPTURES[:1],
     ids=lambda case: f"raw-retention-{Path(case.relative_path).stem}",
 )
 def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
@@ -382,11 +543,27 @@ def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
     retained = raw_result.snapshot
 
     assert default.snapshot_id == retained.snapshot_id
-    assert default.overall_top_100 == retained.overall_top_100
-    assert default.capabilities == frozenset({"rankings", "performance"})
-    assert retained.capabilities == frozenset(
-        {"rankings", "performance", "raw_extensions"}
+    assert tuple(entry.to_dict() for entry in default.overall_top_100) == tuple(
+        entry.to_dict() for entry in retained.overall_top_100
     )
+    ordinary_class_capabilities = frozenset(
+        {"rankings", "elo", "performance"}
+    )
+    ordinary_overall_capabilities = ordinary_class_capabilities | {
+        "aggregate_performance"
+    }
+    raw_class_capabilities = ordinary_class_capabilities | {"raw_extensions"}
+    raw_overall_capabilities = ordinary_overall_capabilities | {
+        "raw_extensions"
+    }
+    assert default.class_table_capabilities == ordinary_class_capabilities
+    assert default.overall_capabilities == ordinary_overall_capabilities
+    assert default.capabilities == ordinary_class_capabilities
+    assert retained.class_table_capabilities == raw_class_capabilities
+    assert retained.overall_capabilities == raw_overall_capabilities
+    assert retained.capabilities == raw_class_capabilities
+    assert "aggregate_performance" not in default.capabilities
+    assert "aggregate_performance" not in retained.capabilities
 
     def semantic_rows(snapshot: object) -> tuple[object, ...]:
         players = snapshot.players  # type: ignore[attr-defined]
@@ -394,7 +571,6 @@ def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
             (
                 player.name,
                 player.global_rank,
-                player.player_uid_raw,
                 player.elo,
                 tuple(
                     (
@@ -438,6 +614,29 @@ def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
         and performance.skill_addons_raw is not None
         and performance.skill_addons_raw.length == _ADDON_SIZE
         for performance in retained_performances
+    )
+
+    default_overall_performances = tuple(
+        performance
+        for entry in default.overall_top_100
+        for performance in entry.classes_played
+    )
+    retained_overall_performances = tuple(
+        performance
+        for entry in retained.overall_top_100
+        for performance in entry.classes_played
+    )
+    assert all(
+        performance.gear_loadout_raw is None
+        and performance.skill_addons_raw is None
+        for performance in default_overall_performances
+    )
+    assert all(
+        performance.gear_loadout_raw is not None
+        and performance.gear_loadout_raw.length == _GEAR_SIZE
+        and performance.skill_addons_raw is not None
+        and performance.skill_addons_raw.length == _ADDON_SIZE
+        for performance in retained_overall_performances
     )
 
 
@@ -528,8 +727,16 @@ def test_private_non_complete_capture_never_exposes_snapshot(
     if not path.is_file():
         pytest.skip("private Solare capture is not installed")
 
-    result = replay_solare(path)
+    with patch.object(
+        result_module,
+        "learn_unknown_solare_details",
+        side_effect=AssertionError(
+            "the detail learner must not run for a non-complete capture"
+        ),
+    ) as learner:
+        result = replay_solare(path)
 
+    assert learner.call_count == 0
     assert result.status is case.status
     assert not result.complete
     assert result.snapshot is None

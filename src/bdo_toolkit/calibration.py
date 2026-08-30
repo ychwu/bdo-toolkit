@@ -6,55 +6,88 @@ local opcode profile from a capture of a known in-game action:
     from bdo_toolkit.calibration import calibrate_pcap, update_profile
 
     result = calibrate_pcap(
-        "move_3_potatoes_to_storage.pcapng",
-        item_id=7003,          # the item used for the action (Potato)
-        quantity=3,            # how many were moved
-        action="inventory-to-storage",
+        "unstackable_1_in_4_in_5_out.pcapng",
+        item_id=15156,         # replace with the unstackable item used
+        quantity=1,            # each serialized unstackable record has qty 1
+        action="auto",
     )
-    update_profile(result, "opcodes.json", action="inventory-to-storage")
+    update_profile(result, "opcodes.json")
 
 Then point the decoding APIs at the local profile:
 
     replay_pcap("session.pcapng", opcode_profile="opcodes.json")
 
-The calibration heuristics score every frame containing the watched item id
-and promote the most plausible record layouts. They are ported unchanged from
-the original research prototype.
+Storage calibration requires two distinct validated record counts so a moving
+wrapper flag cannot be mistaken for the authoritative count column. Capture,
+for example, a deposit of one matching unstackable followed by a deposit of
+four, then one withdrawal of all five in the same automatic session. The
+single deposit also anchors manual-origin evidence, while the multi deposit and
+withdrawal prove repeated geometry in both directions. The calibration
+session only observes these user-performed actions: ``quantity=1`` remains the
+expected value in every serialized record and is not changed to the action's
+batch size. The calibration heuristics score every frame containing the watched
+item ID and promote only structurally proven layouts.
+
+The batch sizes are observed evidence, not API arguments or hard-coded values;
+another valid sequence is deposit one, deposit six, then withdraw seven.
+Repeating the same deposit count does not establish storage count authority.
+``action="auto"`` covers transfer directions only. Loot preview requires a
+separate ``action="loot-preview"`` capture; when its quantity is random, watch
+the known item ID and leave ``quantity=None``.
 """
 
 from __future__ import annotations
 
+from collections import deque
 import datetime as dt
 import json
 import math
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Lock, RLock
 from typing import Any, Iterable, Optional
 
-from ._capture_backend import replay_pcap_file, validate_server_ports
+from ._capture_backend import (
+    make_packet_handler,
+    replay_pcap_file,
+    validate_server_ports,
+)
 from ._capture_options import PacketCaptureOptions
+from ._capture_runtime import (
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    LivePacketCapture,
+    _attach_cleanup_owner,
+)
 from ._framing import FrameCollectorScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
-    CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH,
-    CURRENT_STORAGE_DELTA_RECORD_STRIDE,
     DEFAULT_SERVER_PORTS,
     LOOT_PREVIEW_SENTINEL_INSTANCE,
     MAX_PLAUSIBLE_ITEM_ID,
     SOURCE_CONTEXT_LABELS,
     STORAGE_DELTA_CONTEXTS,
     BDOFrame,
-    storage_location,
+    storage_destination_candidates,
 )
 from ._reassembly import FlowManager
-from .profiles import ProfileError, _validate_profile_entry, load_opcode_profile
+from ._specs import _validate_loot_profile_entries
+from .profiles import (
+    OPCODE_PROFILE_SCHEMA_VERSION,
+    ProfileError,
+    _validate_profile_entry,
+    load_opcode_profile,
+)
 
 __all__ = [
     "CALIBRATION_ACTIONS",
+    "DEFAULT_CALIBRATION_MAX_RETAINED_BYTES",
+    "DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES",
+    "CalibrationAuthorityError",
     "CalibrationResult",
+    "CalibrationRetention",
     "CalibrationSession",
     "DirectionEvidence",
     "DirectionMismatchError",
@@ -77,6 +110,13 @@ CALIBRATION_ACTIONS = (
     "inventory-to-storage",
 )
 
+# Live calibration retains the newest contiguous tail. These defaults cover
+# ordinary short item-transfer workflows by a wide margin while placing a
+# hard ceiling on an accidentally unattended session.
+DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES = 50_000
+DEFAULT_CALIBRATION_MAX_RETAINED_BYTES = 64 * 1024 * 1024
+_CALIBRATION_MAX_ACTIVE_FLOWS = 64
+
 OPCODE_PROFILE_EVENTS = (
     "LOOT_PREVIEW",
     "INVENTORY_TRANSFER",
@@ -96,6 +136,7 @@ class MessageSpec:
     quantity_offset: Optional[int] = None
     item_instance_offset: Optional[int] = None
     context_offset: Optional[int] = None
+    record_count_offset: Optional[int] = field(default=None, kw_only=True)
     inventory_slot_offset: Optional[int] = None
     repeat_stride: Optional[int] = None
     source_instance_offset: Optional[int] = None
@@ -125,6 +166,7 @@ class MessageSpec:
             "quantity_offset",
             "item_instance_offset",
             "context_offset",
+            "record_count_offset",
             "inventory_slot_offset",
             "source_instance_offset",
             "quantity_removed_offset",
@@ -155,6 +197,7 @@ class MessageSpec:
                 "quantity_offset": 4,
                 "item_instance_offset": 8,
                 "context_offset": 4,
+                "record_count_offset": 2,
                 "inventory_slot_offset": 1,
                 "source_instance_offset": 8,
                 "quantity_removed_offset": 4,
@@ -165,6 +208,17 @@ class MessageSpec:
                 value = getattr(self, name)
                 if value is not None and value + width > self.length:
                     raise ValueError(f"{name} extends beyond the declared length")
+        if self.event == "STORAGE_ITEM_DELTA" and self.item_id_offset is not None:
+            if (
+                self.context_offset is not None
+                and self.context_offset + 4 > self.item_id_offset
+            ):
+                raise ValueError("context_offset must end before item_id_offset")
+            if (
+                self.record_count_offset is not None
+                and self.record_count_offset + 2 > self.item_id_offset
+            ):
+                raise ValueError("record_count_offset must end before item_id_offset")
 
     def dedupe_key(self) -> tuple[object, ...]:
         return (
@@ -175,6 +229,7 @@ class MessageSpec:
             self.quantity_offset,
             self.item_instance_offset,
             self.context_offset,
+            self.record_count_offset,
             self.inventory_slot_offset,
             self.source_instance_offset,
             self.quantity_removed_offset,
@@ -196,6 +251,7 @@ class MessageSpec:
             "quantity_offset": self.quantity_offset,
             "item_instance_offset": self.item_instance_offset,
             "context_offset": self.context_offset,
+            "record_count_offset": self.record_count_offset,
             "inventory_slot_offset": self.inventory_slot_offset,
             "repeat_stride": self.repeat_stride,
             "source_instance_offset": self.source_instance_offset,
@@ -218,6 +274,10 @@ class DirectionMismatchError(ValueError):
     transfer). Auto calibration never raises this; it classifies each direction
     from structure and keeps whatever it can confirm.
     """
+
+
+class CalibrationAuthorityError(ValueError):
+    """A captured target exists but cannot yield a safe decoder profile."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +314,110 @@ _FAMILY_LABELS = {
 
 
 @dataclass(frozen=True)
+class CalibrationRetention:
+    """Observed-versus-retained live calibration evidence.
+
+    Live sessions keep the newest contiguous frame tail within both limits.
+    ``truncated`` therefore means older evidence was intentionally evicted and
+    the resulting calibration describes only the retained tail.
+    """
+
+    frames_observed: int
+    frames_retained: int
+    frames_discarded: int
+    bytes_observed: Optional[int]
+    bytes_retained: Optional[int]
+    bytes_discarded: Optional[int]
+    max_retained_frames: Optional[int] = None
+    max_retained_bytes: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "frames_observed",
+            "frames_retained",
+            "frames_discarded",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.frames_retained + self.frames_discarded != self.frames_observed:
+            raise ValueError(
+                "retained and discarded frame counts must equal frames_observed"
+            )
+
+        byte_values = (
+            self.bytes_observed,
+            self.bytes_retained,
+            self.bytes_discarded,
+        )
+        if any(value is None for value in byte_values):
+            if not all(value is None for value in byte_values):
+                raise ValueError("byte retention counters must be all set or all None")
+        else:
+            for name, value in zip(
+                ("bytes_observed", "bytes_retained", "bytes_discarded"),
+                byte_values,
+            ):
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                ):
+                    raise ValueError(f"{name} must be a non-negative integer")
+            assert self.bytes_observed is not None
+            assert self.bytes_retained is not None
+            assert self.bytes_discarded is not None
+            if self.bytes_retained + self.bytes_discarded != self.bytes_observed:
+                raise ValueError(
+                    "retained and discarded byte counts must equal bytes_observed"
+                )
+
+        for name in ("max_retained_frames", "max_retained_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be None or a positive integer")
+        if (
+            self.max_retained_frames is not None
+            and self.frames_retained > self.max_retained_frames
+        ):
+            raise ValueError("frames_retained exceeds max_retained_frames")
+        if (
+            self.max_retained_bytes is not None
+            and self.bytes_retained is not None
+            and self.bytes_retained > self.max_retained_bytes
+        ):
+            raise ValueError("bytes_retained exceeds max_retained_bytes")
+
+    @property
+    def truncated(self) -> bool:
+        return self.frames_discarded > 0 or bool(self.bytes_discarded)
+
+    @property
+    def bounded(self) -> bool:
+        return (
+            self.max_retained_frames is not None
+            or self.max_retained_bytes is not None
+        )
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "frames_observed": self.frames_observed,
+            "frames_retained": self.frames_retained,
+            "frames_discarded": self.frames_discarded,
+            "bytes_observed": self.bytes_observed,
+            "bytes_retained": self.bytes_retained,
+            "bytes_discarded": self.bytes_discarded,
+            "max_retained_frames": self.max_retained_frames,
+            "max_retained_bytes": self.max_retained_bytes,
+            "truncated": self.truncated,
+        }
+
+
+@dataclass(frozen=True)
 class CalibrationResult:
     """Promoted message specs plus diagnostics for rejected candidates.
 
@@ -269,6 +433,15 @@ class CalibrationResult:
     frames_scanned: int
     evidence: tuple[DirectionEvidence, ...] = ()
     calibration_item_id: Optional[int] = None
+    retention: CalibrationRetention = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.retention, CalibrationRetention):
+            raise TypeError("retention must be a CalibrationRetention")
+        if self.frames_scanned != self.retention.frames_retained:
+            raise ValueError(
+                "frames_scanned must equal retention.frames_retained"
+            )
 
     @property
     def events_found(self) -> frozenset[str]:
@@ -303,6 +476,14 @@ class CalibrationResult:
     def summary(self) -> str:
         """Human-readable multi-line report; print or log it as-is."""
         lines = [f"scanned {self.frames_scanned} frames"]
+        retention = self.retention
+        if retention.bounded:
+            status = "truncated" if retention.truncated else "complete"
+            lines.append(
+                f"live retention {status}: observed {retention.frames_observed}, "
+                f"retained {retention.frames_retained}, "
+                f"discarded {retention.frames_discarded} frame(s)"
+            )
         if self.specs:
             found = ", ".join(
                 f"{spec.event} (0x{spec.opcode:04X})" for spec in self.specs
@@ -325,6 +506,7 @@ class CalibrationResult:
         return {
             "frames_scanned": self.frames_scanned,
             "calibration_item_id": self.calibration_item_id,
+            "retention": self.retention.to_json_dict(),
             "specs": [spec.to_json_dict() for spec in self.specs],
             "ignored": list(self.ignored),
             "evidence": [e.to_json_dict() for e in self.evidence],
@@ -361,6 +543,62 @@ class ProfileUpdate:
         return "\n".join(lines)
 
 
+class _FrameIndex:
+    """One-pass same-flow position index for calibration context lookups."""
+
+    def __init__(self, frames: list[BDOFrame]) -> None:
+        by_flow: dict[tuple[object, int], list[BDOFrame]] = {}
+        positions: dict[
+            int,
+            Optional[tuple[tuple[object, int], int]],
+        ] = {}
+        for frame in frames:
+            flow_identity = (
+                frame.context.flow,
+                frame.context.flow_generation,
+            )
+            flow_frames = by_flow.setdefault(flow_identity, [])
+            identity = id(frame)
+            location = (flow_identity, len(flow_frames))
+            positions[identity] = (
+                location if identity not in positions else None
+            )
+            flow_frames.append(frame)
+        self._by_flow = {
+            flow: tuple(flow_frames) for flow, flow_frames in by_flow.items()
+        }
+        self._positions = positions
+
+    def context_before(
+        self,
+        target_frame: BDOFrame,
+        context_frames: int,
+    ) -> tuple[BDOFrame, ...]:
+        if context_frames <= 0:
+            return ()
+        flow_identity = (
+            target_frame.context.flow,
+            target_frame.context.flow_generation,
+        )
+        flow_frames = self._by_flow.get(flow_identity, ())
+        has_identity = id(target_frame) in self._positions
+        location = self._positions.get(id(target_frame))
+        index = None if location is None else location[1]
+        if not has_identity:
+            # Public helpers may be passed an equal reconstructed frame rather
+            # than the exact object from ``frames``. Accept one unambiguous
+            # equality match; fail closed if multiple positions compare equal.
+            matches = tuple(
+                candidate_index
+                for candidate_index, candidate in enumerate(flow_frames)
+                if candidate == target_frame
+            )
+            index = matches[0] if len(matches) == 1 else None
+        if index is None:
+            return ()
+        return flow_frames[max(0, index - context_frames) : index]
+
+
 @dataclass(frozen=True)
 class _Options:
     item_id: int
@@ -368,6 +606,7 @@ class _Options:
     action: str
     context_frames: int
     min_confidence: float
+    frame_index: Optional[_FrameIndex] = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +661,25 @@ def _validate_calibration_options(
         raise ValueError("min_confidence must be a finite number from 0 to 1")
 
 
+def _validate_calibration_retention_limits(
+    *,
+    max_retained_frames: int,
+    max_retained_bytes: int,
+    context_frames: int,
+) -> None:
+    for name, value in (
+        ("max_retained_frames", max_retained_frames),
+        ("max_retained_bytes", max_retained_bytes),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    if max_retained_frames <= context_frames:
+        raise ValueError(
+            "max_retained_frames must be greater than context_frames so one "
+            "candidate and its requested preceding context can be retained"
+        )
+
+
 def collect_frames_pcap(
     path: str | Path,
     *,
@@ -433,6 +691,7 @@ def collect_frames_pcap(
     manager = FlowManager(
         server_ports=validated_ports,
         scanner_factory=lambda: FrameCollectorScanner(frames.append),
+        track_flow_generations=True,
     )
     replay_pcap_file(Path(path), manager)
     return frames
@@ -456,21 +715,27 @@ def calibrate_frames(
         min_confidence=min_confidence,
     )
 
+    frame_index = _FrameIndex(frames)
     options = _Options(
         item_id=item_id,
         quantity=quantity,
         action=action,
         context_frames=context_frames,
         min_confidence=min_confidence,
+        frame_index=frame_index,
     )
     ignored: list[str] = []
     evidence: list[DirectionEvidence] = []
     specs: list[MessageSpec] = []
 
-    # Auto covers both transfer directions and classifies each from structure,
-    # so the user need only move an item storage->inventory and back (in either
-    # order). Direction is never taken on faith. Loot preview needs a gathering
-    # action, so it stays an explicit, optional mode.
+    # Auto covers both transfer directions and classifies each from structure.
+    # Storage authority additionally needs two distinct record counts so an
+    # unrelated small header integer cannot impersonate the count column. Use
+    # an unstackable item with quantity=1 and perform at least two different
+    # deposit sizes, plus one storage->inventory move. The guided example uses
+    # deposits of 1 and 4 followed by one withdrawal of all 5. Direction is
+    # never taken on faith. Loot preview needs a gathering action, so it stays
+    # an explicit, optional mode.
     actions: tuple[str, ...]
     if action == "auto":
         actions = ("storage-to-inventory", "inventory-to-storage")
@@ -495,12 +760,21 @@ def calibrate_frames(
                 )
             )
 
+    retained_bytes = sum(len(frame.message) for frame in frames)
     return CalibrationResult(
         specs=tuple(_dedupe_message_specs(specs)),
         ignored=tuple(ignored),
         frames_scanned=len(frames),
         evidence=tuple(evidence),
         calibration_item_id=item_id,
+        retention=CalibrationRetention(
+            frames_observed=len(frames),
+            frames_retained=len(frames),
+            frames_discarded=0,
+            bytes_observed=retained_bytes,
+            bytes_retained=retained_bytes,
+            bytes_discarded=0,
+        ),
     )
 
 
@@ -537,24 +811,47 @@ class CalibrationSession:
     """Live calibration with programmatic start/stop, for embedding in apps.
 
     The session captures passively in the background between ``start()`` and
-    ``stop()``; the capture thread never blocks the caller. Typical app flow::
+    ``stop()``. ``start()`` returns after the capture adapter reports ready,
+    or raises after a finite startup deadline. Typical app flow::
 
-        session = CalibrationSession(item_id=7003, quantity=3)  # action="auto"
+        # quantity=1 matches each serialized unstackable record; it is not
+        # the number of items moved by each user-performed action.
+        session = CalibrationSession(item_id=15156, quantity=1)
         session.start()
-        # ... tell the user to move the item to storage and back,
-        #     then have them click "Done" in your UI ...
+        # ... deposit 1; deposit the remaining 4; withdraw all 5;
+        #     then have the user click "Done" ...
         result = session.stop()
         if result.specs:
             update_profile(result, my_profile_path)
 
     Auto calibration (the default) classifies each transfer direction from
-    packet structure, so the user only needs to move an item to storage and
-    back in either order; no ``action`` need be declared.
+    packet structure, so no ``action`` need be declared. Storage authority
+    requires at least two distinct deposit counts plus one withdrawal. The
+    guided five-unstackable sequence is deposit one, deposit four, withdraw
+    all five. The user performs those actions; the session passively observes
+    them, and ``quantity=1`` continues to describe every repeated item record.
+    The values 1, 4, and 5 are a recommended operator workflow rather than
+    constructor arguments; the session learns batch cardinality from traffic.
+    Loot preview is a separate explicit action and may use ``quantity=None``
+    when only the watched item ID is stable.
 
-    ``frames_collected`` can drive a UI indicator that traffic is arriving.
+    Live evidence is bounded by both ``max_retained_frames`` and
+    ``max_retained_bytes``. The newest contiguous frame tail is retained so a
+    transfer performed shortly before ``stop()`` keeps its preceding context.
+    ``frames_collected`` remains the total-observed progress count; use
+    ``frames_retained``, ``frames_discarded``, or ``retention`` to surface
+    eviction. A truncated result calibrates only the retained tail.
+
+    TCP reassembly is also bounded to 64 active flows. Admitting another flow
+    finalizes the least-recently active state. FIN/RST or session finalization
+    releases remaining flow state; live calibration does not configure
+    time-based idle eviction.
+
     Used as a context manager, the capture is stopped on exit even if the
     block raises; call ``stop()`` inside the block to get the result.
     """
+
+    _STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
 
     def __init__(
         self,
@@ -565,6 +862,8 @@ class CalibrationSession:
         capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
         min_confidence: float = 0.80,
+        max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+        max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
     ) -> None:
         _validate_calibration_options(
             item_id=item_id,
@@ -572,6 +871,11 @@ class CalibrationSession:
             action=action,
             context_frames=context_frames,
             min_confidence=min_confidence,
+        )
+        _validate_calibration_retention_limits(
+            max_retained_frames=max_retained_frames,
+            max_retained_bytes=max_retained_bytes,
+            context_frames=context_frames,
         )
         if capture_options is not None and not isinstance(
             capture_options, PacketCaptureOptions
@@ -585,121 +889,309 @@ class CalibrationSession:
         self._capture_options = capture_options or PacketCaptureOptions()
         self._context_frames = context_frames
         self._min_confidence = min_confidence
-        self._frames: list[BDOFrame] = []
+        self._max_retained_frames = max_retained_frames
+        self._max_retained_bytes = max_retained_bytes
+        self._frames: deque[BDOFrame] = deque()
+        self._frames_observed = 0
+        self._frames_discarded = 0
+        self._bytes_observed = 0
+        self._bytes_retained = 0
+        self._bytes_discarded = 0
         self._manager: Optional[FlowManager] = None
-        self._capture: Any = None
+        self._capture: Optional[LivePacketCapture] = None
+        self._error: Optional[BaseException] = None
+        self._lifecycle_lock = RLock()
+        # Scanner callbacks run on the capture thread. Keep their short data
+        # lock independent from lifecycle operations that may join that thread.
+        self._retention_lock = Lock()
 
     @property
     def running(self) -> bool:
-        return self._capture is not None and bool(self._capture.running)
+        with self._lifecycle_lock:
+            capture = self._capture
+            return capture is not None and capture.running
+
+    @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether capture shutdown retained resources for a stop retry."""
+
+        with self._lifecycle_lock:
+            capture = self._capture
+            return capture is not None and capture.cleanup_incomplete
+
+    @property
+    def error(self) -> Optional[BaseException]:
+        """First startup, callback, or shutdown failure for the current run."""
+
+        with self._lifecycle_lock:
+            if self._error is not None:
+                return self._error
+            capture = self._capture
+            return capture.error if capture is not None else None
 
     @property
     def frames_collected(self) -> int:
-        return len(self._frames)
+        """Total frames observed, including frames later evicted."""
+
+        return self.frames_observed
+
+    @property
+    def frames_observed(self) -> int:
+        with self._retention_lock:
+            return self._frames_observed
+
+    @property
+    def frames_retained(self) -> int:
+        with self._retention_lock:
+            return len(self._frames)
+
+    @property
+    def frames_discarded(self) -> int:
+        with self._retention_lock:
+            return self._frames_discarded
+
+    @property
+    def bytes_observed(self) -> int:
+        """Total generic-frame payload bytes observed."""
+
+        with self._retention_lock:
+            return self._bytes_observed
+
+    @property
+    def bytes_retained(self) -> int:
+        """Generic-frame payload bytes currently retained."""
+
+        with self._retention_lock:
+            return self._bytes_retained
+
+    @property
+    def bytes_discarded(self) -> int:
+        with self._retention_lock:
+            return self._bytes_discarded
+
+    @property
+    def retention_truncated(self) -> bool:
+        return self.retention.truncated
+
+    @property
+    def retention(self) -> CalibrationRetention:
+        """Atomic snapshot of observed, retained, and discarded evidence."""
+
+        with self._retention_lock:
+            return self._retention_unlocked()
 
     def start(self) -> None:
-        """Begin passive background capture."""
-        if self._capture is not None:
-            raise RuntimeError("calibration session is already running")
+        """Begin passive capture and return once the adapter is ready."""
 
-        from ._capture_backend import (
-            build_bpf_filter,
-            detect_default_capture_target,
-            import_scapy,
-            make_packet_handler,
-        )
+        with self._lifecycle_lock:
+            if self._capture is not None or self._manager is not None:
+                raise RuntimeError("calibration session is already running")
 
-        IP, TCP, _, _, _ = import_scapy()
-        from scapy.sendrecv import AsyncSniffer  # type: ignore
-
-        self._frames = []
-        manager = FlowManager(
-            server_ports=self._capture_options.ports,
-            scanner_factory=lambda: FrameCollectorScanner(self._frames.append),
-        )
-        self._manager = manager
-
-        detected_target = None
-        if self._capture_options.interface is None:
-            detected_target = detect_default_capture_target()
-            capture_interface = detected_target.interface
-        else:
-            capture_interface = self._capture_options.interface
-        capture_local_ip = self._capture_options.local_ip
-        if (
-            capture_local_ip is None
-            and self._capture_options.interface is None
-            and self._capture_options.auto_local_ip
-        ):
-            assert detected_target is not None
-            capture_local_ip = detected_target.local_ip
-
-        bpf_filter = (
-            None
-            if not self._capture_options.use_bpf
-            else build_bpf_filter(self._capture_options.ports, capture_local_ip)
-        )
-        lfilter = None
-        if not self._capture_options.use_bpf:
-            lfilter = lambda packet: (  # noqa: E731
-                IP in packet
-                and TCP in packet
-                and int(packet[TCP].sport) in manager.server_ports
-                and (
-                    capture_local_ip is None
-                    or str(packet[IP].dst) == capture_local_ip
-                )
+            self._reset_retention()
+            self._error = None
+            manager = FlowManager(
+                server_ports=self._capture_options.ports,
+                scanner_factory=lambda: FrameCollectorScanner(
+                    self._retain_frame
+                ),
+                max_flows=_CALIBRATION_MAX_ACTIVE_FLOWS,
+                track_flow_generations=True,
             )
-
-        capture = AsyncSniffer(
-            iface=capture_interface,
-            filter=bpf_filter,
-            lfilter=lfilter,
-            prn=make_packet_handler(manager),
-            store=False,
-        )
-        try:
-            capture.start()
-        except BaseException:
-            if capture.running:
-                capture.stop()
-            self._manager = None
-            raise
-        self._capture = capture
+            capture = LivePacketCapture(
+                capture_options=self._capture_options,
+                on_packet=make_packet_handler(manager),
+                startup_timeout=self._STARTUP_TIMEOUT_SECONDS,
+            )
+            self._manager = manager
+            self._capture = capture
+            try:
+                capture.start()
+            except BaseException as exc:
+                self._record_error(exc)
+                if capture.cleanup_incomplete:
+                    # The capture thread may still call into this manager. Keep
+                    # both objects alive so stop() can retry verified shutdown
+                    # before finalizing stream state.
+                    _attach_cleanup_owner(
+                        exc,
+                        self,
+                        context="live calibration startup",
+                    )
+                    raise
+                try:
+                    manager.finish()
+                except BaseException as cleanup_error:
+                    if hasattr(exc, "add_note"):
+                        exc.add_note(
+                            "calibration flow cleanup also failed: "
+                            f"{cleanup_error!r}"
+                        )
+                self._manager = None
+                self._capture = None
+                raise
 
     def stop(self) -> CalibrationResult:
         """End the capture and calibrate the collected frames."""
-        if self._capture is None or self._manager is None:
+        with self._lifecycle_lock:
+            self._finish_capture()
+            with self._retention_lock:
+                frames = list(self._frames)
+                retention = self._retention_unlocked()
+            result = calibrate_frames(
+                frames,
+                item_id=self._item_id,
+                quantity=self._quantity,
+                action=self._action,
+                context_frames=self._context_frames,
+                min_confidence=self._min_confidence,
+            )
+            return replace(result, retention=retention)
+
+    def raise_if_failed(self) -> None:
+        """Re-raise a background capture failure in the calling thread."""
+
+        with self._lifecycle_lock:
+            if self._error is not None:
+                raise self._error
+            capture = self._capture
+            if capture is None:
+                return
+            try:
+                capture.raise_if_failed()
+            except BaseException as exc:
+                self._record_error(exc)
+                raise
+            if not capture.running:
+                error = RuntimeError(
+                    "live calibration capture ended unexpectedly"
+                )
+                self._record_error(error)
+                raise error
+
+    def _finish_capture(self) -> None:
+        capture = self._capture
+        manager = self._manager
+        if capture is None or manager is None:
             raise RuntimeError("calibration session was not started")
 
-        capture, self._capture = self._capture, None
-        if capture.running:
-            capture.stop()
-        self._manager.finish()
-        self._manager = None
+        failures: list[BaseException] = []
 
-        return calibrate_frames(
-            self._frames,
-            item_id=self._item_id,
-            quantity=self._quantity,
-            action=self._action,
-            context_frames=self._context_frames,
-            min_confidence=self._min_confidence,
+        def retain(error: BaseException) -> None:
+            if not any(error is previous for previous in failures):
+                failures.append(error)
+
+        if self._error is not None:
+            retain(self._error)
+        stop_failure: Optional[BaseException] = None
+        try:
+            capture.stop()
+        except BaseException as exc:
+            stop_failure = exc
+            retain(exc)
+        capture_stopped = bool(
+            getattr(capture, "stopped", not capture.running)
+        )
+        if not capture_stopped:
+            if stop_failure is None:
+                stop_failure = capture.cleanup_error or RuntimeError(
+                    "live calibration capture cleanup is incomplete"
+                )
+                retain(stop_failure)
+            self._record_error(failures[0])
+            # Reassembly state is still reachable from the capture callback.
+            # Do not finish or discard it until a later stop() verifies that
+            # the capture thread has terminated.
+            raise stop_failure
+        try:
+            capture.raise_if_failed()
+        except BaseException as exc:
+            retain(exc)
+        try:
+            manager.finish()
+        except BaseException as exc:
+            retain(exc)
+        finally:
+            self._capture = None
+            self._manager = None
+
+        if failures:
+            self._record_error(failures[0])
+            raise failures[0]
+
+    def _record_error(self, error: BaseException) -> None:
+        with self._lifecycle_lock:
+            if self._error is None:
+                self._error = error
+
+    def _reset_retention(self) -> None:
+        with self._retention_lock:
+            self._frames.clear()
+            self._frames_observed = 0
+            self._frames_discarded = 0
+            self._bytes_observed = 0
+            self._bytes_retained = 0
+            self._bytes_discarded = 0
+
+    def _retain_frame(self, frame: BDOFrame) -> None:
+        """Retain one frame, evicting the oldest tail prefix as needed."""
+
+        payload_bytes = len(frame.message)
+        with self._retention_lock:
+            self._frames_observed += 1
+            self._bytes_observed += payload_bytes
+            self._frames.append(frame)
+            self._bytes_retained += payload_bytes
+
+            while self._frames and (
+                len(self._frames) > self._max_retained_frames
+                or self._bytes_retained > self._max_retained_bytes
+            ):
+                discarded = self._frames.popleft()
+                discarded_bytes = len(discarded.message)
+                self._frames_discarded += 1
+                self._bytes_discarded += discarded_bytes
+                self._bytes_retained -= discarded_bytes
+
+    def _retention_unlocked(self) -> CalibrationRetention:
+        return CalibrationRetention(
+            frames_observed=self._frames_observed,
+            frames_retained=len(self._frames),
+            frames_discarded=self._frames_discarded,
+            bytes_observed=self._bytes_observed,
+            bytes_retained=self._bytes_retained,
+            bytes_discarded=self._bytes_discarded,
+            max_retained_frames=self._max_retained_frames,
+            max_retained_bytes=self._max_retained_bytes,
         )
 
     def __enter__(self) -> "CalibrationSession":
-        if self._capture is None:
-            self.start()
+        with self._lifecycle_lock:
+            if self._capture is None:
+                self.start()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         # Safety net only: discard the capture if the block exited without
         # calling stop() (for example on an exception).
-        if self._capture is not None:
-            capture, self._capture = self._capture, None
-            if capture.running:
-                capture.stop()
-            self._manager = None
+        with self._lifecycle_lock:
+            if self._capture is None:
+                return
+            try:
+                self._finish_capture()
+            except BaseException as cleanup_error:
+                if exc_value is None:
+                    raise
+                if self.cleanup_incomplete:
+                    _attach_cleanup_owner(
+                        exc_value,
+                        self,
+                        context="live calibration context",
+                    )
+                if hasattr(exc_value, "add_note"):
+                    exc_value.add_note(
+                        "calibration context cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
 
 
 def calibrate_live(
@@ -711,14 +1203,23 @@ def calibrate_live(
     capture_options: Optional[PacketCaptureOptions] = None,
     context_frames: int = 5,
     min_confidence: float = 0.80,
+    max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+    max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
 ) -> CalibrationResult:
     """Blocking convenience wrapper around :class:`CalibrationSession`.
 
-    Suited to console scripts: perform the in-game action once while the
-    capture runs. With ``capture_seconds`` the capture stops automatically;
-    without it, the capture runs until the user interrupts (Ctrl+C), which is
-    treated as "action performed, calibrate now" rather than as an abort.
-    Apps with their own UI should use :class:`CalibrationSession` directly.
+    Suited to console scripts: perform the required in-game sequence while the
+    capture runs. For automatic transfer calibration, the guided sequence is
+    deposit one matching unstackable, deposit four, then withdraw all five.
+    The toolkit does not perform those actions; ``quantity=1`` matches every
+    serialized item record rather than the batch totals 1, 4, or 5.
+    These counts are observed from traffic and are not hard-coded. Loot preview
+    is a separate explicit action; omit ``quantity`` when its displayed amount
+    is random.
+    With ``capture_seconds`` the capture stops automatically; without it, the
+    capture runs until the user interrupts (Ctrl+C), which is treated as
+    "actions performed, calibrate now" rather than as an abort. Apps with
+    their own UI should use :class:`CalibrationSession` directly.
     """
     import time
 
@@ -737,14 +1238,26 @@ def calibrate_live(
         capture_options=capture_options,
         context_frames=context_frames,
         min_confidence=min_confidence,
+        max_retained_frames=max_retained_frames,
+        max_retained_bytes=max_retained_bytes,
     )
     with session:
+        deadline = (
+            None
+            if capture_seconds is None
+            else time.monotonic() + capture_seconds
+        )
         try:
-            if capture_seconds is not None:
-                time.sleep(capture_seconds)
-            else:
-                while True:
-                    time.sleep(0.2)
+            while True:
+                session.raise_if_failed()
+                if deadline is None:
+                    wait_seconds = 0.2
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    wait_seconds = min(0.2, remaining)
+                time.sleep(wait_seconds)
         except KeyboardInterrupt:
             # Ctrl+C ends the listening window; the collected frames still get
             # calibrated, matching the legacy stop-to-finish workflow.
@@ -758,16 +1271,20 @@ def update_profile(
     *,
     action: str = "auto",
     replace: bool = True,
+    replace_entire_action: bool = False,
     backup: bool = True,
     calibration_item_id: Optional[int] = None,
 ) -> ProfileUpdate:
     """Persist promoted specs into a local opcode profile file.
 
-    By default, the profile entries belonging to ``action`` are cleared first,
-    so a recalibration supersedes stale entries instead of accumulating opcode
-    generations under one event type. Pass ``replace=False`` only for an
-    intentional advanced merge that preserves and deduplicates existing specs.
-    The previous file is backed up next to it unless ``backup=False``.
+    By default, only the event families represented by the supplied specs are
+    cleared first.  Explicit-action and raw-spec callers can therefore apply a
+    reviewed partial update without erasing unrelated evidence. Automatic
+    transfer results must contain every runtime-required transfer family.
+    Pass ``replace_entire_action=True`` for an explicit reset of every family
+    belonging to ``action``. Pass ``replace=False`` only for an intentional
+    advanced merge that preserves and deduplicates existing specs. The
+    previous file is backed up next to it unless ``backup=False``.
     """
     if action != "auto" and action not in CALIBRATION_ACTIONS:
         raise ValueError(
@@ -775,13 +1292,42 @@ def update_profile(
             f"expected one of {CALIBRATION_ACTIONS} or 'auto'"
         )
     if isinstance(result, CalibrationResult):
+        from_calibration_result = True
         specs = tuple(result.specs)
         if calibration_item_id is None:
             calibration_item_id = result.calibration_item_id
     else:
+        from_calibration_result = False
         specs = tuple(result)
     if any(not isinstance(spec, MessageSpec) for spec in specs):
         raise TypeError("update_profile expects MessageSpec objects")
+    _validate_profile_replacement_options(replace, replace_entire_action)
+    if from_calibration_result and action == "auto" and specs:
+        transfer_events = {
+            "INVENTORY_TRANSFER",
+            "SOURCE_CONTAINER_DECREMENT",
+            "SOURCE_STACK_DECREMENT",
+            "SOURCE_ITEM_REFERENCE",
+            "STORAGE_ITEM_DELTA",
+        }
+        observed_events = {spec.event for spec in specs}
+        if observed_events & transfer_events:
+            required = {
+                "INVENTORY_TRANSFER",
+                "SOURCE_STACK_DECREMENT",
+                "STORAGE_ITEM_DELTA",
+            }
+            missing = sorted(required - observed_events)
+            if missing:
+                raise CalibrationAuthorityError(
+                    "auto calibration is incomplete and cannot safely replace a "
+                    "post-patch profile; missing required runtime family/families: "
+                    f"{', '.join(missing)}. Capture the complete guided transfer "
+                    "sequence so both directions and the source-stack decrement "
+                    "are observed, including an unstackable multi-record deposit, "
+                    "or pass the matching explicit action only for an intentional "
+                    "reviewed partial update. No profile was written."
+                )
     profile_path = Path(path)
     if not specs:
         return ProfileUpdate(
@@ -801,9 +1347,17 @@ def update_profile(
 
     replaced_events: tuple[str, ...] = ()
     if replace and specs:
-        replaced_events = _events_for_action(action, specs)
-        for event in replaced_events:
+        replacement_scope = (
+            _events_for_action(action)
+            if replace_entire_action
+            else tuple(dict.fromkeys(spec.event for spec in specs))
+        )
+        removed_events: list[str] = []
+        for event in replacement_scope:
+            if data["specs"].get(event):
+                removed_events.append(event)
             data["specs"][event] = []
+        replaced_events = tuple(removed_events)
 
     existing_keys = _profile_dedupe_keys(data)
     added: list[MessageSpec] = []
@@ -824,6 +1378,15 @@ def update_profile(
             backup_path=None,
             written=False,
         )
+
+    # Reject a LOOT merge that would make runtime layout selection impossible
+    # before creating a backup or replacing the destination file. Other
+    # calibration families may intentionally persist partial evidence that is
+    # not yet a runtime-decodable spec.
+    _validate_loot_profile_entries(
+        data["specs"].get("LOOT_PREVIEW", ()),
+        source=profile_path,
+    )
 
     data["profile_active"] = True
     data["updated_at"] = _utc_now_text()
@@ -861,7 +1424,10 @@ def calibrate_and_update(
     pcap_ports: Optional[tuple[int, ...]] = None,
     context_frames: int = 5,
     min_confidence: float = 0.80,
+    max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+    max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
     replace: bool = True,
+    replace_entire_action: bool = False,
     backup: bool = True,
 ) -> tuple[CalibrationResult, Optional[ProfileUpdate]]:
     """Calibrate and persist in one call — a facade over the two-step API.
@@ -874,22 +1440,45 @@ def calibrate_and_update(
     default and both objects come back; if it found nothing the profile file
     is left untouched and the update slot is ``None``::
 
-        result, update = calibrate_and_update("opcodes.local", item_id=7003)
+        result, update = calibrate_and_update(
+            "opcodes.local",
+            item_id=15156,
+            quantity=1,
+        )
         print(result.summary())
         if update is not None:
             print(update.summary())
 
     Replacement is also the default on :func:`update_profile`: normal
-    post-patch recalibration supersedes stale entries. Pass ``replace=False``
-    only for an intentional reviewed merge, or use the two-step API when specs
-    must be inspected or filtered before persistence.
+    post-patch recalibration supersedes stale entries for the event families
+    actually found. Pass ``replace_entire_action=True`` for an explicit reset
+    of every family owned by ``action``. Pass ``replace=False`` only for an
+    intentional reviewed merge, or use the two-step API when specs must be
+    inspected or filtered before persistence.
     """
+    _validate_profile_replacement_options(replace, replace_entire_action)
     if pcap is not None:
         for name, value in (
             ("capture_seconds", capture_seconds),
             ("capture_options", capture_options),
         ):
             if value is not None:
+                raise ValueError(
+                    f"{name} applies to live calibration only; omit it with pcap"
+                )
+        for name, value, default in (
+            (
+                "max_retained_frames",
+                max_retained_frames,
+                DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+            ),
+            (
+                "max_retained_bytes",
+                max_retained_bytes,
+                DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+            ),
+        ):
+            if value != default:
                 raise ValueError(
                     f"{name} applies to live calibration only; omit it with pcap"
                 )
@@ -916,6 +1505,8 @@ def calibrate_and_update(
             capture_options=capture_options,
             context_frames=context_frames,
             min_confidence=min_confidence,
+            max_retained_frames=max_retained_frames,
+            max_retained_bytes=max_retained_bytes,
         )
 
     if not result.specs:
@@ -926,6 +1517,7 @@ def calibrate_and_update(
         profile_path,
         action=action,
         replace=replace,
+        replace_entire_action=replace_entire_action,
         backup=backup,
     )
     return result, update
@@ -933,11 +1525,16 @@ def calibrate_and_update(
 
 def reset_profile(
     path: str | Path,
-    calibration_item_id: int = 7003,
+    calibration_item_id: int = 15156,
     *,
     backup: bool = True,
 ) -> Optional[Path]:
-    """Write an empty active profile, returning the backup path if any."""
+    """Write an empty active profile, returning the backup path if any.
+
+    ``calibration_item_id`` is maintenance metadata only. The default names the
+    recommended unstackable calibration item and remains explicitly
+    overrideable; resetting a profile does not itself calibrate that item.
+    """
     if (
         isinstance(calibration_item_id, bool)
         or not isinstance(calibration_item_id, int)
@@ -952,7 +1549,7 @@ def reset_profile(
         shutil.copy2(profile_path, backup_path)
 
     data = {
-        "version": 1,
+        "version": OPCODE_PROFILE_SCHEMA_VERSION,
         "updated_at": _utc_now_text(),
         "calibration_item_id": calibration_item_id,
         "profile_active": True,
@@ -973,6 +1570,11 @@ def reset_profile(
 # frames start at 251. The cut sits mid-gap so multi-record deposit
 # references stay classified without ever reaching wrapper territory.
 REFERENCE_FRAME_MAX_LENGTH = 128
+# Source-stack decrement batches are compact repeated records rather than item
+# wrappers. The observed five-record legacy batch is 144 bytes, so inspect a
+# wider but still bounded window only inside the instance-anchored decrement
+# detector; do not broaden direction classification's generic references.
+SOURCE_DECREMENT_FRAME_MAX_LENGTH = 512
 
 # Context labels with real per-source entropy. The low-entropy storage-delta
 # reasons (05.., 20..) and the all-zero character-load context are excluded:
@@ -999,7 +1601,7 @@ def _has_context_label_before(frame: BDOFrame, before_offset: int) -> bool:
 
 
 def _has_item_reference_frame(
-    frames: list[BDOFrame],
+    frame_index: _FrameIndex,
     record_frame: BDOFrame,
     item_id: int,
     context_frames: int,
@@ -1013,14 +1615,7 @@ def _has_item_reference_frame(
     its companion frames must not bleed into this record's classification.
     """
     item_bytes = item_id.to_bytes(4, "little")
-    same_flow = [
-        frame for frame in frames if frame.context.flow == record_frame.context.flow
-    ]
-    try:
-        index = same_flow.index(record_frame)
-    except ValueError:
-        return False
-    for frame in reversed(same_flow[max(0, index - context_frames) : index]):
+    for frame in reversed(frame_index.context_before(record_frame, context_frames)):
         if _plausible_record_offsets(frame, item_bytes):
             return False  # adjacent transaction's record frame: boundary
         if frame.length <= REFERENCE_FRAME_MAX_LENGTH and item_bytes in frame.message:
@@ -1039,6 +1634,8 @@ def detect_transfer_family(
     item_offset: int,
     item_id: int,
     context_frames: int = 5,
+    *,
+    _frame_index: Optional[_FrameIndex] = None,
 ) -> tuple[Optional[str], bool, bool, bool]:
     """Classify a record frame's transfer direction, opcode-free.
 
@@ -1063,8 +1660,9 @@ def detect_transfer_family(
     generation, whose storage delta has no offset-8 context) — it can bleed in
     from an adjacent transaction, so an intrinsic signal always outranks it.
     """
+    frame_index = _frame_index or _FrameIndex(frames)
     reference_frame = _has_item_reference_frame(
-        frames, record_frame, item_id, context_frames
+        frame_index, record_frame, item_id, context_frames
     )
     context_label = _has_context_label_before(record_frame, item_offset)
     storage_context = _has_storage_delta_context(record_frame, item_offset)
@@ -1089,6 +1687,7 @@ def _select_records_by_family(
     context_frames: int,
     evidence: list[DirectionEvidence],
     strict: bool,
+    frame_index: _FrameIndex,
     allow_unclassified: bool = False,
 ) -> list["_CalibratedItemRecord"]:
     """Keep only records whose detected family matches ``action``.
@@ -1111,7 +1710,12 @@ def _select_records_by_family(
     contradictory_intrinsics = False
     for record in records:
         family, reference_frame, context_label, storage_context = detect_transfer_family(
-            frames, record.frame, record.item_offset, record.item_id, context_frames
+            frames,
+            record.frame,
+            record.item_offset,
+            record.item_id,
+            context_frames,
+            _frame_index=frame_index,
         )
         evidence.append(
             DirectionEvidence(
@@ -1218,6 +1822,7 @@ def _calibrate_storage_to_inventory(
     # running it on ALL structural candidates makes strict mismatch detection
     # symmetric: a wrong-direction capture raises here with evidence recorded
     # instead of silently pre-filtering down to an empty result.
+    frame_index = options.frame_index or _FrameIndex(frames)
     receipt_records = _select_records_by_family(
         frames,
         receipt_records,
@@ -1225,6 +1830,7 @@ def _calibrate_storage_to_inventory(
         options.context_frames,
         evidence,
         strict,
+        frame_index,
     )
     if not receipt_records:
         return []
@@ -1266,8 +1872,7 @@ def _calibrate_storage_to_inventory(
             quantity_offset=layout_item_offset + 4,
             item_instance_offset=layout_instance_offset,
             context_offset=_discover_context_offset(best.frame, layout_item_offset),
-            repeat_stride=_discover_repeat_stride(best.frame, layout_item_offset)
-            or observed_stride,
+            repeat_stride=observed_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "storage-to-inventory"),
             observed_at=_iso_timestamp(best.frame.context.timestamp),
@@ -1300,6 +1905,7 @@ def _calibrate_inventory_to_storage(
         and record.instance != LOOT_PREVIEW_SENTINEL_INSTANCE
         and _passes_min_confidence(record.confidence, options.min_confidence)
     ]
+    frame_index = options.frame_index or _FrameIndex(frames)
     storage_records = _select_records_by_family(
         frames,
         storage_records,
@@ -1307,6 +1913,7 @@ def _calibrate_inventory_to_storage(
         options.context_frames,
         evidence,
         strict,
+        frame_index,
         allow_unclassified=strict,
     )
     if not storage_records:
@@ -1317,7 +1924,25 @@ def _calibrate_inventory_to_storage(
         storage_records, key=lambda record: (record.confidence, -record.item_offset)
     )
     specs: list[MessageSpec] = []
-    source_stack = _discover_source_stack_decrement(frames, best, options)
+    # The single-record wrapper normally wins the primary-record score because
+    # its normalized message length is directly observable.  Do not let that
+    # choice discard stronger repeated decrement evidence from another
+    # validated deposit in the same calibration run.  Evaluate record zero of
+    # every unique target deposit frame; repeated shapes already outrank their
+    # single-record counterparts in companion scoring, while incompatible
+    # equal-strength shapes still fail closed in the shared selector.
+    first_storage_records: dict[int, _CalibratedItemRecord] = {}
+    for record in storage_records:
+        frame_identity = id(record.frame)
+        previous = first_storage_records.get(frame_identity)
+        if previous is None or record.item_offset < previous.item_offset:
+            first_storage_records[frame_identity] = record
+    source_stack_candidates: list[MessageSpec] = []
+    for record in first_storage_records.values():
+        candidate = _discover_source_stack_decrement(frames, record, options)
+        if candidate is not None:
+            source_stack_candidates.append(candidate)
+    source_stack = _unique_best_companion_spec(source_stack_candidates)
     if source_stack is not None:
         specs.append(source_stack)
 
@@ -1339,15 +1964,67 @@ def _calibrate_inventory_to_storage(
         layout_item_offset,
         layout_instance_offset,
     )
-    storage_context_offset = _discover_storage_context_offset(
-        best.frame,
-        layout_item_offset,
+    storage_context_offset = _discover_storage_context_offset_from_frames(
+        (record.frame for record in storage_records),
+        opcode=best.frame.opcode,
+        item_offset=layout_item_offset,
     )
-    repeat_stride = observed_stride or _discover_storage_repeat_stride(
-        best.frame,
-        layout_item_offset,
-        layout_instance_offset,
+    record_count_offset = _discover_storage_record_count_offset(
+        frames,
+        records=storage_records,
+        opcode=best.frame.opcode,
+        item_offset=layout_item_offset,
+        instance_offset=layout_instance_offset,
+        single_record_length=single_record_length,
     )
+    # The strongest target record can be the single-record action even when
+    # the same guided run also contains the multi-record shape that proves the
+    # wrapper stride. Learn that stride across every structurally compatible
+    # same-opcode frame instead of coupling it to whichever record won the score
+    # tie. This lets character-state analysis validate count-zero envelopes
+    # even for an account whose storages are all empty after calibration.
+    observed_strides = {observed_stride} if observed_stride is not None else set()
+    seen_shape_messages: set[bytes] = set()
+    for frame in frames:
+        if frame.opcode != best.frame.opcode or frame.message in seen_shape_messages:
+            continue
+        seen_shape_messages.add(frame.message)
+        candidate_base, candidate_stride = _record_frame_shape(
+            frame,
+            best.item_id,
+            layout_item_offset,
+            layout_instance_offset,
+        )
+        if candidate_base == single_record_length and candidate_stride is not None:
+            observed_strides.add(candidate_stride)
+    repeat_stride = (
+        next(iter(observed_strides)) if len(observed_strides) == 1 else None
+    )
+    missing_authority: list[str] = []
+    if storage_context_offset is None:
+        missing_authority.append("destination-field")
+    if record_count_offset is None:
+        missing_authority.append("record-count-field")
+    if missing_authority:
+        missing_text = ", ".join(missing_authority)
+        guidance: list[str] = []
+        if "destination-field" in missing_authority:
+            guidance.append(
+                "repeat the deposit in an unambiguous registered town such as "
+                "Velia or Heidel (or include controlled deposits to different towns)"
+            )
+        if "record-count-field" in missing_authority:
+            guidance.append(
+                "include two independently validated record counts (for example "
+                "one single-record and one unstackable multi-record deposit, or "
+                "two unstackable deposits with different counts)"
+            )
+        raise CalibrationAuthorityError(
+            f"storage opcode 0x{best.frame.opcode:04X} was observed, but its "
+            f"{missing_text} could not be uniquely proven. No calibration "
+            "result was produced and no profile should be updated. To resolve "
+            f"this, {'; and '.join(guidance)}. Then retry calibration."
+        )
     specs.append(
         MessageSpec(
             event="STORAGE_ITEM_DELTA",
@@ -1357,6 +2034,7 @@ def _calibrate_inventory_to_storage(
             quantity_added_offset=layout_item_offset + 4,
             destination_instance_offset=layout_instance_offset,
             context_offset=storage_context_offset,
+            record_count_offset=record_count_offset,
             repeat_stride=repeat_stride,
             confidence=_confidence_label(best.confidence),
             source=_calibration_source(options, "inventory-to-storage"),
@@ -1651,7 +2329,11 @@ def _discover_source_container_decrement(
     quantity_bytes = receipt.quantity.to_bytes(4, "little")
     candidates: list[MessageSpec] = []
 
-    context = _context_before(frames, receipt.frame, options.context_frames)
+    context = _context_before(
+        options.frame_index or _FrameIndex(frames),
+        receipt.frame,
+        options.context_frames,
+    )
     for frame in reversed(context):
         if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
             continue
@@ -1686,7 +2368,7 @@ def _discover_source_container_decrement(
             structural_instance_offset = _source_container_structural_instance_offset(
                 frame, quantity_offset
             )
-            instance_offset = exact_instance_offset
+            instance_offset: Optional[int] = exact_instance_offset
             if instance_offset is not None:
                 score = 0.90
             elif structural_instance_offset is not None:
@@ -1730,11 +2412,23 @@ def _discover_source_stack_decrement(
         else storage_delta.quantity
     )
     quantity_bytes = quantity.to_bytes(4, "little")
-    context = _context_before(frames, storage_delta.frame, options.context_frames)
+    storage_record_offsets = _full_transfer_record_offsets(
+        storage_delta.frame,
+        storage_delta.item_offset,
+        storage_delta.instance_offset,
+    )
+    expected_record_count = (
+        len(storage_record_offsets) if len(storage_record_offsets) > 1 else None
+    )
+    context = _context_before(
+        options.frame_index or _FrameIndex(frames),
+        storage_delta.frame,
+        options.context_frames,
+    )
     candidates: list[MessageSpec] = []
 
     for frame_index, frame in enumerate(context):
-        if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
+        if not 20 <= frame.length <= SOURCE_DECREMENT_FRAME_MAX_LENGTH:
             continue
         if item_bytes in frame.message:
             continue
@@ -1746,11 +2440,46 @@ def _discover_source_stack_decrement(
         exact_instance_offset = (
             instance_offsets[0] if len(instance_offsets) == 1 else None
         )
+        if (
+            frame.length > REFERENCE_FRAME_MAX_LENGTH
+            and exact_instance_offset is None
+        ):
+            # Wider decrement batches are admitted only through an exact
+            # cross-frame instance anchor. Otherwise ordinary context frames
+            # carrying common quantities can tie the established compact
+            # structural candidate.
+            continue
         has_later_reference = any(
             _is_source_item_reference(candidate, item_bytes)
             for candidate in context[frame_index + 1 :]
         )
         if exact_instance_offset is None and not has_later_reference:
+            continue
+
+        repeated_shape = _source_stack_repeated_shape(
+            frame,
+            quantity_bytes,
+            exact_instance_offset,
+            expected_record_count=expected_record_count,
+        )
+        if repeated_shape is not None:
+            base_length, repeat_stride, instance_offset, quantity_offset = (
+                repeated_shape
+            )
+            candidates.append(
+                MessageSpec(
+                    event="SOURCE_STACK_DECREMENT",
+                    opcode=frame.opcode,
+                    length=base_length,
+                    repeat_stride=repeat_stride,
+                    source_instance_offset=instance_offset,
+                    quantity_removed_offset=quantity_offset,
+                    confidence=_confidence_label(0.90),
+                    source=_calibration_source(options, "inventory-to-storage"),
+                    observed_at=_iso_timestamp(frame.context.timestamp),
+                    score=0.90,
+                )
+            )
             continue
 
         for quantity_offset in _find_all(frame.message, quantity_bytes):
@@ -1761,11 +2490,11 @@ def _discover_source_stack_decrement(
             structural_instance_offset = _source_stack_structural_instance_offset(
                 frame, quantity_offset
             )
-            instance_offset = exact_instance_offset
-            if instance_offset is not None:
+            candidate_instance_offset: Optional[int] = exact_instance_offset
+            if candidate_instance_offset is not None:
                 score = 0.88
             elif structural_instance_offset is not None:
-                instance_offset = structural_instance_offset
+                candidate_instance_offset = structural_instance_offset
                 score = 0.86
             else:
                 score = 0.82
@@ -1774,7 +2503,7 @@ def _discover_source_stack_decrement(
                     event="SOURCE_STACK_DECREMENT",
                     opcode=frame.opcode,
                     length=frame.length,
-                    source_instance_offset=instance_offset,
+                    source_instance_offset=candidate_instance_offset,
                     quantity_removed_offset=quantity_offset,
                     confidence=_confidence_label(score),
                     source=_calibration_source(options, "inventory-to-storage"),
@@ -1783,6 +2512,124 @@ def _discover_source_stack_decrement(
                 )
             )
     return _unique_best_companion_spec(candidates)
+
+
+def _source_stack_repeated_shape(
+    frame: BDOFrame,
+    quantity_bytes: bytes,
+    exact_instance_offset: Optional[int],
+    *,
+    expected_record_count: Optional[int] = None,
+) -> Optional[tuple[int, int, int, int]]:
+    """Normalize an instance-anchored decrement batch to record-one geometry.
+
+    The quantity/instance phase is part of the repeated record, not a stable
+    patch constant.  Anchor record zero with the exact destination instance,
+    try every repeated quantity phase that keeps both fields inside one
+    record, and retain only one longest valid geometry.  Longer stride
+    multiples can be aliases that skip records; equal-strength distinct
+    phases are ambiguous and fail closed.
+    """
+
+    if exact_instance_offset is None:
+        return None
+    if expected_record_count is not None and expected_record_count < 2:
+        return None
+    quantity_offsets = tuple(sorted(set(_find_all(frame.message, quantity_bytes))))
+    if len(quantity_offsets) < 2:
+        return None
+    quantity_offset_set = set(quantity_offsets)
+
+    # Four quantity bytes and eight instance bytes must coexist without
+    # overlap inside one repeated record, so a smaller stride cannot be a
+    # valid record geometry. This is a field-width invariant, not a layout
+    # constant.
+    minimum_stride = 12
+    candidates: list[tuple[int, int, int, int]] = []
+    for first_quantity_offset in quantity_offsets:
+        if _ranges_overlap(
+            first_quantity_offset,
+            4,
+            exact_instance_offset,
+            8,
+        ):
+            continue
+        for later_quantity_offset in quantity_offsets:
+            repeat_stride = later_quantity_offset - first_quantity_offset
+            if repeat_stride < minimum_stride:
+                continue
+
+            record_count = 0
+            while True:
+                delta = record_count * repeat_stride
+                quantity_offset = first_quantity_offset + delta
+                instance_offset = exact_instance_offset + delta
+                if quantity_offset not in quantity_offset_set:
+                    break
+                if (
+                    quantity_offset < 5
+                    or quantity_offset + 4 > frame.length
+                    or instance_offset < 5
+                    or instance_offset + 8 > frame.length
+                    or _ranges_overlap(
+                        quantity_offset,
+                        4,
+                        instance_offset,
+                        8,
+                    )
+                    or not _is_plausible_instance(
+                        frame.message[instance_offset : instance_offset + 8]
+                    )
+                ):
+                    break
+                record_count += 1
+            if record_count < 2 or (
+                expected_record_count is not None
+                and record_count != expected_record_count
+            ):
+                continue
+
+            prefix_length = frame.length - record_count * repeat_stride
+            base_length = prefix_length + repeat_stride
+            if (
+                prefix_length < 5
+                or first_quantity_offset < prefix_length
+                or exact_instance_offset < prefix_length
+                or first_quantity_offset + 4 > base_length
+                or exact_instance_offset + 8 > base_length
+            ):
+                continue
+            candidates.append(
+                (
+                    record_count,
+                    base_length,
+                    repeat_stride,
+                    first_quantity_offset,
+                )
+            )
+
+    if not candidates:
+        return None
+    best_count = max(candidate[0] for candidate in candidates)
+    best_shapes = {
+        (base_length, repeat_stride, first_quantity_offset)
+        for (
+            record_count,
+            base_length,
+            repeat_stride,
+            first_quantity_offset,
+        ) in candidates
+        if record_count == best_count
+    }
+    if len(best_shapes) != 1:
+        return None
+    base_length, repeat_stride, first_quantity_offset = next(iter(best_shapes))
+    return (
+        base_length,
+        repeat_stride,
+        exact_instance_offset,
+        first_quantity_offset,
+    )
 
 
 def _source_container_structural_instance_offset(
@@ -1887,7 +2734,12 @@ def _discover_source_item_reference(
 ) -> Optional[MessageSpec]:
     item_bytes = storage_delta.item_id.to_bytes(4, "little")
 
-    for frame in reversed(_context_before(frames, storage_delta.frame, options.context_frames)):
+    context = _context_before(
+        options.frame_index or _FrameIndex(frames),
+        storage_delta.frame,
+        options.context_frames,
+    )
+    for frame in reversed(context):
         if not 20 <= frame.length <= REFERENCE_FRAME_MAX_LENGTH:
             continue
         item_offset = frame.message.find(item_bytes)
@@ -1909,23 +2761,11 @@ def _discover_source_item_reference(
 
 
 def _context_before(
-    frames: list[BDOFrame],
+    frame_index: _FrameIndex,
     target_frame: BDOFrame,
     context_frames: int,
 ) -> list[BDOFrame]:
-    if context_frames <= 0:
-        return []
-    try:
-        index = frames.index(target_frame)
-    except ValueError:
-        return []
-
-    same_flow_before = [
-        frame
-        for frame in frames[:index]
-        if frame.context.flow == target_frame.context.flow
-    ]
-    return same_flow_before[-context_frames:]
+    return list(frame_index.context_before(target_frame, context_frames))
 
 
 def _discover_context_offset(frame: BDOFrame, before_offset: int) -> Optional[int]:
@@ -1951,109 +2791,193 @@ def _discover_storage_context_offset(
     frame: BDOFrame,
     before_offset: int,
 ) -> Optional[int]:
-    """Find a structurally credible storage destination before an item.
+    """Return one unambiguous town column in a structurally valid wrapper."""
+    if not _has_dynamic_storage_record_geometry(frame, before_offset):
+        return None
+    candidates = storage_destination_candidates(
+        frame.message,
+        before_offset=before_offset,
+    )
+    if len(candidates) == 1:
+        return candidates[0][0]
+    return None
 
-    Three legacy keys were observed at multiple offsets and remain explicit
-    signatures. Other town IDs are small integers and are only meaningful at
-    the current wrapper's item-relative field with its mode/token/count header;
-    scanning all known IDs anywhere would misclassify ordinary uint32 values.
+
+def _discover_storage_context_offset_from_frames(
+    frames: Iterable[BDOFrame],
+    *,
+    opcode: int,
+    item_offset: int,
+) -> Optional[int]:
+    """Learn the destination column by cross-frame offset consistency.
+
+    This intentionally assumes neither the byte envelope around a town ID nor
+    an item-relative position.  Registered-ID overlaps disappear when the
+    same field column is intersected across different destination values.
     """
-    best_offset = None
-    current_offset = before_offset - 9
-    for context_bytes in STORAGE_DELTA_CONTEXTS:
-        search_at = 0
-        while True:
-            offset = frame.message.find(context_bytes, search_at, before_offset)
-            if offset < 0:
-                break
-            # A legacy key at the current item-relative position must still
-            # prove current-wrapper record geometry. At any other historical
-            # position it retains its explicit legacy-signature behavior.
-            if offset != current_offset:
-                best_offset = (
-                    offset if best_offset is None else max(best_offset, offset)
-                )
-            search_at = offset + 1
 
-    mode_offset = before_offset - 30
-    token_end = before_offset - 21
-    count_offset = before_offset - 20
-    if mode_offset >= 5 and current_offset >= 0 and token_end <= len(frame.message):
-        candidate = frame.message[current_offset : current_offset + 4]
-        storage_id = int.from_bytes(candidate, "little")
+    candidate_intersection: Optional[set[int]] = None
+    unregistered_messages: list[bytes] = []
+    messages_seen: set[bytes] = set()
+    for frame in frames:
         if (
-            storage_location(storage_id) is not None
-            and _has_current_storage_declared_geometry(frame, before_offset)
+            frame.opcode != opcode
+            or frame.message in messages_seen
+            or not _has_dynamic_storage_record_geometry(frame, item_offset)
         ):
-            best_offset = (
-                current_offset
-                if best_offset is None
-                else max(best_offset, current_offset)
+            continue
+        candidates = {
+            offset
+            for offset, _storage_id in storage_destination_candidates(
+                frame.message,
+                before_offset=item_offset,
             )
-    return best_offset
+        }
+        messages_seen.add(frame.message)
+        if not candidates:
+            # A newly added town can be structurally valid before the toolkit
+            # name registry knows its numeric key. Let registered destinations
+            # establish the column, then require that same column to contain a
+            # nonzero uint32 here. An unknown town must not veto an otherwise
+            # provable patch schema or be relabeled from a decoy elsewhere.
+            unregistered_messages.append(frame.message)
+            continue
+        candidate_intersection = (
+            candidates
+            if candidate_intersection is None
+            else candidate_intersection & candidates
+        )
+        if not candidate_intersection:
+            return None
+    if candidate_intersection is None or len(candidate_intersection) != 1:
+        return None
+    selected = next(iter(candidate_intersection))
+    if any(
+        selected + 4 > item_offset
+        or int.from_bytes(message[selected : selected + 4], "little") == 0
+        for message in unregistered_messages
+    ):
+        return None
+    return selected
 
 
-def _has_current_storage_declared_geometry(
+def _has_dynamic_storage_record_geometry(
     frame: BDOFrame,
     item_offset: int,
 ) -> bool:
-    """Validate the item-20 count against every declared item record.
+    """Whether some prefix count proves every full storage item record."""
 
-    The exact prefix length is not pinned. Search the narrow header-to-record
-    boundary and accept only one resulting record-offset geometry whose item,
-    quantity, and instance fields all validate. This keeps an unfamiliar
-    operation mode calibratable without trusting a coincidental town integer.
-    """
-    count_offset = item_offset - 20
-    context_end = item_offset - 5
-    if count_offset < 5 or count_offset + 2 > len(frame.message):
+    if item_offset + 43 > frame.length:
         return False
-    declared_count = int.from_bytes(
-        frame.message[count_offset : count_offset + 2], "little"
-    )
-    if declared_count <= 0:
-        return False
-
-    prefix_start = max(count_offset + 2, context_end)
-    geometries: set[tuple[int, ...]] = set()
-    for prefix_length in range(prefix_start, item_offset + 1):
-        record_bytes = frame.length - prefix_length
-        if record_bytes <= 0 or record_bytes % declared_count:
+    geometries: set[tuple[int, int]] = set()
+    for count_offset in range(5, max(5, item_offset - 1)):
+        count = int.from_bytes(
+            frame.message[count_offset : count_offset + 2],
+            "little",
+        )
+        if count <= 0:
             continue
-        stride = record_bytes // declared_count
-        relative_item_offset = item_offset - prefix_length
-        if relative_item_offset < 0 or relative_item_offset + 43 > stride:
-            continue
-        deltas = tuple(stride * index for index in range(declared_count))
-        if all(
-            _looks_like_full_item_record(frame, item_offset + delta)
-            for delta in deltas
-        ):
-            geometries.add(deltas)
-    return len(geometries) == 1
+        for prefix_length in range(max(5, count_offset + 2), item_offset + 1):
+            record_bytes = frame.length - prefix_length
+            if record_bytes <= 0 or record_bytes % count:
+                continue
+            stride = record_bytes // count
+            relative_item_offset = item_offset - prefix_length
+            if relative_item_offset < 0 or relative_item_offset + 43 > stride:
+                continue
+            if all(
+                _looks_like_full_item_record(
+                    frame,
+                    item_offset + index * stride,
+                )
+                for index in range(count)
+            ):
+                geometries.add((count, stride))
+    return bool(geometries)
 
 
-def _discover_repeat_stride(frame: BDOFrame, item_offset: int) -> Optional[int]:
-    if item_offset != 33:
-        return None
-    record_bytes = frame.length - CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH
-    if record_bytes > 0 and record_bytes % 228 == 0:
-        return 228
-    return None
-
-
-def _discover_storage_repeat_stride(
-    frame: BDOFrame,
+def _discover_storage_record_count_offset(
+    frames: Iterable[BDOFrame],
+    *,
+    records: Iterable[_CalibratedItemRecord],
+    opcode: int,
     item_offset: int,
     instance_offset: Optional[int],
+    single_record_length: int,
 ) -> Optional[int]:
-    """Recognize the observed storage wrapper shape without trusting opcode."""
-    if item_offset != 37 or instance_offset != 72:
+    """Learn one authoritative uint16 count column from record geometry.
+
+    A single wrapper can contain another small integer equal to its item
+    count.  Intersecting candidates across independently validated frames and
+    count shapes prevents such a field from silently impersonating the real
+    declaration.  No absolute or item-relative count position is assumed.
+    """
+
+    if instance_offset is None:
         return None
-    record_bytes = frame.length - 35
-    if record_bytes > 0 and record_bytes % CURRENT_STORAGE_DELTA_RECORD_STRIDE == 0:
-        return CURRENT_STORAGE_DELTA_RECORD_STRIDE
-    return None
+    records_by_message: dict[bytes, list[int]] = {}
+    for record in records:
+        if record.frame.opcode != opcode:
+            continue
+        records_by_message.setdefault(record.frame.message, []).append(
+            record.item_offset
+        )
+    candidate_intersection: Optional[set[int]] = None
+    messages_seen: set[bytes] = set()
+    counts_seen: set[int] = set()
+    for frame in frames:
+        if frame.opcode != opcode or frame.message in messages_seen:
+            continue
+        offsets = _full_transfer_record_offsets(
+            frame,
+            item_offset,
+            instance_offset,
+        )
+        if not offsets:
+            offsets = sorted(set(records_by_message.get(frame.message, ())))
+        if not offsets or offsets[0] != item_offset:
+            continue
+        count = len(offsets)
+        if count == 1:
+            if frame.length != single_record_length:
+                continue
+        else:
+            strides = {later - earlier for earlier, later in zip(offsets, offsets[1:])}
+            if len(strides) != 1:
+                continue
+            stride = next(iter(strides))
+            if frame.length - (count - 1) * stride != single_record_length:
+                continue
+
+        search_end = min(item_offset, len(frame.message))
+        candidates = {
+            offset
+            for offset in range(5, max(5, search_end - 1))
+            if int.from_bytes(frame.message[offset : offset + 2], "little")
+            == count
+        }
+        if not candidates:
+            return None
+        messages_seen.add(frame.message)
+        counts_seen.add(count)
+        candidate_intersection = (
+            candidates
+            if candidate_intersection is None
+            else candidate_intersection & candidates
+        )
+        if not candidate_intersection:
+            return None
+
+    # One count shape cannot distinguish the declaration from an unrelated
+    # header integer that happens to carry the same value. Two independently
+    # validated shapes are the minimum patch-agnostic semantic proof.
+    if (
+        len(counts_seen) < 2
+        or candidate_intersection is None
+        or len(candidate_intersection) != 1
+    ):
+        return None
+    return next(iter(candidate_intersection))
 
 
 def _looks_like_full_item_record(frame: BDOFrame, item_offset: int) -> bool:
@@ -2119,10 +3043,7 @@ def _utc_now_text() -> str:
     )
 
 
-def _events_for_action(
-    action: str,
-    specs: Iterable[MessageSpec] = (),
-) -> tuple[str, ...]:
+def _events_for_action(action: str) -> tuple[str, ...]:
     if action == "loot-preview":
         return ("LOOT_PREVIEW",)
     if action == "storage-to-inventory":
@@ -2133,8 +3054,23 @@ def _events_for_action(
             "SOURCE_ITEM_REFERENCE",
             "STORAGE_ITEM_DELTA",
         )
-    discovered = tuple(dict.fromkeys(spec.event for spec in specs))
-    return discovered or OPCODE_PROFILE_EVENTS
+    # ``auto`` observes both transfer directions but never owns the separate
+    # loot-preview workflow.
+    return tuple(event for event in OPCODE_PROFILE_EVENTS if event != "LOOT_PREVIEW")
+
+
+def _validate_profile_replacement_options(
+    replace: bool,
+    replace_entire_action: bool,
+) -> None:
+    if not isinstance(replace, bool):
+        raise TypeError("replace must be a boolean")
+    if not isinstance(replace_entire_action, bool):
+        raise TypeError("replace_entire_action must be a boolean")
+    if replace_entire_action and not replace:
+        raise ValueError(
+            "replace_entire_action=True cannot be combined with replace=False"
+        )
 
 
 def _load_profile_data(path: Path) -> dict[str, Any]:
@@ -2149,13 +3085,17 @@ def _load_profile_data(path: Path) -> dict[str, Any]:
         if not isinstance(data, dict):
             raise ProfileError(f"Opcodes JSON {path} must be a top-level object")
     else:
-        data = {}
+        data = {"version": OPCODE_PROFILE_SCHEMA_VERSION}
 
     version = data.get("version")
-    if version is None:
-        version = 1
-    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ProfileError(f"version in {path} must be a positive integer")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version != OPCODE_PROFILE_SCHEMA_VERSION
+    ):
+        raise ProfileError(
+            f"version in {path} must be {OPCODE_PROFILE_SCHEMA_VERSION}"
+        )
     active = data.get("profile_active", False)
     if not isinstance(active, bool):
         raise ProfileError(f"profile_active in {path} must be a boolean")
@@ -2218,6 +3158,7 @@ def _profile_dedupe_keys(data: dict[str, Any]) -> set[tuple[object, ...]]:
                     entry.get("quantity_offset"),
                     entry.get("item_instance_offset"),
                     entry.get("context_offset"),
+                    entry.get("record_count_offset"),
                     entry.get("inventory_slot_offset"),
                     entry.get("source_instance_offset"),
                     entry.get("quantity_removed_offset"),

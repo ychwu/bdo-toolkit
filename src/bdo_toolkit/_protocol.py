@@ -32,8 +32,6 @@ TCP_SEQUENCE_MODULUS = 1 << 32
 TCP_SEQUENCE_HALF_RANGE = TCP_SEQUENCE_MODULUS >> 1
 LOOT_PREVIEW_SENTINEL_INSTANCE = b"\xff" * 8
 
-CURRENT_INVENTORY_TRANSFER_RECORD_BASE_LENGTH = 27
-CURRENT_STORAGE_DELTA_RECORD_STRIDE = 226
 CHARACTER_LOAD_CONTEXT = b"\x00" * 4
 # Legacy storage-delta signatures that calibration has observed at varying
 # pre-record offsets. The complete location registry below must not be used as
@@ -78,6 +76,8 @@ SOURCE_CONTEXT_LABELS: dict[bytes, str] = {
     bytes.fromhex("721f296d"): "NPC Shop",
     bytes.fromhex("56687f25"): "Choose Your Rewards Box",
     bytes.fromhex("52e89da8"): "NPC Sell",
+    bytes.fromhex("60260000"): "Event Adventures",
+    bytes.fromhex("3e010000"): "Remote Inventory",
 }
 
 
@@ -127,6 +127,10 @@ STORAGE_LOCATIONS: dict[int, StorageLocation] = {
     # carried the expected numeric destination key and normalized town name.
     0x0590: StorageLocation("Godu Village", "observed"),
     0x05A4: StorageLocation("Bukpo", "observed"),
+    # Confirmed by the operator-labeled 2026-08-13 Angavu Outpost character
+    # hydration capture. The newly observed destination key carried the one
+    # occupied stack deliberately left in that storage.
+    0x06C5: StorageLocation("Angavu Outpost", "observed"),
     # The capture fixes each key to an equal-count group; the exact name in
     # each group follows the established region-key ordering and is inferred.
     0x006B: StorageLocation("Keplan", "inferred"),
@@ -151,6 +155,40 @@ def storage_location(storage_id: Optional[int]) -> Optional[StorageLocation]:
     return STORAGE_LOCATIONS.get(storage_id)
 
 
+def storage_destination_candidates(
+    message: bytes,
+    *,
+    before_offset: int,
+) -> tuple[tuple[int, int], ...]:
+    """Return registered four-byte destination keys in a wrapper prefix.
+
+    The destination field has moved to unrelated absolute and item-relative
+    positions across every observed storage generation.  Its stable wire
+    invariant is the little-endian numeric key itself, so callers discover
+    candidates across the validated prefix and resolve ambiguity with either
+    calibration evidence or cross-frame field consistency.
+
+    This helper deliberately does not choose a candidate.  A true ``0x05xx``
+    destination can overlap a false Velia key one byte later, so selecting the
+    first, last, or closest match would silently assign the wrong town.
+    """
+
+    if before_offset <= 5:
+        return ()
+    search_end = min(before_offset, len(message))
+    return tuple(
+        (offset, storage_id)
+        for offset in range(5, max(5, search_end - 3))
+        if (
+            storage_id := int.from_bytes(
+                message[offset : offset + 4],
+                "little",
+            )
+        )
+        in STORAGE_LOCATIONS
+    )
+
+
 @dataclass(frozen=True)
 class EventSpec:
     label: str
@@ -161,6 +199,7 @@ class EventSpec:
     inventory_slot_offset: Optional[int] = None
     source_context_offset: Optional[int] = None
     source_context_length: int = 4
+    record_count_offset: Optional[int] = None
     item_instance_offset: Optional[int] = None
     storage_instance_offset: Optional[int] = None
     repeat_stride: Optional[int] = None
@@ -197,6 +236,24 @@ class EventSpec:
                 raise ValueError(f"{self.label} source_context_offset must be >= 0")
             if self.source_context_length <= 0:
                 raise ValueError(f"{self.label} source_context_length must be > 0")
+        if self.record_count_offset is not None and self.record_count_offset < 0:
+            raise ValueError(f"{self.label} record_count_offset must be >= 0")
+        if self.label == "INVENTORY_TO_STORAGE":
+            if (
+                self.source_context_offset is not None
+                and self.source_context_offset + self.source_context_length
+                > self.item_offset
+            ):
+                raise ValueError(
+                    f"{self.label} source_context_offset must end before item_offset"
+                )
+            if (
+                self.record_count_offset is not None
+                and self.record_count_offset + 2 > self.item_offset
+            ):
+                raise ValueError(
+                    f"{self.label} record_count_offset must end before item_offset"
+                )
         if self.storage_instance_offset is not None and self.storage_instance_offset < 0:
             raise ValueError(f"{self.label} storage_instance_offset must be >= 0")
         if self.item_instance_offset is not None and self.item_instance_offset < 0:
@@ -266,8 +323,9 @@ class LootEvent:
     record_offset: Optional[int] = None
     record_index: Optional[int] = None
     record_count: Optional[int] = None
-    # Storage-family metadata. Normalization can derive ``storage_id`` from a
-    # nonzero four-byte storage context for older decoder integrations.
+    # Storage-family metadata. Normalization can derive ``storage_id`` from the
+    # calibration-selected four-byte destination field when a producer leaves
+    # the redundant normalized value unset.
     storage_id: Optional[int] = None
     storage_operation: Optional[str] = None
 

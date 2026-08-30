@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections import deque
 import hashlib
+from threading import Lock
 from typing import Callable, Iterable, Optional
 
-from ._framing import FrameCollectorScanner, TargetMessageScanner
+from ._framing import FrameCollectorScanner, MessageObserver, TargetMessageScanner
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
     DEDUP_HISTORY_LIMIT,
@@ -21,6 +22,10 @@ from ._protocol import (
 )
 from ._reassembly import FlowManager
 from .events import BDOEvent, Flow
+
+
+_ITEM_MAX_ACTIVE_FLOWS = 64
+_ITEM_FLOW_IDLE_SECONDS = 300.0
 
 
 class _TeeScanner:
@@ -54,6 +59,12 @@ class _TeeScanner:
             self._tap.scan_standalone(data, context)
         self._primary.scan_standalone(data, context)
 
+    def can_anchor_at_start(self, data: bytes) -> bool:
+        # Observers must never make primary event reassembly less conservative.
+        # The generic tap accepts weaker standalone-frame evidence that is safe
+        # for observation but can be a coincidental header in a target suffix.
+        return self._primary.can_anchor_at_start(data)
+
     def reset(self) -> None:
         if self._tap is not None:
             self._tap.reset()
@@ -82,22 +93,15 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
     ):
         storage_id = int.from_bytes(event.source_context_candidate, "little")
     location = storage_location(storage_id) if is_storage else None
-    source = source_label(event.source_context_candidate, event.default_context)
-    if storage_id is not None:
-        source = (
-            location.name
-            if location is not None
-            else f"UNKNOWN_STORAGE(0x{storage_id:08x})"
-        )
+    source = (
+        None
+        if is_storage
+        else source_label(event.source_context_candidate, event.default_context)
+    )
 
     extra = {}
     if event.stream_sequence is not None:
         extra["stream_sequence"] = event.stream_sequence
-    if is_storage and event.storage_operation == "snapshot":
-        extra["storage_quantity"] = event.quantity
-    elif is_storage and event.storage_operation != "unknown":
-        extra["storage_delta"] = event.quantity
-
     return BDOEvent(
         event_type=_event_type_for_record(event),
         timestamp=event.context.timestamp,
@@ -124,12 +128,12 @@ def toolkit_event_from_record(event: LootEvent) -> BDOEvent:
         storage_name_confidence=(
             location.confidence if location is not None else None
         ),
-        storage_operation=event.storage_operation,
         record_index=event.record_index,
         record_count=event.record_count,
         record_offset=event.record_offset,
         confidence="observed",
         extra=extra,
+        _flow_generation=event.context.flow_generation,
     )
 
 
@@ -142,16 +146,21 @@ def _event_type_for_label(label: str) -> str:
 
 
 def _event_type_for_record(event: LootEvent) -> str:
-    if (
-        event.label == "INVENTORY_TRANSFER"
-        and event.source_context_candidate == CHARACTER_LOAD_CONTEXT
-    ):
-        return "inventory_snapshot"
+    if event.label == "INVENTORY_TRANSFER":
+        if event.source_context_candidate == CHARACTER_LOAD_CONTEXT:
+            return "inventory_snapshot"
+        if event.source_context_candidate is None:
+            # Without a calibrated context field, hydration and ordinary
+            # receipts cannot be separated safely. Keep the record neutral so
+            # an incomplete post-patch profile cannot flood activity filters.
+            return "inventory_record"
+        return "item_received"
     if event.label == "INVENTORY_TO_STORAGE":
         if event.storage_operation == "snapshot":
             return "storage_snapshot"
-        if event.storage_operation == "unknown":
-            return "storage_record"
+        if event.storage_operation == "live":
+            return "storage_delta"
+        return "storage_record"
     return _event_type_for_label(event.label)
 
 
@@ -172,17 +181,29 @@ class PacketEngine:
         on_event: Callable[[LootEvent, bytes], None],
         frame_observer: Optional[Callable[[BDOFrame], None]] = None,
         stream_observer: Optional[Callable[[bytes, PacketContext], None]] = None,
+        flow_close_observer: Optional[Callable[[FlowKey], None]] = None,
+        message_observer: Optional[MessageObserver] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
         self._on_event = on_event
+        self._flow_state_evictions = 0
+        # Counter-only: never extend across flow work, callbacks, or delivery.
+        self._diagnostics_lock = Lock()
 
         def build_scanner():
-            primary = TargetMessageScanner(self._handle_record, self.event_specs)
+            primary = TargetMessageScanner(
+                self._handle_record,
+                self.event_specs,
+                message_observer=message_observer,
+            )
             if frame_observer is None and stream_observer is None:
                 return primary
             tap = (
-                FrameCollectorScanner(frame_observer)
+                FrameCollectorScanner(
+                    frame_observer,
+                    known_opcodes=(spec.opcode for spec in self.event_specs),
+                )
                 if frame_observer is not None
                 else None
             )
@@ -191,17 +212,46 @@ class PacketEngine:
         self._flow_manager = FlowManager(
             server_ports=server_ports,
             scanner_factory=build_scanner,
+            track_flow_generations=True,
+            max_flows=_ITEM_MAX_ACTIVE_FLOWS,
+            on_flow_eviction=self._count_flow_state_eviction,
+            on_flow_close=flow_close_observer,
+            idle_timeout=_ITEM_FLOW_IDLE_SECONDS,
         )
         self._seen_event_keys: set[
-            tuple[FlowKey, int, int, Optional[int], bytes]
+            tuple[FlowKey, int, int, int, Optional[int], bytes]
         ] = set()
         self._seen_event_order: deque[
-            tuple[FlowKey, int, int, Optional[int], bytes]
+            tuple[FlowKey, int, int, int, Optional[int], bytes]
         ] = deque()
+        self._last_raw_message: Optional[bytes] = None
+        self._last_raw_message_digest: Optional[bytes] = None
 
     @property
     def server_ports(self) -> frozenset[int]:
         return self._flow_manager.server_ports
+
+    @property
+    def tcp_gap_resets(self) -> int:
+        """Cumulative reassembly resets caused by missing TCP segments."""
+
+        return self._flow_manager.tcp_gap_resets
+
+    @property
+    def flow_state_evictions(self) -> int:
+        """Number of active flow states lost to the defensive resource cap."""
+
+        with self._diagnostics_lock:
+            return self._flow_state_evictions
+
+    def service_gaps(self, now: float) -> int:
+        """Advance TCP gap deadlines even when no new packet arrives."""
+
+        return self._flow_manager.service_gaps(now)
+
+    def _count_flow_state_eviction(self) -> None:
+        with self._diagnostics_lock:
+            self._flow_state_evictions += 1
 
     def process_tcp_segment(
         self,
@@ -246,10 +296,11 @@ class PacketEngine:
 
         key = (
             event.context.flow,
+            event.context.flow_generation,
             event.stream_sequence,
             event.opcode,
             event.record_offset,
-            hashlib.blake2b(raw_message, digest_size=16).digest(),
+            self._raw_message_digest(raw_message),
         )
         if key in self._seen_event_keys:
             return True
@@ -260,3 +311,17 @@ class PacketEngine:
             expired_key = self._seen_event_order.popleft()
             self._seen_event_keys.discard(expired_key)
         return False
+
+    def _raw_message_digest(self, raw_message: bytes) -> bytes:
+        # TargetMessageScanner delivers every record from one batch with the
+        # same immutable bytes object. Cache by identity so a 72-record load
+        # hashes its message once rather than 72 times.
+        if (
+            raw_message is self._last_raw_message
+            and self._last_raw_message_digest is not None
+        ):
+            return self._last_raw_message_digest
+        digest = hashlib.blake2b(raw_message, digest_size=16).digest()
+        self._last_raw_message = raw_message
+        self._last_raw_message_digest = digest
+        return digest

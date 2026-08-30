@@ -7,11 +7,11 @@ delta's pre-record prefix. The relationship survived a patch that changed
 every involved opcode, length, and token offset, so classification does not
 trust raw opcode values.
 
-Missing or conflicting evidence produces ``unknown`` on an already-live
+Missing or conflicting evidence leaves ``source=None`` on an already-live
 ``storage_delta``. A neutral ``storage_record`` is promoted to a live delta
 only when the same independent evidence proves a manual or worker mutation;
-otherwise it remains neutral. Storage context bytes identify the destination
-storage, not whether a player or worker caused it.
+otherwise it remains neutral. Storage context bytes identify the endpoint,
+not whether player inventory or worker production supplied the item.
 """
 
 from __future__ import annotations
@@ -19,12 +19,14 @@ from __future__ import annotations
 import dataclasses
 from collections import deque
 from dataclasses import dataclass, field
+from threading import RLock
 from typing import Callable, Iterable, Optional
 
 from ._protocol import MAX_TARGET_MESSAGE_LENGTH, BDOFrame, FlowKey, PacketContext
 from .events import BDOEvent
 from .origin_learning import (
     CompanionObservation,
+    TOKEN_WIDTH,
     discover_companion_observation,
 )
 from .profiles import OriginCompanionFamily
@@ -32,6 +34,8 @@ from .profiles import OriginCompanionFamily
 ORIGIN_WORKER = "worker"
 ORIGIN_MANUAL = "manual"
 ORIGIN_UNKNOWN = "unknown"
+SOURCE_WORKER_PRODUCTION = "Worker Production"
+SOURCE_PLAYER_INVENTORY = "Player Inventory"
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ class DecrementSpec:
     opcode: int
     min_message_length: int
     quantity_offset: int
+    source_instance_offset: Optional[int] = None
+    repeat_stride: Optional[int] = None
 
     def __post_init__(self) -> None:
         if (
@@ -61,6 +67,64 @@ class DecrementSpec:
             or not 0 <= self.quantity_offset <= self.min_message_length - 4
         ):
             raise ValueError("decrement quantity offset must fit its minimum shape")
+        if self.source_instance_offset is not None and (
+            isinstance(self.source_instance_offset, bool)
+            or not isinstance(self.source_instance_offset, int)
+            or self.source_instance_offset < 0
+            or self.source_instance_offset + 8 > self.min_message_length
+        ):
+            raise ValueError(
+                "decrement source instance offset must fit its minimum shape"
+            )
+        if self.repeat_stride is not None and (
+            isinstance(self.repeat_stride, bool)
+            or not isinstance(self.repeat_stride, int)
+            or self.repeat_stride <= 0
+        ):
+            raise ValueError("decrement repeat stride must be positive or None")
+        if self.repeat_stride is not None:
+            prefix_length = self.min_message_length - self.repeat_stride
+            if (
+                prefix_length < 5
+                or self.quantity_offset < prefix_length
+                or (
+                    self.source_instance_offset is not None
+                    and self.source_instance_offset < prefix_length
+                )
+            ):
+                raise ValueError(
+                    "decrement repeat stride must place repeated fields "
+                    "after the frame prefix"
+                )
+
+
+@dataclass(frozen=True)
+class _ManualDecrementMatch:
+    """Strength and anchored geometry of one manual-deposit signal."""
+
+    opcode: int
+    message_length: int
+    quantity_offset: int
+    source_instance_offset: Optional[int]
+    match_kind: str
+    confidence: str
+    instance_matches_destination: Optional[bool]
+
+    def to_dict(self) -> dict[str, object]:
+        output: dict[str, object] = {
+            "opcode": f"0x{self.opcode:04X}",
+            "message_length": self.message_length,
+            "quantity_offset": self.quantity_offset,
+            "match_kind": self.match_kind,
+            "confidence": self.confidence,
+        }
+        if self.source_instance_offset is not None:
+            output["source_instance_offset"] = self.source_instance_offset
+        if self.instance_matches_destination is not None:
+            output["instance_matches_destination"] = (
+                self.instance_matches_destination
+            )
+        return output
 
 
 @dataclass
@@ -72,6 +136,9 @@ class _PendingDeposit:
     matching_decrement: bool
     events: tuple[BDOEvent, ...] = ()
     matching_decrement_record_indexes: tuple[int, ...] = ()
+    manual_decrement_matches: tuple[
+        tuple[int, _ManualDecrementMatch], ...
+    ] = ()
     frames_after: int = 0
     end_sequence: Optional[int] = None
     companion_observation: Optional[CompanionObservation] = None
@@ -80,6 +147,7 @@ class _PendingDeposit:
     candidate_observations: dict[
         tuple[int, int, int, int, int], CompanionObservation
     ] = field(default_factory=dict)
+    awaiting_storage_boundaries: frozenset[int] = frozenset()
     finalized: bool = False
 
 
@@ -98,6 +166,7 @@ class _CompanionScan:
     observations: tuple[CompanionObservation, ...]
     complete: bool
     immediate_family_keys: frozenset[tuple[int, int, int, int, int]] = frozenset()
+    awaiting_storage_boundaries: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -114,12 +183,19 @@ class _StagedNeutralBatch:
 class DepositOriginTracker:
     """Correlate live-or-neutral storage records with origin evidence."""
 
-    LOOKAHEAD_FRAMES = 8
+    # Worker companions can be interleaved with ordinary inventory and
+    # storage traffic. Keep a modestly wider message horizon than the original
+    # eight-frame window, while the independent time and pending-count bounds
+    # below prevent unbounded retention or scanning.
+    LOOKAHEAD_FRAMES = 32
+    MAX_PENDING_OPERATIONS_PER_FLOW = 64
+    MAX_PENDING_OPERATIONS_TOTAL = 4096
     STALE_SECONDS = 2.0
     BACKWARD_WINDOW = 16
     STREAM_SPAN_HISTORY_LIMIT = 64
     MANUAL_LOOKBACK_FRAMES = 2
     OBSERVATION_HISTORY_LIMIT = 4096
+    COMPANION_PAIR_HISTORY_LIMIT = 4096
     RECORD_BOUNDARY_HISTORY_LIMIT = 4096
     RUNTIME_CONFIRMED_FAMILY_LIMIT = 4096
     FAMILY_CONFIRMATION_OBSERVATIONS = 2
@@ -139,8 +215,17 @@ class DepositOriginTracker:
             matches = self._decrement_specs.setdefault(spec.opcode, [])
             if spec not in matches:
                 matches.append(spec)
-        self._emit = emit
+        self._emit_callback = emit
         self._origin_observer = origin_observer
+        # Live capture mutates correlation state from its decoder worker while
+        # the application consumer can call ``flush_stale``.  Keep every state
+        # transition under one lock and queue callbacks in that same order.
+        # Exactly one caller owns outbox dispatch at a time, but callbacks run
+        # without *any* tracker lock held: a callback may need a session lock
+        # while another thread holding that session lock enters the tracker.
+        self._state_lock = RLock()
+        self._outbox: deque[tuple[str, object]] = deque()
+        self._dispatching = False
         self._known_companion_families = {
             family.family_key for family in known_families
         }
@@ -186,12 +271,25 @@ class DepositOriginTracker:
                 tuple[int, int, int, int, int],
             ]
         ] = deque()
+        self._contested_companion_pairs: set[
+            tuple[FlowKey, int, int]
+        ] = set()
+        self._contested_companion_pair_order: deque[
+            tuple[FlowKey, int, int]
+        ] = deque()
+        self._companion_contest_overflow_flows: set[FlowKey] = set()
         self._first_record_boundaries: dict[tuple[FlowKey, int], int] = {}
         self._first_record_boundary_order: deque[tuple[FlowKey, int]] = deque()
 
     # --- frame stream ---
 
     def observe_stream(self, data: bytes, context: PacketContext) -> None:
+        """Observe reassembled bytes as one serialized tracker operation."""
+        with self._state_lock:
+            self._observe_stream_locked(data, context)
+        self._drain_outbox()
+
+    def _observe_stream_locked(self, data: bytes, context: PacketContext) -> None:
         """Retain raw reassembled bytes for alignment-independent correlation.
 
         The generic frame tap can begin in the middle of an application frame
@@ -220,11 +318,20 @@ class DepositOriginTracker:
             if pending.end_sequence is not None and span.end <= pending.end_sequence:
                 still.append(pending)
                 continue
+            if context.timestamp - pending.timestamp > self.STALE_SECONDS:
+                self._close_pending(pending)
+                continue
             if not self._resolve_companions(pending):
                 still.append(pending)
         self._pending = still
 
     def observe_frame(self, frame: BDOFrame) -> None:
+        """Observe one generic frame as one serialized tracker operation."""
+        with self._state_lock:
+            self._observe_frame_locked(frame)
+        self._drain_outbox()
+
+    def _observe_frame_locked(self, frame: BDOFrame) -> None:
         window = self._recent.setdefault(
             frame.context.flow,
             deque(maxlen=self.BACKWARD_WINDOW),
@@ -246,12 +353,15 @@ class DepositOriginTracker:
             if not self._frame_is_after(frame, pending):
                 still.append(pending)
                 continue
+            if frame.context.timestamp - pending.timestamp > self.STALE_SECONDS:
+                self._close_pending(pending)
+                continue
             if self._resolve_companions(pending):
                 continue
             pending.frames_after += 1
             if (
-                pending.frames_after >= self.LOOKAHEAD_FRAMES
-                or frame.context.timestamp - pending.timestamp > self.STALE_SECONDS
+                not pending.awaiting_storage_boundaries
+                and pending.frames_after >= self.LOOKAHEAD_FRAMES
             ):
                 self._close_pending(pending)
             else:
@@ -272,6 +382,15 @@ class DepositOriginTracker:
         raw_message: Optional[bytes] = None,
     ) -> None:
         """Defer one live-or-neutral storage event until evidence resolves."""
+        with self._state_lock:
+            self._register_locked(event, raw_message)
+        self._drain_outbox()
+
+    def _register_locked(
+        self,
+        event: BDOEvent,
+        raw_message: Optional[bytes] = None,
+    ) -> None:
         flow = FlowKey(
             source_ip=event.flow.source_ip,
             source_port=event.flow.source_port,
@@ -363,7 +482,7 @@ class DepositOriginTracker:
 
     def _emit_neutral_entries(self, staged: _StagedNeutralBatch) -> None:
         for record_index in sorted(staged.entries):
-            self._emit(staged.entries[record_index][0])
+            self._queue_emit(staged.entries[record_index][0])
 
     def _register_group(
         self,
@@ -413,11 +532,24 @@ class DepositOriginTracker:
             else:
                 delta_prefix_end = min(previous, delta_prefix_end)
                 self._first_record_boundaries[boundary_key] = delta_prefix_end
-        matching_indexes = tuple(
-            candidate.record_index or index
-            for index, candidate in enumerate(events, 1)
-            if self._has_matching_decrement(flow, stream_sequence, candidate)
-        )
+            # The raw stream/frame observers run before target records are
+            # decoded. An older operation may therefore have crossed this
+            # wrapper without yet knowing where its transaction prefix ends.
+            # Retry it now that the authoritative first-record boundary is
+            # available; never substitute the entire record body as a prefix.
+            self._retry_boundary_waiters(flow, stream_sequence)
+        manual_matches: list[tuple[int, _ManualDecrementMatch]] = []
+        for index, candidate_event in enumerate(events, 1):
+            match = self._matching_decrement(
+                flow,
+                stream_sequence,
+                candidate_event,
+            )
+            if match is not None:
+                manual_matches.append(
+                    (candidate_event.record_index or index, match)
+                )
+        matching_indexes = tuple(index for index, _match in manual_matches)
         pending = _PendingDeposit(
             event=event,
             flow=flow,
@@ -426,6 +558,7 @@ class DepositOriginTracker:
             matching_decrement=bool(matching_indexes),
             events=events,
             matching_decrement_record_indexes=matching_indexes,
+            manual_decrement_matches=tuple(manual_matches),
             end_sequence=end_sequence,
             delta_message=delta_message,
             delta_prefix_end=delta_prefix_end,
@@ -438,10 +571,109 @@ class DepositOriginTracker:
         for frame in self._recent.get(flow, ()):
             if self._frame_is_after(frame, pending):
                 pending.frames_after += 1
-        if pending.frames_after >= self.LOOKAHEAD_FRAMES:
+        if (
+            pending.frames_after >= self.LOOKAHEAD_FRAMES
+            and not pending.awaiting_storage_boundaries
+        ):
             self._close_pending(pending)
         else:
-            self._pending.append(pending)
+            self._append_pending(pending)
+
+    def _retry_boundary_waiters(
+        self,
+        flow: FlowKey,
+        stream_sequence: int,
+    ) -> None:
+        """Retry older operations deferred on one crossed storage wrapper."""
+
+        still: list[_PendingDeposit] = []
+        for pending in self._pending:
+            if pending.finalized:
+                continue
+            if (
+                pending.flow != flow
+                or stream_sequence not in pending.awaiting_storage_boundaries
+            ):
+                still.append(pending)
+                continue
+            if self._resolve_companions(pending):
+                continue
+            if (
+                pending.frames_after >= self.LOOKAHEAD_FRAMES
+                and not pending.awaiting_storage_boundaries
+            ):
+                self._close_pending(pending)
+                continue
+            still.append(pending)
+        self._pending = [entry for entry in still if not entry.finalized]
+
+    def _append_pending(self, pending: _PendingDeposit) -> None:
+        """Retain one unresolved operation under a hard operation bound."""
+
+        self._pending = [entry for entry in self._pending if not entry.finalized]
+        pending_key = self._pending_operation_key(pending)
+        operation_keys = self._pending_operation_keys()
+        flow_operation_keys = {
+            key for key in operation_keys if key[0] == pending.flow
+        }
+        while pending_key not in operation_keys and (
+            len(flow_operation_keys) >= self.MAX_PENDING_OPERATIONS_PER_FLOW
+            or len(operation_keys) >= self.MAX_PENDING_OPERATIONS_TOTAL
+        ):
+            if len(flow_operation_keys) >= self.MAX_PENDING_OPERATIONS_PER_FLOW:
+                oldest = next(
+                    entry for entry in self._pending if entry.flow == pending.flow
+                )
+            else:
+                oldest = self._pending[0]
+            oldest_key = self._pending_operation_key(oldest)
+            oldest_group = [
+                entry
+                for entry in self._pending
+                if self._pending_operation_key(entry) == oldest_key
+            ]
+            self._pending = [
+                entry
+                for entry in self._pending
+                if self._pending_operation_key(entry) != oldest_key
+            ]
+            for oldest in oldest_group:
+                self._evict_pending_fail_closed(oldest)
+            self._pending = [
+                entry for entry in self._pending if not entry.finalized
+            ]
+            operation_keys = self._pending_operation_keys()
+            flow_operation_keys = {
+                key for key in operation_keys if key[0] == pending.flow
+            }
+        self._pending.append(pending)
+
+    def _evict_pending_fail_closed(self, pending: _PendingDeposit) -> None:
+        """Finalize under resource pressure without trusting partial chains."""
+
+        if pending.finalized:
+            return
+        pending.candidate_observations.clear()
+        pending.companion_observation = None
+        pending.awaiting_storage_boundaries = frozenset()
+        self._finalize(pending)
+
+    def _pending_operation_keys(
+        self,
+    ) -> set[tuple[FlowKey, Optional[int], Optional[int], Optional[int], float]]:
+        return {self._pending_operation_key(entry) for entry in self._pending}
+
+    @staticmethod
+    def _pending_operation_key(
+        pending: _PendingDeposit,
+    ) -> tuple[FlowKey, Optional[int], Optional[int], Optional[int], float]:
+        return (
+            pending.flow,
+            pending.stream_sequence,
+            pending.event.opcode,
+            pending.event.message_length,
+            pending.timestamp,
+        )
 
     # --- anchored structural companion scan ---
 
@@ -504,7 +736,9 @@ class DepositOriginTracker:
             return None
 
         position = pending.end_sequence
-        following: list[bytes] = []
+        following: list[tuple[int, bytes]] = []
+        crossed_storage_messages: list[tuple[int, bytes]] = []
+        awaiting_storage_boundaries: set[int] = set()
         observations: dict[
             tuple[int, int, int, int, int], CompanionObservation
         ] = {}
@@ -516,6 +750,7 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     False,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             length = int.from_bytes(header[0:2], "little")
             if not 5 <= length <= MAX_TARGET_MESSAGE_LENGTH:
@@ -523,6 +758,7 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     True,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             message = self._read_span(pending.flow, position, length)
             if message is None:
@@ -530,15 +766,20 @@ class DepositOriginTracker:
                     tuple(observations.values()),
                     False,
                     frozenset(immediate),
+                    frozenset(awaiting_storage_boundaries),
                 )
             opcode = int.from_bytes(message[3:5], "little")
             if opcode in self._storage_delta_opcodes:
-                return _CompanionScan(
-                    tuple(observations.values()),
-                    True,
-                    frozenset(immediate),
-                )
-            for first_index, first_message in enumerate(following):
+                # A manual or independent storage action can be serialized
+                # between a worker delta and its companion pair. Do not use a
+                # storage wrapper as a companion, but do continue scanning:
+                # the high-entropy token below owns the eventual pair. If the
+                # intervening wrapper repeats that same token, ownership is
+                # ambiguous and the older candidate fails closed.
+                crossed_storage_messages.append((position, message))
+                position += length
+                continue
+            for first_index, (first_sequence, first_message) in enumerate(following):
                 observation = discover_companion_observation(
                     delta_message=delta_message,
                     first_message=first_message,
@@ -550,17 +791,211 @@ class DepositOriginTracker:
                 )
                 if observation is None:
                     continue
+                missing_boundaries = {
+                    sequence
+                    for sequence, _message in crossed_storage_messages
+                    if (pending.flow, sequence)
+                    not in self._first_record_boundaries
+                }
+                if missing_boundaries:
+                    # Target decoding will register these authoritative
+                    # boundaries later in the same scanner pass. Defer this
+                    # ownership decision instead of searching record bodies.
+                    awaiting_storage_boundaries.update(missing_boundaries)
+                    continue
+                bounded_storage_messages = (
+                    (
+                        sequence,
+                        storage_message,
+                        self._first_record_boundaries[(pending.flow, sequence)],
+                    )
+                    for sequence, storage_message in crossed_storage_messages
+                )
+                if not self._observation_has_unique_pending_owner(
+                    pending,
+                    observation,
+                    bounded_storage_messages,
+                    first_message=first_message,
+                    second_message=message,
+                    pair_key=(pending.flow, first_sequence, position),
+                ):
+                    continue
                 observations.setdefault(observation.family_key, observation)
-                if first_index == 0 and message_index == 1:
+                if (
+                    not crossed_storage_messages
+                    and first_index == 0
+                    and message_index == 1
+                ):
                     immediate.add(observation.family_key)
-            following.append(message)
+            following.append((position, message))
             position += length
 
         return _CompanionScan(
             tuple(observations.values()),
             True,
             frozenset(immediate),
+            frozenset(awaiting_storage_boundaries),
         )
+
+    def _observation_has_unique_pending_owner(
+        self,
+        pending: _PendingDeposit,
+        observation: CompanionObservation,
+        crossed_storage_messages: Iterable[tuple[int, bytes, int]],
+        *,
+        first_message: bytes,
+        second_message: bytes,
+        pair_key: tuple[FlowKey, int, int],
+    ) -> bool:
+        """Reject a shared token claimed by another overlapping storage op.
+
+        Companion discovery already proves that the token occurs in this
+        pending delta and both companion messages. Crossing a storage wrapper
+        is safe only when that wrapper does not repeat the same token and no
+        other active pending delta prefix claims it. This keeps overlapping
+        operations separable without borrowing a later worker's companions.
+        """
+
+        if (
+            pending.flow in self._companion_contest_overflow_flows
+            or pair_key in self._contested_companion_pairs
+        ):
+            return False
+
+        delta_message = pending.delta_message
+        if delta_message is None:
+            if (
+                pending.stream_sequence is None
+                or pending.event.message_length is None
+            ):
+                return False
+            delta_message = self._read_span(
+                pending.flow,
+                pending.stream_sequence,
+                pending.event.message_length,
+            )
+        if delta_message is None:
+            return False
+        token_offset = observation.token_offsets[0]
+        token = delta_message[token_offset : token_offset + TOKEN_WIDTH]
+        if len(token) != TOKEN_WIDTH:
+            return False
+
+        competing = False
+        for _sequence, message, boundary in crossed_storage_messages:
+            if self._message_claims_companion_pair(
+                message,
+                boundary,
+                pending,
+                first_message,
+                second_message,
+            ):
+                competing = True
+                break
+
+        for other in self._pending:
+            if other is pending or other.finalized or other.flow != pending.flow:
+                continue
+            if (
+                pending.stream_sequence is not None
+                and other.stream_sequence == pending.stream_sequence
+                and other.event.opcode == pending.event.opcode
+                and other.event.message_length == pending.event.message_length
+                and other.timestamp == pending.timestamp
+            ):
+                # Multiple decoded records from one raw storage wrapper share
+                # one transaction token and are one claimant, not competing
+                # operations. Neutral batches are grouped earlier; retain the
+                # same rule for already-live multi-record wrappers.
+                continue
+            other_message = other.delta_message
+            if other_message is None:
+                if (
+                    other.stream_sequence is None
+                    or other.event.message_length is None
+                ):
+                    continue
+                other_message = self._read_span(
+                    other.flow,
+                    other.stream_sequence,
+                    other.event.message_length,
+                )
+            if other_message is None or other.delta_prefix_end is None:
+                continue
+            prefix_end = min(other.delta_prefix_end, len(other_message))
+            if self._message_claims_companion_pair(
+                other_message,
+                prefix_end,
+                other,
+                first_message,
+                second_message,
+            ):
+                competing = True
+                break
+        if competing:
+            self._mark_companion_pair_contested(pair_key)
+            return False
+        return True
+
+    @staticmethod
+    def _message_claims_companion_pair(
+        message: bytes,
+        prefix_end: int,
+        pending: _PendingDeposit,
+        first_message: bytes,
+        second_message: bytes,
+    ) -> bool:
+        if prefix_end < 5 + TOKEN_WIDTH:
+            return False
+        return (
+            discover_companion_observation(
+                delta_message=message,
+                first_message=first_message,
+                second_message=second_message,
+                timestamp=pending.timestamp,
+                flow=pending.flow,
+                stream_sequence=pending.stream_sequence,
+                delta_prefix_end=min(prefix_end, len(message)),
+            )
+            is not None
+        )
+
+    def _mark_companion_pair_contested(
+        self,
+        pair_key: tuple[FlowKey, int, int],
+    ) -> None:
+        flow = pair_key[0]
+        if (
+            flow in self._companion_contest_overflow_flows
+            or pair_key in self._contested_companion_pairs
+        ):
+            return
+        if self.COMPANION_PAIR_HISTORY_LIMIT <= 0:
+            self._suppress_companion_candidates_for_flow(flow)
+            return
+        if (
+            len(self._contested_companion_pair_order)
+            >= self.COMPANION_PAIR_HISTORY_LIMIT
+        ):
+            expired = self._contested_companion_pair_order.popleft()
+            self._contested_companion_pairs.discard(expired)
+            # Never let bounded-history pressure turn a previously contested
+            # pair back into acceptable evidence. Conservatively suppress
+            # worker-chain attribution on that flow until it closes; manual
+            # decrement evidence and neutral delivery remain available.
+            self._suppress_companion_candidates_for_flow(expired[0])
+        if flow in self._companion_contest_overflow_flows:
+            return
+        self._contested_companion_pairs.add(pair_key)
+        self._contested_companion_pair_order.append(pair_key)
+
+    def _suppress_companion_candidates_for_flow(self, flow: FlowKey) -> None:
+        self._companion_contest_overflow_flows.add(flow)
+        for pending in self._pending:
+            if pending.flow != flow or pending.finalized:
+                continue
+            pending.candidate_observations.clear()
+            pending.companion_observation = None
 
     def _resolve_companions(self, pending: _PendingDeposit) -> bool:
         if pending.finalized:
@@ -571,6 +1006,9 @@ class DepositOriginTracker:
         result = self._scan_companions_after(pending)
         if result is None:
             return False
+        pending.awaiting_storage_boundaries = (
+            result.awaiting_storage_boundaries
+        )
         for observation in result.observations:
             pending.candidate_observations.setdefault(
                 observation.family_key,
@@ -596,6 +1034,8 @@ class DepositOriginTracker:
                 self._finalize(pending)
             return True
 
+        if pending.awaiting_storage_boundaries:
+            return False
         if result.complete:
             self._close_pending(pending)
             return pending.finalized
@@ -654,6 +1094,10 @@ class DepositOriginTracker:
                 self._finalize(pending)
 
     def _select_confirmed_observation(self, pending: _PendingDeposit) -> bool:
+        if pending.flow in self._companion_contest_overflow_flows:
+            pending.candidate_observations.clear()
+            pending.companion_observation = None
+            return False
         eligible = [
             key
             for key in pending.candidate_observations
@@ -695,17 +1139,18 @@ class DepositOriginTracker:
         self._observed_chains.add(key)
         self._observed_chain_order.append(key)
         if self._origin_observer is not None:
-            self._origin_observer(observation)
+            self._outbox.append(("observer", observation))
 
     # --- calibrated manual-decrement signal ---
 
-    def _has_matching_decrement(
+    def _matching_decrement(
         self,
         flow: FlowKey,
         stream_sequence: Optional[int],
         event: BDOEvent,
-    ) -> bool:
+    ) -> Optional[_ManualDecrementMatch]:
         quantity_bytes = event.quantity.to_bytes(4, "little")
+        destination_instance = self._event_storage_instance(event)
         eligible = [
             frame
             for frame in self._recent.get(flow, ())
@@ -715,22 +1160,240 @@ class DepositOriginTracker:
                 and frame.stream_sequence >= stream_sequence
             )
         ][-self.MANUAL_LOOKBACK_FRAMES :]
+        matches: list[_ManualDecrementMatch] = []
         for frame in eligible:
             for spec in self._decrement_specs.get(frame.opcode, ()):
                 # Profile lengths are calibrated single-record minima. Batch
                 # decrements append more records to the same frame.
                 if len(frame.message) < spec.min_message_length:
                     continue
-                end = spec.quantity_offset + 4
-                if end <= len(frame.message) and (
-                    frame.message[spec.quantity_offset:end] == quantity_bytes
+                inferred_repeat_stride: Optional[int] = None
+                if spec.repeat_stride is not None:
+                    extra_length = len(frame.message) - spec.min_message_length
+                    if extra_length % spec.repeat_stride:
+                        continue
+                    record_deltas: Iterable[int] = range(
+                        0,
+                        extra_length + 1,
+                        spec.repeat_stride,
+                    )
+                elif (
+                    spec.source_instance_offset is not None
+                    and destination_instance is not None
+                    and isinstance(event.record_index, int)
+                    and not isinstance(event.record_index, bool)
+                    and isinstance(event.record_count, int)
+                    and not isinstance(event.record_count, bool)
+                    and event.record_count > 1
+                    and 1 <= event.record_index <= event.record_count
                 ):
-                    return True
-        return False
+                    # Older calibrated profiles predate repeat_stride, but
+                    # their multi-record captures still expose enough
+                    # geometry to recover it safely: the captured decrement
+                    # and storage batch cardinalities align, while exact
+                    # source/destination instance equality validates every
+                    # inferred record after the first. This never expands
+                    # quantity-only matching.
+                    extra_length = len(frame.message) - spec.min_message_length
+                    divisor = event.record_count - 1
+                    if extra_length <= 0 or extra_length % divisor:
+                        record_deltas = (0,)
+                    else:
+                        inferred_stride = extra_length // divisor
+                        prefix_length = (
+                            spec.min_message_length - inferred_stride
+                        )
+                        if (
+                            inferred_stride <= 0
+                            or prefix_length < 5
+                            or spec.quantity_offset < prefix_length
+                            or spec.source_instance_offset < prefix_length
+                        ):
+                            record_deltas = (0,)
+                        else:
+                            inferred_repeat_stride = inferred_stride
+                            record_deltas = range(
+                                0,
+                                extra_length + 1,
+                                inferred_stride,
+                            )
+                else:
+                    record_deltas = (0,)
+
+                for delta in record_deltas:
+                    quantity_offset = spec.quantity_offset + delta
+                    quantity_end = quantity_offset + 4
+                    if (
+                        quantity_end > len(frame.message)
+                        or frame.message[quantity_offset:quantity_end]
+                        != quantity_bytes
+                    ):
+                        continue
+
+                    source_offset = spec.source_instance_offset
+                    if source_offset is None:
+                        matches.append(
+                            _ManualDecrementMatch(
+                                opcode=frame.opcode,
+                                message_length=len(frame.message),
+                                quantity_offset=quantity_offset,
+                                source_instance_offset=None,
+                                match_kind="quantity-only",
+                                confidence="heuristic",
+                                instance_matches_destination=None,
+                            )
+                        )
+                        continue
+
+                    source_offset += delta
+                    source_end = source_offset + 8
+                    if source_end > len(frame.message):
+                        continue
+                    source_instance = bytes(
+                        frame.message[source_offset:source_end]
+                    )
+                    if not self._nonempty_source_instance(source_instance):
+                        # A declared instance field that is empty invalidates
+                        # this candidate. Do not fall back to a common
+                        # quantity elsewhere in the frame.
+                        continue
+
+                    exact = (
+                        destination_instance is not None
+                        and source_instance == destination_instance
+                    )
+                    if not exact:
+                        if inferred_repeat_stride is not None and delta:
+                            # The profile did not declare this repeated field
+                            # location. Exact identity is the guard that makes
+                            # the inferred nonzero record offset trustworthy.
+                            continue
+                        # A partial stack move can allocate a different
+                        # destination instance: the controlled legacy
+                        # new_potato_1_1_1 capture proves that mismatch is not
+                        # contradictory. Retain it as anchored structural
+                        # evidence, but require entropy in both halves. Exact
+                        # cross-frame equality needs no such heuristic guard.
+                        if not self._structural_source_instance(
+                            source_instance
+                        ):
+                            continue
+                    matches.append(
+                        _ManualDecrementMatch(
+                            opcode=frame.opcode,
+                            message_length=len(frame.message),
+                            quantity_offset=quantity_offset,
+                            source_instance_offset=source_offset,
+                            match_kind=(
+                                "instance-and-quantity"
+                                if exact
+                                else "anchored-instance-and-quantity"
+                            ),
+                            confidence="observed" if exact else "structural",
+                            instance_matches_destination=(
+                                exact if destination_instance is not None else None
+                            ),
+                        )
+                    )
+
+        if not matches:
+            return None
+        rank = {"observed": 0, "structural": 1, "heuristic": 2}
+        matches.sort(key=lambda match: rank[match.confidence])
+        return matches[0]
+
+    @staticmethod
+    def _event_storage_instance(event: BDOEvent) -> Optional[bytes]:
+        value = event.storage_instance
+        if not isinstance(value, str) or not value.startswith("0x"):
+            return None
+        try:
+            decoded = bytes.fromhex(value[2:])
+        except ValueError:
+            return None
+        return decoded if len(decoded) == 8 else None
+
+    @staticmethod
+    def _nonempty_source_instance(value: bytes) -> bool:
+        return len(value) == 8 and value not in (b"\x00" * 8, b"\xff" * 8)
+
+    @classmethod
+    def _structural_source_instance(cls, value: bytes) -> bool:
+        if not cls._nonempty_source_instance(value):
+            return False
+        empty_halves = {b"\x00" * 4, b"\xff" * 4}
+        return value[:4] not in empty_halves and value[4:] not in empty_halves
 
     # --- flushing ---
 
     def flush_stale(self, now: float) -> None:
+        """Finalize expired evidence without racing producer-side mutation."""
+        with self._state_lock:
+            self._flush_stale_locked(now)
+        self._drain_outbox()
+
+    def close_flow(self, flow: FlowKey) -> None:
+        """Finalize one closed TCP flow and release all flow-keyed history."""
+
+        with self._state_lock:
+            staged_keys = [
+                key for key in self._staged_neutral_batches if key[0] == flow
+            ]
+            for key in staged_keys:
+                self._emit_neutral_entries(self._staged_neutral_batches.pop(key))
+
+            for pending in tuple(self._pending):
+                if pending.flow == flow and not pending.finalized:
+                    self._close_pending(pending)
+            self._pending = [
+                pending
+                for pending in self._pending
+                if pending.flow != flow and not pending.finalized
+            ]
+            self._purge_flow_history_locked(flow)
+        self._drain_outbox()
+
+    def _purge_flow_history_locked(self, flow: FlowKey) -> None:
+        self._recent.pop(flow, None)
+        self._stream_spans.pop(flow, None)
+
+        self._family_chain_order = deque(
+            (family, chain)
+            for family, chain in self._family_chain_order
+            if chain[0] != flow
+        )
+        for family, chains in tuple(self._family_chains.items()):
+            remaining = {chain for chain in chains if chain[0] != flow}
+            if remaining:
+                self._family_chains[family] = remaining
+            else:
+                self._family_chains.pop(family, None)
+
+        self._observed_chain_order = deque(
+            key for key in self._observed_chain_order if key[0] != flow
+        )
+        self._observed_chains = {
+            key for key in self._observed_chains if key[0] != flow
+        }
+
+        self._contested_companion_pair_order = deque(
+            key for key in self._contested_companion_pair_order if key[0] != flow
+        )
+        self._contested_companion_pairs = {
+            key for key in self._contested_companion_pairs if key[0] != flow
+        }
+        self._companion_contest_overflow_flows.discard(flow)
+
+        self._first_record_boundary_order = deque(
+            key for key in self._first_record_boundary_order if key[0] != flow
+        )
+        self._first_record_boundaries = {
+            key: value
+            for key, value in self._first_record_boundaries.items()
+            if key[0] != flow
+        }
+
+    def _flush_stale_locked(self, now: float) -> None:
         stale_batches = [
             key
             for key, staged in self._staged_neutral_batches.items()
@@ -751,6 +1414,12 @@ class DepositOriginTracker:
         self._pending = still
 
     def finalize_all(self) -> None:
+        """Finalize every pending decision and dispatch it in tracker order."""
+        with self._state_lock:
+            self._finalize_all_locked()
+        self._drain_outbox()
+
+    def _finalize_all_locked(self) -> None:
         staged, self._staged_neutral_batches = self._staged_neutral_batches, {}
         for batch in staged.values():
             self._emit_neutral_entries(batch)
@@ -758,14 +1427,26 @@ class DepositOriginTracker:
         pending, self._pending = self._pending, []
         for deposit in pending:
             self._close_pending(deposit)
+        self._recent.clear()
+        self._stream_spans.clear()
+        self._family_chains.clear()
+        self._family_chain_order.clear()
+        self._observed_chains.clear()
+        self._observed_chain_order.clear()
+        self._contested_companion_pairs.clear()
+        self._contested_companion_pair_order.clear()
+        self._companion_contest_overflow_flows.clear()
+        self._first_record_boundaries.clear()
+        self._first_record_boundary_order.clear()
 
     def _finalize(self, pending: _PendingDeposit) -> None:
         if pending.finalized:
             return
         pending.finalized = True
         companions = pending.companion_observation is not None
-        # The shared-token chain is stronger than a quantity-only decrement,
-        # which can collide for common quantities in ambient traffic.
+        # The shared-token chain remains stronger than any backward manual
+        # signal, including an exact instance match, because it proves the
+        # worker-specific three-frame relation for this operation.
         if companions:
             origin = ORIGIN_WORKER
         elif pending.matching_decrement:
@@ -781,13 +1462,22 @@ class DepositOriginTracker:
             # fail-closed event exactly when neither independent live signal
             # was present.
             for event in events:
-                self._emit(event)
+                self._queue_emit(event)
             return
 
         evidence: dict[str, object] = {
             "worker_companions": companions,
             "matching_decrement": pending.matching_decrement,
         }
+        if pending.manual_decrement_matches:
+            if len(pending.manual_decrement_matches) > 1:
+                evidence["manual_decrement_matches"] = tuple(
+                    {
+                        "record_index": candidate_index,
+                        **candidate.to_dict(),
+                    }
+                    for candidate_index, candidate in pending.manual_decrement_matches
+                )
         if pending.companion_observation is not None:
             companion_evidence = pending.companion_observation.to_dict()
             companion_evidence["known_family"] = (
@@ -812,16 +1502,35 @@ class DepositOriginTracker:
             )
 
         for original in events:
+            event_evidence = dict(evidence)
+            if pending.manual_decrement_matches:
+                rank = {"observed": 0, "structural": 1, "heuristic": 2}
+                matching_this_record = tuple(
+                    candidate
+                    for candidate in pending.manual_decrement_matches
+                    if candidate[0] == original.record_index
+                )
+                selection_pool = (
+                    matching_this_record
+                    if matching_this_record
+                    else pending.manual_decrement_matches
+                )
+                record_index, selected_manual = min(
+                    selection_pool,
+                    key=lambda item: rank[item[1].confidence],
+                )
+                selected_payload = selected_manual.to_dict()
+                selected_payload["record_index"] = record_index
+                event_evidence["manual_decrement"] = selected_payload
             extra = {
                 **original.extra,
-                "deposit_origin_evidence": evidence,
+                "deposit_origin_evidence": event_evidence,
             }
             if was_neutral:
                 # A calibrated source decrement or confirmed worker chain
                 # proves that this unfamiliar wire mode is nevertheless a
                 # live mutation. Preserve that inference in additive audit
                 # metadata and promote before EventFilter is applied.
-                extra["storage_delta"] = original.quantity
                 extra["storage_operation_evidence"] = {
                     "wire_operation": "unknown",
                     "inferred_operation": "live",
@@ -833,10 +1542,58 @@ class DepositOriginTracker:
             event = dataclasses.replace(
                 original,
                 event_type=("storage_delta" if was_neutral else original.event_type),
-                storage_operation=(
-                    "live" if was_neutral else original.storage_operation
+                source=(
+                    SOURCE_WORKER_PRODUCTION
+                    if origin == ORIGIN_WORKER
+                    else SOURCE_PLAYER_INVENTORY
+                    if origin == ORIGIN_MANUAL
+                    else None
                 ),
-                deposit_origin=origin,
                 extra=extra,
             )
-            self._emit(event)
+            self._queue_emit(event)
+
+    def _queue_emit(self, event: BDOEvent) -> None:
+        """Queue an application event while tracker state is locked."""
+        self._outbox.append(("emit", event))
+
+    def _drain_outbox(self) -> None:
+        """Dispatch callbacks in mutation order without holding tracker locks.
+
+        A concurrent or re-entrant caller only appends to the protected outbox;
+        the active dispatcher observes that append before relinquishing
+        ownership.  Claiming and relinquishing ownership while ``_state_lock``
+        is held avoids the empty-outbox handoff race.
+        """
+
+        with self._state_lock:
+            if self._dispatching:
+                return
+            self._dispatching = True
+
+        try:
+            while True:
+                with self._state_lock:
+                    if not self._outbox:
+                        self._dispatching = False
+                        return
+                    kind, payload = self._outbox.popleft()
+
+                # Do not move either callback under ``_state_lock`` or add a
+                # dispatch lock around it.  Live delivery takes a session lock
+                # that can be held by a concurrent ``flush_stale`` caller.
+                if kind == "emit":
+                    assert isinstance(payload, BDOEvent)
+                    self._emit_callback(payload)
+                else:
+                    assert kind == "observer"
+                    assert isinstance(payload, CompanionObservation)
+                    observer = self._origin_observer
+                    if observer is not None:
+                        observer(payload)
+        except BaseException:
+            # Preserve callback exception propagation while allowing cleanup
+            # or a later tracker operation to resume any queued deliveries.
+            with self._state_lock:
+                self._dispatching = False
+            raise

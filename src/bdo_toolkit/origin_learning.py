@@ -23,6 +23,21 @@ TOKEN_WIDTH = 8
 MIN_TOKEN_UNIQUE_BYTES = 6
 CANDIDATE_FORMAT_VERSION = 1
 COMPANION_DETECTION = "shared-token-chain-v1"
+DEFAULT_ORIGIN_LEARNING_MAX_CANDIDATES = 256
+DEFAULT_ORIGIN_LEARNING_MAX_OBSERVATIONS = 10_000
+
+
+class OriginLearningLimitError(RuntimeError):
+    """Raised before an origin learner would exceed its retention budget."""
+
+    def __init__(self, resource: str, limit: int) -> None:
+        self.resource = resource
+        self.limit = limit
+        super().__init__(
+            f"origin learning {resource} limit reached ({limit}); "
+            "save the current candidates and start a new learner or raise "
+            "the explicit limit"
+        )
 
 
 def _opcode_text(opcode: int) -> str:
@@ -289,10 +304,10 @@ class _CandidateState:
     first_seen_text: Optional[str] = None
     last_seen_text: Optional[str] = None
 
-    def add(self, observation: CompanionObservation) -> None:
+    def add(self, observation: CompanionObservation) -> bool:
         observation_id = observation.observation_id
         if observation_id in self.observation_ids:
-            return
+            return False
         self.observation_ids.add(observation_id)
         self.token_digests.add(observation.token_digest)
         self.delta_lengths.add(observation.delta_length)
@@ -303,6 +318,7 @@ class _CandidateState:
             self.first_timestamp = observation.timestamp
         if self.last_timestamp is None or observation.timestamp > self.last_timestamp:
             self.last_timestamp = observation.timestamp
+        return True
 
     def snapshot(self) -> OriginCompanionCandidate:
         first_values = [
@@ -351,15 +367,30 @@ class _CandidateState:
 class OriginLearner:
     """Thread-safe in-memory aggregator for structurally discovered families."""
 
-    def __init__(self, min_observations: int = 2) -> None:
+    def __init__(
+        self,
+        min_observations: int = 2,
+        *,
+        max_candidates: int = DEFAULT_ORIGIN_LEARNING_MAX_CANDIDATES,
+        max_observations: int = DEFAULT_ORIGIN_LEARNING_MAX_OBSERVATIONS,
+    ) -> None:
         if (
             isinstance(min_observations, bool)
             or not isinstance(min_observations, int)
             or min_observations <= 0
         ):
             raise ValueError("min_observations must be a positive integer")
+        for name, value in (
+            ("max_candidates", max_candidates),
+            ("max_observations", max_observations),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
         self.min_observations = min_observations
+        self.max_candidates = max_candidates
+        self.max_observations = max_observations
         self._states: dict[tuple[int, int, int, int, int], _CandidateState] = {}
+        self._observation_count = 0
         self._lock = Lock()
 
     @classmethod
@@ -368,10 +399,24 @@ class OriginLearner:
         path: str | Path,
         *,
         min_observations: Optional[int] = None,
+        max_candidates: Optional[int] = None,
+        max_observations: Optional[int] = None,
     ) -> "OriginLearner":
         candidate_path = Path(path)
         if not candidate_path.exists():
-            return cls(min_observations or 2)
+            return cls(
+                2 if min_observations is None else min_observations,
+                max_candidates=(
+                    max_candidates
+                    if max_candidates is not None
+                    else DEFAULT_ORIGIN_LEARNING_MAX_CANDIDATES
+                ),
+                max_observations=(
+                    max_observations
+                    if max_observations is not None
+                    else DEFAULT_ORIGIN_LEARNING_MAX_OBSERVATIONS
+                ),
+            )
         try:
             data = json.loads(candidate_path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, UnicodeError) as exc:
@@ -395,7 +440,36 @@ class OriginLearner:
                 f"min_observations in {candidate_path} must be a positive integer"
             )
         threshold = min_observations if min_observations is not None else stored_min
-        learner = cls(threshold)
+        stored_max_candidates = data.get(
+            "max_candidates", DEFAULT_ORIGIN_LEARNING_MAX_CANDIDATES
+        )
+        stored_max_observations = data.get(
+            "max_observations", DEFAULT_ORIGIN_LEARNING_MAX_OBSERVATIONS
+        )
+        try:
+            learner = cls(
+                threshold,
+                max_candidates=(
+                    max_candidates
+                    if max_candidates is not None
+                    else stored_max_candidates
+                ),
+                max_observations=(
+                    max_observations
+                    if max_observations is not None
+                    else stored_max_observations
+                ),
+            )
+        except ValueError as exc:
+            if (
+                min_observations is not None
+                or max_candidates is not None
+                or max_observations is not None
+            ):
+                raise
+            raise ProfileError(
+                f"invalid origin-learning limits in {candidate_path}: {exc}"
+            ) from exc
         entries = data.get("candidates", [])
         if not isinstance(entries, list):
             raise ProfileError(f"candidates in {candidate_path} must be a list")
@@ -450,6 +524,16 @@ class OriginLearner:
             for value in delta_lengths
         ):
             raise ProfileError(f"{location}.delta_lengths must contain 5..65535")
+        unique_observation_ids = set(observation_ids)
+        for name, values in (
+            ("token_digests", token_digests),
+            ("delta_lengths", delta_lengths),
+        ):
+            if len(set(values)) > len(unique_observation_ids):
+                raise ProfileError(
+                    f"{location}.{name} cannot contain more distinct evidence "
+                    "than observation_ids"
+                )
         state.observation_ids.update(observation_ids)
         state.token_digests.update(token_digests)
         state.delta_lengths.update(delta_lengths)
@@ -467,6 +551,11 @@ class OriginLearner:
                 for value in values
             ):
                 raise ProfileError(f"{location}.token_offsets.{name} is invalid")
+            if len(set(values)) > len(unique_observation_ids):
+                raise ProfileError(
+                    f"{location}.token_offsets.{name} cannot contain more "
+                    "distinct evidence than observation_ids"
+                )
             target.update(values)
         first_seen = entry.get("first_seen")
         last_seen = entry.get("last_seen")
@@ -476,21 +565,42 @@ class OriginLearner:
             raise ProfileError(f"{location}.last_seen must be a string")
         state.first_seen_text = first_seen
         state.last_seen_text = last_seen
+        if key in self._states:
+            raise ProfileError(f"{location} duplicates an earlier candidate family")
+        if len(self._states) >= self.max_candidates:
+            raise OriginLearningLimitError("candidate-family", self.max_candidates)
+        retained_observations = len(state.observation_ids)
+        if self._observation_count + retained_observations > self.max_observations:
+            raise OriginLearningLimitError("observation", self.max_observations)
         self._states[key] = state
+        self._observation_count += retained_observations
 
     def observe(self, observation: CompanionObservation) -> OriginCompanionCandidate:
         if not isinstance(observation, CompanionObservation):
             raise TypeError("OriginLearner.observe expects CompanionObservation")
         with self._lock:
             state = self._states.get(observation.family_key)
+            if (
+                state is not None
+                and observation.observation_id in state.observation_ids
+            ):
+                return state.snapshot()
             if state is None:
+                if len(self._states) >= self.max_candidates:
+                    raise OriginLearningLimitError(
+                        "candidate-family", self.max_candidates
+                    )
                 state = _CandidateState(
                     observation.delta_opcode,
                     observation.companion_opcodes,
                     observation.companion_lengths,
                 )
+            if self._observation_count >= self.max_observations:
+                raise OriginLearningLimitError("observation", self.max_observations)
+            added = state.add(observation)
+            if added:
+                self._observation_count += 1
                 self._states[observation.family_key] = state
-            state.add(observation)
             return state.snapshot()
 
     @property
@@ -544,6 +654,8 @@ class OriginLearner:
             "version": CANDIDATE_FORMAT_VERSION,
             "generated_at": _utc_text(),
             "min_observations": self.min_observations,
+            "max_candidates": self.max_candidates,
+            "max_observations": self.max_observations,
             "candidates": [
                 candidate.to_dict(self.min_observations)
                 for candidate in self.candidates

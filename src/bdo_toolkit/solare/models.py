@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar, Iterable, Optional
 
+from .._capture_runtime import CaptureEndpoint, _capture_is_clean
 
-_SOLARE_SCHEMA_VERSION = 1
+_SOLARE_SCHEMA_VERSION = 2
 
 
 class SolareDetectionStatus(str, Enum):
@@ -89,11 +90,13 @@ class SolareRawSection:
 
 @dataclass(frozen=True)
 class SolareClassPerformance:
-    """One occupied class slot from a rich leaderboard record.
+    """One occupied class slot from a validated Solare player record.
 
     Performance fields are optional because rank/name/class discovery can be
     structurally confirmed even when a patch changes the deeper record layout.
-    Missing means unavailable, never zero.
+    Missing means unavailable, never zero.  The containing ``SolarePlayer`` or
+    ``SolareOverallEntry`` establishes whether the slot came from the class or
+    overall leaderboard response.
     """
 
     slot: int
@@ -159,21 +162,11 @@ class SolarePlayer:
     name: str
     global_rank: int
     primary_class: SolareClass
-    player_uid_raw: Optional[bytes] = None
-    elo: Optional[int] = None
-    classes_played: tuple[SolareClassPerformance, ...] = ()
-
-    @property
-    def player_uid_bytes_le(self) -> Optional[str]:
-        if self.player_uid_raw is None:
-            return None
-        return self.player_uid_raw.hex()
-
-    @property
-    def player_uid_value(self) -> Optional[str]:
-        if self.player_uid_raw is None or len(self.player_uid_raw) != 8:
-            return None
-        return f"0x{int.from_bytes(self.player_uid_raw, 'little'):016x}"
+    elo: Optional[int] = field(default=None, kw_only=True)
+    classes_played: tuple[SolareClassPerformance, ...] = field(
+        default=(),
+        kw_only=True,
+    )
 
     def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
         output: dict[str, Any] = {
@@ -181,13 +174,9 @@ class SolarePlayer:
             "global_rank": self.global_rank,
             "primary_class": self.primary_class.to_dict(),
             "classes_played": [
-                item.to_dict(include_raw=include_raw)
-                for item in self.classes_played
+                item.to_dict(include_raw=include_raw) for item in self.classes_played
             ],
         }
-        if self.player_uid_raw is not None:
-            output["player_uid_raw"] = self.player_uid_value
-            output["player_uid_bytes_le"] = self.player_uid_bytes_le
         if self.elo is not None:
             output["elo"] = self.elo
         return output
@@ -195,47 +184,75 @@ class SolarePlayer:
 
 @dataclass(frozen=True)
 class SolareOverallEntry:
-    """One authoritative rank/name row from the overall top-100 table.
+    """One independently decoded row from the overall top-100 table.
 
-    Overall rows intentionally do not pretend to carry a primary class, Elo,
-    or per-class performance.  Those fields live on :class:`SolarePlayer`
-    records from the independent rich class table and may be joined by exact
-    rank/name when that player occurs in both tables.
-
-    The optional UID is named for its source table because validated protocol
-    generations do not always encode the rich-table and overall-table UID
-    fields identically.  It is therefore literal evidence, not a promise that
-    the two raw byte strings can be compared directly.
+    Aggregate wins, draws, and losses are independently decoded overall-record
+    values. ``total_matches`` is their arithmetic sum, not a separately
+    decoded wire field.
     """
 
     name: str
     global_rank: int
-    overall_uid_raw: Optional[bytes] = None
+    elo: Optional[int] = field(default=None, kw_only=True)
+    classes_played: tuple[SolareClassPerformance, ...] = field(
+        default=(),
+        kw_only=True,
+    )
+    total_wins: Optional[int] = field(default=None, kw_only=True)
+    total_draws: Optional[int] = field(default=None, kw_only=True)
+    total_losses: Optional[int] = field(default=None, kw_only=True)
 
     @property
-    def overall_uid_bytes_le(self) -> Optional[str]:
-        """Return the literal overall-table UID bytes in wire order."""
+    def total_matches(self) -> Optional[int]:
+        """Return aggregate W+D+L when the complete overall tuple is available."""
 
-        if self.overall_uid_raw is None:
+        values = (self.total_wins, self.total_draws, self.total_losses)
+        if any(value is None for value in values):
             return None
-        return self.overall_uid_raw.hex()
+        assert self.total_wins is not None
+        assert self.total_draws is not None
+        assert self.total_losses is not None
+        return self.total_wins + self.total_draws + self.total_losses
 
     @property
-    def overall_uid_value(self) -> Optional[str]:
-        """Return an eight-byte overall UID as a little-endian hex value."""
+    def total_win_rate(self) -> Optional[float]:
+        """Return the aggregate win percentage when total matches is positive."""
 
-        if self.overall_uid_raw is None or len(self.overall_uid_raw) != 8:
+        matches = self.total_matches
+        if matches is None or matches <= 0:
             return None
-        return f"0x{int.from_bytes(self.overall_uid_raw, 'little'):016x}"
+        assert self.total_wins is not None
+        return round((self.total_wins / matches) * 100, 2)
 
-    def to_dict(self) -> dict[str, object]:
-        output: dict[str, object] = {
+    @property
+    def primary_class(self) -> Optional[SolareClass]:
+        """Return the class from the row's validated primary class slot."""
+
+        performance = next(
+            (item for item in self.classes_played if item.primary),
+            None,
+        )
+        return performance.player_class if performance is not None else None
+
+    def to_dict(self, *, include_raw: bool = False) -> dict[str, Any]:
+        output: dict[str, Any] = {
             "name": self.name,
             "global_rank": self.global_rank,
+            "classes_played": [
+                item.to_dict(include_raw=include_raw) for item in self.classes_played
+            ],
         }
-        if self.overall_uid_raw is not None:
-            output["overall_uid_raw"] = self.overall_uid_value
-            output["overall_uid_bytes_le"] = self.overall_uid_bytes_le
+        if self.primary_class is not None:
+            output["primary_class"] = self.primary_class.to_dict()
+        if self.elo is not None:
+            output["elo"] = self.elo
+        if self.total_matches is not None:
+            output["total_matches"] = self.total_matches
+            output["total_wins"] = self.total_wins
+            output["total_draws"] = self.total_draws
+            output["total_losses"] = self.total_losses
+            if self.total_win_rate is not None:
+                output["total_win_rate"] = self.total_win_rate
         return output
 
 
@@ -271,19 +288,8 @@ class SolareFamilyLayout:
 
 
 @dataclass(frozen=True)
-class SolareCaptureEndpoint:
-    """Resolved network-capture target used by a live Solare session."""
-
-    interface: Optional[str]
-    local_ip: Optional[str]
-    bpf_filter: Optional[str]
-
-    def to_dict(self) -> dict[str, Optional[str]]:
-        return {
-            "interface": self.interface,
-            "local_ip": self.local_ip,
-            "bpf_filter": self.bpf_filter,
-        }
+class SolareCaptureEndpoint(CaptureEndpoint):
+    """Solare-specific public spelling of the shared capture endpoint."""
 
 
 @dataclass(frozen=True)
@@ -314,12 +320,12 @@ class SolareCaptureHealth:
 
     @property
     def capture_is_clean(self) -> bool:
-        return (
-            self.tcp_gap_resets == 0
-            and (self.pcap_dropped in (None, 0))
-            and (self.pcap_interface_dropped in (None, 0))
-            and self.packet_queue_overflows == 0
-            and self.flow_state_evictions == 0
+        return _capture_is_clean(
+            tcp_gap_resets=self.tcp_gap_resets,
+            pcap_dropped=self.pcap_dropped,
+            pcap_interface_dropped=self.pcap_interface_dropped,
+            packet_queue_overflows=self.packet_queue_overflows,
+            flow_state_evictions=self.flow_state_evictions,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -349,7 +355,9 @@ class SolareCaptureHealth:
             "pcap_interface_dropped": self.pcap_interface_dropped,
             "capture_buffer_bytes": self.capture_buffer_bytes,
         }
-        output.update({key: value for key, value in optional.items() if value is not None})
+        output.update(
+            {key: value for key, value in optional.items() if value is not None}
+        )
         return output
 
 
@@ -400,13 +408,39 @@ class SolareLeaderboardSnapshot:
     snapshot_id: str
     observed_at: float
     players: tuple[SolarePlayer, ...]
-    evidence: SolareEvidence
-    capabilities: frozenset[str] = frozenset({"rankings"})
     overall_top_100: tuple[SolareOverallEntry, ...] = field(
         default=(),
         kw_only=True,
     )
+    class_table_capabilities: frozenset[str] = field(
+        default=frozenset({"rankings"}),
+        kw_only=True,
+    )
+    overall_capabilities: frozenset[str] = field(
+        default=frozenset({"rankings"}),
+        kw_only=True,
+    )
     schema_version: ClassVar[int] = _SOLARE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        # Preserve deep immutability even when a caller supplies an ordinary
+        # set to the public constructor despite the frozenset annotation.
+        object.__setattr__(
+            self,
+            "class_table_capabilities",
+            frozenset(self.class_table_capabilities),
+        )
+        object.__setattr__(
+            self,
+            "overall_capabilities",
+            frozenset(self.overall_capabilities),
+        )
+
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """Return capabilities guaranteed independently by both tables."""
+
+        return self.class_table_capabilities & self.overall_capabilities
 
     @property
     def observed_at_iso(self) -> str:
@@ -458,6 +492,8 @@ class SolareLeaderboardSnapshot:
             "observed_at": self.observed_at,
             "observed_at_iso": self.observed_at_iso,
             "capabilities": sorted(self.capabilities),
+            "class_table_capabilities": sorted(self.class_table_capabilities),
+            "overall_capabilities": sorted(self.overall_capabilities),
             "complete": True,
             "record_count": len(self.players),
             "players": [
@@ -465,9 +501,8 @@ class SolareLeaderboardSnapshot:
             ],
             "overall_record_count": len(self.overall_top_100),
             "overall_top_100": [
-                entry.to_dict() for entry in self.overall_top_100
+                entry.to_dict(include_raw=include_raw) for entry in self.overall_top_100
             ],
-            "evidence": self.evidence.to_dict(),
         }
 
     def to_json(self, *, include_raw: bool = False, indent: Optional[int] = 2) -> str:
@@ -481,7 +516,7 @@ class SolareLeaderboardSnapshot:
 
 @dataclass(frozen=True)
 class SolareCaptureResult:
-    """Final capture/replay outcome; only ``complete`` carries a snapshot."""
+    """Final outcome and sole evidence owner; only ``complete`` has a snapshot."""
 
     status: SolareDetectionStatus
     evidence: SolareEvidence
@@ -492,7 +527,10 @@ class SolareCaptureResult:
     def __post_init__(self) -> None:
         if self.status is SolareDetectionStatus.COMPLETE and self.snapshot is None:
             raise ValueError("a complete Solare result requires a snapshot")
-        if self.status is not SolareDetectionStatus.COMPLETE and self.snapshot is not None:
+        if (
+            self.status is not SolareDetectionStatus.COMPLETE
+            and self.snapshot is not None
+        ):
             raise ValueError("only a complete Solare result may contain a snapshot")
 
     @property
@@ -552,12 +590,10 @@ def solare_snapshot_id(
 ) -> str:
     """Return a deterministic semantic identifier, excluding opaque raw blobs.
 
-    Exact-overlap snapshots retain the original rich-row-only digest so IDs
-    produced by historical captures remain stable.  A genuinely divergent
-    overall table uses a versioned envelope containing both table identities,
-    preventing two different overall leaderboards from sharing a snapshot ID.
-    Overall UID bytes are deliberately excluded because their encoding is
-    layout-specific evidence rather than a cross-generation semantic key.
+    Exact-overlap snapshots retain the original rich-row-only digest only when
+    every available comparable overall-table detail agrees with its independent
+    class-table row.  A genuinely divergent overall table uses a versioned
+    envelope containing both table identities and their non-raw semantics.
     """
 
     player_rows = tuple(players)
@@ -571,13 +607,14 @@ def solare_snapshot_id(
                 "name": player.name,
                 "rank": player.global_rank,
                 "class": player.primary_class.code,
-                "uid": player.player_uid_bytes_le,
                 "elo": player.elo,
                 "classes": [
                     {
                         "slot": item.slot,
                         "class": item.player_class.code,
-                        "spec": item.specialization.code if item.specialization else None,
+                        "spec": (
+                            item.specialization.code if item.specialization else None
+                        ),
                         "matches": item.matches,
                         "wins": item.wins,
                         "draws": item.draws,
@@ -588,29 +625,48 @@ def solare_snapshot_id(
                 ],
             }
         )
-    overall_rows = [
-        {"name": entry.name, "rank": entry.global_rank}
-        for entry in sorted(
+    overall_entries = tuple(
+        sorted(
             overall_top_100,
             key=lambda item: (item.global_rank, item.name),
         )
-    ]
-    rich_overall_rows = [
-        {"name": player.name, "rank": player.global_rank}
-        for player in sorted(
-            (
-                player
-                for player in player_rows
-                if 1 <= player.global_rank <= 100
+    )
+    overall_rows = [
+        {
+            "name": entry.name,
+            "rank": entry.global_rank,
+            "class": (
+                entry.primary_class.code if entry.primary_class is not None else None
             ),
+            "elo": entry.elo,
+            "total_matches": entry.total_matches,
+            "total_wins": entry.total_wins,
+            "total_draws": entry.total_draws,
+            "total_losses": entry.total_losses,
+            "classes": [
+                _class_performance_semantics(item, include_primary=True)
+                for item in entry.classes_played
+            ],
+        }
+        for entry in overall_entries
+    ]
+    rich_overall_players = tuple(
+        sorted(
+            (player for player in player_rows if 1 <= player.global_rank <= 100),
             key=lambda item: (item.global_rank, item.name),
         )
-    ]
-    if not overall_rows or overall_rows == rich_overall_rows:
+    )
+    exact_semantic_overlap = len(overall_entries) == len(rich_overall_players) and all(
+        entry.global_rank == player.global_rank
+        and entry.name == player.name
+        and _available_overall_details_agree(entry, player)
+        for entry, player in zip(overall_entries, rich_overall_players)
+    )
+    if not overall_rows or exact_semantic_overlap:
         semantic_payload: object = rows
     else:
         semantic_payload = {
-            "format": "solare-snapshot-v2-divergent-overall",
+            "format": "solare-snapshot-v4-independent-overall-aggregates",
             "overall_top_100": overall_rows,
             "players": rows,
         }
@@ -620,3 +676,131 @@ def solare_snapshot_id(
         separators=(",", ":"),
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _class_performance_semantics(
+    performance: SolareClassPerformance,
+    *,
+    include_primary: bool = False,
+) -> dict[str, object]:
+    """Return non-opaque class-slot semantics used by snapshot identity."""
+
+    output: dict[str, object] = {
+        "slot": performance.slot,
+        "class": performance.player_class.code,
+        "spec": (
+            performance.specialization.code
+            if performance.specialization is not None
+            else None
+        ),
+        "matches": performance.matches,
+        "wins": performance.wins,
+        "draws": performance.draws,
+        "losses": performance.losses,
+        "history": list(performance.recent_results_raw),
+    }
+    if include_primary:
+        output["primary"] = performance.primary
+    if performance.recent_results_wire_text is not None:
+        output["history_wire_text"] = performance.recent_results_wire_text
+    return output
+
+
+def _available_overall_details_agree(
+    overall: SolareOverallEntry,
+    class_player: SolarePlayer,
+) -> bool:
+    """Compare only non-raw details actually available on an overall row."""
+
+    if overall.elo is not None and overall.elo != class_player.elo:
+        return False
+    if not _available_overall_totals_agree(overall, class_player):
+        return False
+    if not overall.classes_played:
+        return True
+    if len(overall.classes_played) != len(class_player.classes_played):
+        return False
+    if (
+        overall.primary_class is not None
+        and overall.primary_class.code != class_player.primary_class.code
+    ):
+        return False
+
+    for overall_slot, class_slot in zip(
+        overall.classes_played,
+        class_player.classes_played,
+    ):
+        if (
+            overall_slot.slot != class_slot.slot
+            or overall_slot.primary != class_slot.primary
+            or overall_slot.player_class.code != class_slot.player_class.code
+        ):
+            return False
+        if overall_slot.specialization is not None and (
+            class_slot.specialization is None
+            or overall_slot.specialization.code != class_slot.specialization.code
+        ):
+            return False
+        for field_name in ("matches", "wins", "draws", "losses"):
+            overall_value = getattr(overall_slot, field_name)
+            if overall_value is not None and overall_value != getattr(
+                class_slot, field_name
+            ):
+                return False
+        if (
+            overall_slot.recent_results_raw
+            and overall_slot.recent_results_raw != class_slot.recent_results_raw
+        ):
+            return False
+        if (
+            overall_slot.recent_results_wire_text is not None
+            and overall_slot.recent_results_wire_text
+            != class_slot.recent_results_wire_text
+        ):
+            return False
+    return True
+
+
+def _available_overall_totals_agree(
+    overall: SolareOverallEntry,
+    class_player: SolarePlayer,
+) -> bool:
+    """Compare available overall aggregates with complete class-slot sums."""
+
+    overall_values = (
+        overall.total_wins,
+        overall.total_draws,
+        overall.total_losses,
+    )
+    if not any(value is not None for value in overall_values):
+        return True
+    if not class_player.classes_played:
+        return False
+
+    for field_name, overall_value in zip(
+        ("wins", "draws", "losses"),
+        overall_values,
+    ):
+        if overall_value is None:
+            continue
+        class_values = tuple(
+            getattr(performance, field_name)
+            for performance in class_player.classes_played
+        )
+        if any(value is None for value in class_values):
+            return False
+        if sum(value for value in class_values if value is not None) != overall_value:
+            return False
+
+    if overall.total_matches is not None:
+        class_matches = tuple(
+            performance.matches for performance in class_player.classes_played
+        )
+        if any(value is None for value in class_matches):
+            return False
+        if (
+            sum(value for value in class_matches if value is not None)
+            != overall.total_matches
+        ):
+            return False
+    return True

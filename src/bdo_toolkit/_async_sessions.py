@@ -9,18 +9,28 @@ thread and make cancellation deterministic.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from types import TracebackType
 from typing import AsyncIterator, Callable, Optional, TypeVar
 
+from ._capture_runtime import CaptureEndpoint, _attach_cleanup_owner
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
-from .calibration import CalibrationResult, CalibrationSession
-from .capture import LiveCaptureSession
+from .calibration import (
+    DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+    DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+    CalibrationResult,
+    CalibrationRetention,
+    CalibrationSession,
+)
+from .capture import LiveCaptureHealth, LiveCaptureSession, _validate_poll_timeout
+from .diagnostics import DecoderDiagnostic, DecoderHealth
 from .events import BDOEvent
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
+from .profiles import OpcodeProfile
 
 
 T = TypeVar("T")
@@ -31,10 +41,20 @@ async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
 
     while not future.done():
         try:
-            await asyncio.shield(future)
+            # asyncio.wait() never propagates cancellation into ``future`` and
+            # does not create a cancelled shield wrapper that may later log an
+            # otherwise-retrieved worker exception on Python 3.14.
+            await asyncio.wait((future,))
         except asyncio.CancelledError:
             # Cleanup must settle before the original cancellation escapes.
             continue
+    return future.result()
+
+
+async def _await_preserving_future(future: asyncio.Future[T]) -> T:
+    """Await without cancelling or wrapping the submitted worker future."""
+
+    await asyncio.wait((future,))
     return future.result()
 
 
@@ -53,16 +73,18 @@ class AsyncLiveCaptureSession:
     def __init__(
         self,
         *,
-        opcode_profile: str | Path | None = None,
+        opcode_profile: str | Path | OpcodeProfile,
         live_options: Optional[LiveCaptureOptions] = None,
         event_filter: Optional[EventFilter] = None,
         origin_observer: Optional[Callable[[CompanionObservation], object]] = None,
+        on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
     ) -> None:
         self._session = LiveCaptureSession(
             opcode_profile=opcode_profile,
             live_options=live_options,
             event_filter=event_filter,
             origin_observer=origin_observer,
+            on_diagnostic=on_diagnostic,
         )
         # A pending blocking poll needs a second worker so stop() can wake it,
         # even when the host app configured a one-thread default executor.
@@ -73,6 +95,11 @@ class AsyncLiveCaptureSession:
         self._executor_closed = False
         self._stop_future: asyncio.Future[None] | None = None
         self._poll_active = False
+        # A cancelled worker poll may already have removed one event before it
+        # settles. Keep that event session-owned so the next consumer can
+        # retrieve it. Single-consumer enforcement bounds this deque to one.
+        self._pending_events: deque[BDOEvent] = deque()
+        self._start_attempted = False
         self._start_complete = False
 
     @property
@@ -84,12 +111,32 @@ class AsyncLiveCaptureSession:
         return self._session.stopped
 
     @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether synchronous capture cleanup remains retryable."""
+
+        return self._session.cleanup_incomplete
+
+    @property
     def stop_reason(self) -> Optional[str]:
         return self._session.stop_reason
 
     @property
     def error(self) -> Optional[BaseException]:
         return self._session.error
+
+    @property
+    def endpoint(self) -> Optional[CaptureEndpoint]:
+        return self._session.endpoint
+
+    @property
+    def health(self) -> LiveCaptureHealth:
+        """Return the underlying observational health snapshot synchronously."""
+
+        return self._session.health
+
+    @property
+    def decoder_health(self) -> DecoderHealth:
+        return self._session.decoder_health
 
     def raise_if_failed(self) -> None:
         """Re-raise a retained background capture failure."""
@@ -113,32 +160,62 @@ class AsyncLiveCaptureSession:
             self._stop_future = self._submit(self._session.stop)
         return self._stop_future
 
+    def _inside_origin_observer(self) -> bool:
+        predicate = getattr(self._session, "_inside_origin_observer", None)
+        return bool(predicate is not None and predicate())
+
     async def start(self) -> None:
         """Start capture without blocking the asyncio event loop."""
 
+        # Reject repeat/concurrent starts before submitting work.  In
+        # particular, a rejected second start must not close the executor that
+        # still owns a running first session and its eventual cleanup.
+        if self._start_attempted:
+            raise RuntimeError("async live capture session was already started")
+        self._start_attempted = True
         start_future = self._submit(self._session.start)
         try:
-            await asyncio.shield(start_future)
-        except asyncio.CancelledError:
+            await _await_preserving_future(start_future)
+        except asyncio.CancelledError as exc:
             started = False
+            stop_future: asyncio.Future[None] | None = None
             try:
                 await _wait_ignoring_cancellation(start_future)
                 started = True
             except BaseException:
                 # Cancellation remains the caller-visible outcome.
                 pass
-            if started:
+            if started or self._session.cleanup_incomplete:
+                self._start_complete = True
                 try:
                     stop_future = self._ensure_stop_future()
                     await _wait_ignoring_cancellation(stop_future)
                 except BaseException:
                     pass
-            self._shutdown_executor()
+            if not self._session.cleanup_incomplete:
+                self._shutdown_executor()
+            else:
+                if stop_future is not None and self._stop_future is stop_future:
+                    self._stop_future = None
+                _attach_cleanup_owner(
+                    exc,
+                    self,
+                    context="async live item capture startup",
+                )
             raise
-        except BaseException:
+        except BaseException as exc:
             # A failed startup never enters an async context, so close the
-            # wrapper-owned executor here instead of relying on object GC.
-            self._shutdown_executor()
+            # wrapper-owned executor unless the sync session retained a live
+            # backend specifically so cleanup can be retried.
+            if self._session.cleanup_incomplete:
+                self._start_complete = True
+                _attach_cleanup_owner(
+                    exc,
+                    self,
+                    context="async live item capture startup",
+                )
+            else:
+                self._shutdown_executor()
             raise
         else:
             self._start_complete = True
@@ -146,6 +223,11 @@ class AsyncLiveCaptureSession:
     async def stop(self) -> None:
         """Gracefully stop capture and finish decoder/origin state."""
 
+        if self._inside_origin_observer():
+            raise RuntimeError(
+                "stop() cannot block inside the live decoder or origin "
+                "observer; use request_stop() instead"
+            )
         if self._session.stopped:
             self._shutdown_executor()
             return
@@ -154,7 +236,7 @@ class AsyncLiveCaptureSession:
 
         stop_future = self._ensure_stop_future()
         try:
-            await asyncio.shield(stop_future)
+            await _await_preserving_future(stop_future)
         except asyncio.CancelledError:
             try:
                 try:
@@ -163,31 +245,58 @@ class AsyncLiveCaptureSession:
                     # Cancellation remains the caller-visible outcome.
                     pass
             finally:
-                self._shutdown_executor()
+                if not self._session.cleanup_incomplete:
+                    self._shutdown_executor()
+                else:
+                    if self._stop_future is stop_future:
+                        self._stop_future = None
             raise
         except BaseException:
             if self._session.stopped:
                 self._shutdown_executor()
             else:
-                self._stop_future = None
+                if self._stop_future is stop_future:
+                    self._stop_future = None
             raise
         else:
             self._shutdown_executor()
+
+    def request_stop(self) -> None:
+        """Request callback-safe shutdown without blocking its worker thread."""
+
+        self._session.request_stop()
 
     async def poll(self, timeout: Optional[float] = None) -> Optional[BDOEvent]:
         """Await one event, a timeout, or the fully drained stopped session.
 
         Cancelling a pending poll is terminal for this single-consumer session:
         capture is stopped before ``CancelledError`` is re-raised.
+        After completed stop, ``timeout`` is ignored while buffered data drains.
         """
 
+        if self._inside_origin_observer():
+            raise RuntimeError(
+                "poll() cannot consume events inside origin_observer; "
+                "consume them after the callback returns"
+            )
         if self._poll_active:
             raise RuntimeError("async live capture session supports one consumer")
-        if not self._start_complete and not self._session.stopped:
+        stopped_at_entry = self._session.stopped
+        if not self._start_complete and not stopped_at_entry:
             raise RuntimeError("live capture session was not started")
+        # A cancellation-preserved event must not bypass the active timeout
+        # contract. Preserve the historical stopped fast path: it cannot wait
+        # and ignores the caller's timeout while draining.
+        if not stopped_at_entry:
+            _validate_poll_timeout(timeout)
 
         self._poll_active = True
         try:
+            if self._session.stopped:
+                self._shutdown_executor()
+            if self._pending_events:
+                return self._pending_events.popleft()
+
             if self._session.stopped:
                 # After stop(), finalization is complete and a zero-time poll
                 # only drains already-buffered events; it cannot block.
@@ -195,18 +304,29 @@ class AsyncLiveCaptureSession:
 
             poll_future = self._submit(partial(self._session.poll, timeout))
             try:
-                event = await asyncio.shield(poll_future)
+                event = await _await_preserving_future(poll_future)
             except asyncio.CancelledError:
+                stop_future: asyncio.Future[None] | None = None
                 try:
                     stop_future = self._ensure_stop_future()
                     await _wait_ignoring_cancellation(stop_future)
                 except BaseException:
                     pass
                 try:
-                    await _wait_ignoring_cancellation(poll_future)
+                    event = await _wait_ignoring_cancellation(poll_future)
                 except BaseException:
                     pass
-                self._shutdown_executor()
+                else:
+                    if event is not None:
+                        self._pending_events.append(event)
+                if not self._session.cleanup_incomplete:
+                    self._shutdown_executor()
+                else:
+                    if (
+                        stop_future is not None
+                        and self._stop_future is stop_future
+                    ):
+                        self._stop_future = None
                 raise
             except BaseException:
                 if self._session.stopped:
@@ -220,10 +340,15 @@ class AsyncLiveCaptureSession:
             self._poll_active = False
 
     async def events(self) -> AsyncIterator[BDOEvent]:
-        """Yield events until capture stops and finalized events are drained."""
+        """Yield events in order until capture stops and final events drain."""
 
+        if self._inside_origin_observer():
+            raise RuntimeError(
+                "events() cannot consume events inside origin_observer; "
+                "consume them after the callback returns"
+            )
         while True:
-            event = await self.poll()
+            event = await self.poll(timeout=None)
             if event is None:
                 return
             yield event
@@ -241,10 +366,25 @@ class AsyncLiveCaptureSession:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if not self._session.stopped:
-            await self.stop()
-        else:
-            self._shutdown_executor()
+        try:
+            if not self._session.stopped:
+                await self.stop()
+            else:
+                self._shutdown_executor()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            if self.cleanup_incomplete:
+                _attach_cleanup_owner(
+                    exc_value,
+                    self,
+                    context="async live item capture context",
+                )
+            if hasattr(exc_value, "add_note"):
+                exc_value.add_note(
+                    "async live item capture context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
 
 
 class AsyncCalibrationSession:
@@ -265,6 +405,8 @@ class AsyncCalibrationSession:
         capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
         min_confidence: float = 0.80,
+        max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
+        max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
     ) -> None:
         self._session = CalibrationSession(
             item_id=item_id,
@@ -273,6 +415,8 @@ class AsyncCalibrationSession:
             capture_options=capture_options,
             context_frames=context_frames,
             min_confidence=min_confidence,
+            max_retained_frames=max_retained_frames,
+            max_retained_bytes=max_retained_bytes,
         )
         self._active = False
         self._terminal_action: str | None = None
@@ -285,8 +429,46 @@ class AsyncCalibrationSession:
         return self._session.running
 
     @property
+    def cleanup_incomplete(self) -> bool:
+        """Whether calibration cleanup remains owned for another attempt."""
+
+        return self._session.cleanup_incomplete
+
+    @property
     def frames_collected(self) -> int:
         return self._session.frames_collected
+
+    @property
+    def frames_observed(self) -> int:
+        return self._session.frames_observed
+
+    @property
+    def frames_retained(self) -> int:
+        return self._session.frames_retained
+
+    @property
+    def frames_discarded(self) -> int:
+        return self._session.frames_discarded
+
+    @property
+    def bytes_observed(self) -> int:
+        return self._session.bytes_observed
+
+    @property
+    def bytes_retained(self) -> int:
+        return self._session.bytes_retained
+
+    @property
+    def bytes_discarded(self) -> int:
+        return self._session.bytes_discarded
+
+    @property
+    def retention_truncated(self) -> bool:
+        return self._session.retention_truncated
+
+    @property
+    def retention(self) -> CalibrationRetention:
+        return self._session.retention
 
     @property
     def result(self) -> CalibrationResult | None:
@@ -302,15 +484,23 @@ class AsyncCalibrationSession:
 
         start_task = _thread_task(self._session.start)
         try:
-            await asyncio.shield(start_task)
-        except asyncio.CancelledError:
+            await _await_preserving_future(start_task)
+        except asyncio.CancelledError as exc:
             started = False
             try:
                 await _wait_ignoring_cancellation(start_task)
                 started = True
             except BaseException:
                 pass
-            if started:
+            if started or self._session.cleanup_incomplete:
+                # A late successful start belongs to a new calibration run.
+                # Clear every terminal artifact from the prior run before
+                # attempting cancellation cleanup, so an exposed cleanup
+                # owner cannot return a stale result or reuse an old task.
+                self._terminal_action = None
+                self._stop_task = None
+                self._abort_task = None
+                self._result = None
                 abort_task = _thread_task(
                     partial(self._session.__exit__, None, None, None)
                 )
@@ -318,6 +508,26 @@ class AsyncCalibrationSession:
                     await _wait_ignoring_cancellation(abort_task)
                 except BaseException:
                     pass
+            if self._session.cleanup_incomplete:
+                self._active = True
+                _attach_cleanup_owner(
+                    exc,
+                    self,
+                    context="async live calibration startup",
+                )
+            raise
+        except BaseException as exc:
+            if self._session.cleanup_incomplete:
+                self._active = True
+                self._terminal_action = None
+                self._stop_task = None
+                self._abort_task = None
+                self._result = None
+                _attach_cleanup_owner(
+                    exc,
+                    self,
+                    context="async live calibration startup",
+                )
             raise
 
         self._active = True
@@ -329,10 +539,12 @@ class AsyncCalibrationSession:
     async def _finish(self) -> CalibrationResult:
         try:
             result = await asyncio.to_thread(self._session.stop)
-            self._result = result
-            return result
-        finally:
-            self._active = False
+        except BaseException:
+            self._active = self._session.cleanup_incomplete
+            raise
+        self._result = result
+        self._active = False
+        return result
 
     async def stop(self) -> CalibrationResult:
         """Stop capture, run calibration, and return its result."""
@@ -345,20 +557,34 @@ class AsyncCalibrationSession:
         if self._stop_task is None:
             self._terminal_action = "stop"
             self._stop_task = asyncio.create_task(self._finish())
+        stop_task = self._stop_task
 
         try:
-            return await asyncio.shield(self._stop_task)
+            return await _await_preserving_future(stop_task)
         except asyncio.CancelledError:
             try:
-                await _wait_ignoring_cancellation(self._stop_task)
+                await _wait_ignoring_cancellation(stop_task)
             except BaseException:
                 pass
+            if self._session.cleanup_incomplete:
+                if self._stop_task is stop_task:
+                    self._stop_task = None
+                self._active = True
+            raise
+        except BaseException:
+            if self._session.cleanup_incomplete:
+                if self._stop_task is stop_task:
+                    self._stop_task = None
+                self._active = True
             raise
 
     async def _discard(self) -> None:
         try:
             await asyncio.to_thread(self._session.__exit__, None, None, None)
-        finally:
+        except BaseException:
+            self._active = self._session.cleanup_incomplete
+            raise
+        else:
             self._active = False
 
     async def abort(self) -> None:
@@ -373,14 +599,25 @@ class AsyncCalibrationSession:
         if self._abort_task is None:
             self._terminal_action = "abort"
             self._abort_task = asyncio.create_task(self._discard())
+        abort_task = self._abort_task
 
         try:
-            await asyncio.shield(self._abort_task)
+            await _await_preserving_future(abort_task)
         except asyncio.CancelledError:
             try:
-                await _wait_ignoring_cancellation(self._abort_task)
+                await _wait_ignoring_cancellation(abort_task)
             except BaseException:
                 pass
+            if self._session.cleanup_incomplete:
+                if self._abort_task is abort_task:
+                    self._abort_task = None
+                self._active = True
+            raise
+        except BaseException:
+            if self._session.cleanup_incomplete:
+                if self._abort_task is abort_task:
+                    self._abort_task = None
+                self._active = True
             raise
 
     async def __aenter__(self) -> "AsyncCalibrationSession":
@@ -393,7 +630,22 @@ class AsyncCalibrationSession:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if self._terminal_action == "stop":
-            await self.stop()
-        elif self._active:
-            await self.abort()
+        try:
+            if self._terminal_action == "stop":
+                await self.stop()
+            elif self._active:
+                await self.abort()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            if self.cleanup_incomplete:
+                _attach_cleanup_owner(
+                    exc_value,
+                    self,
+                    context="async live calibration context",
+                )
+            if hasattr(exc_value, "add_note"):
+                exc_value.add_note(
+                    "async live calibration context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )

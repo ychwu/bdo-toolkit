@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable, Optional
 
-from ._protocol import EventSpec
-from .profiles import OpcodeProfile, ProfileError, load_opcode_profile
+from ._protocol import MAX_TARGET_MESSAGE_LENGTH, EventSpec
+from .profiles import OpcodeProfile, ProfileError
 
 
 @dataclass(frozen=True)
@@ -15,15 +15,6 @@ class LoadedSpecProfile:
     active: bool
     specs: tuple[EventSpec, ...]
     source: str
-
-
-def load_spec_profile(path: Path, *, missing_ok: bool = True) -> LoadedSpecProfile:
-    if not path.exists():
-        if missing_ok:
-            return LoadedSpecProfile(active=False, specs=(), source=str(path))
-        raise FileNotFoundError(f"Opcode profile does not exist: {path}")
-
-    return event_specs_from_profile(load_opcode_profile(path))
 
 
 def event_specs_from_profile(profile: OpcodeProfile) -> LoadedSpecProfile:
@@ -49,16 +40,98 @@ def event_specs_from_profile(profile: OpcodeProfile) -> LoadedSpecProfile:
                     "missing or invalid required fields"
                 )
 
+    normalized = tuple(_dedupe_event_specs(specs))
+    _validate_unambiguous_loot_specs(normalized, source=profile.path)
     return LoadedSpecProfile(
         active=True,
-        specs=tuple(_dedupe_event_specs(specs)),
+        specs=normalized,
         source=str(profile.path),
+    )
+
+
+def _validate_loot_profile_entries(
+    entries: Iterable[Mapping[str, object]],
+    *,
+    source: object,
+) -> None:
+    """Validate only the runtime ambiguity introduced by raw LOOT entries."""
+
+    specs: list[EventSpec] = []
+    for entry in entries:
+        try:
+            spec = _event_spec_from_entry("LOOT_PREVIEW", entry)
+        except ValueError as exc:
+            raise ProfileError(
+                f"Invalid LOOT_PREVIEW spec in {source}: {exc}"
+            ) from exc
+        if spec is None:
+            raise ProfileError(
+                f"Invalid LOOT_PREVIEW spec in {source}: "
+                "missing or invalid required fields"
+            )
+        specs.append(spec)
+
+    _validate_unambiguous_loot_specs(
+        _dedupe_event_specs(specs),
+        source=source,
+    )
+
+
+def _validate_unambiguous_loot_specs(
+    specs: Iterable[EventSpec],
+    *,
+    source: object,
+) -> None:
+    """Require one non-overlapping runtime length domain per LOOT opcode."""
+
+    grouped: dict[int, list[EventSpec]] = {}
+    for spec in specs:
+        if spec.label != "LOOT_PREVIEW":
+            continue
+        grouped.setdefault(spec.opcode, []).append(spec)
+
+    for opcode, candidates in grouped.items():
+        for index, first in enumerate(candidates):
+            first_low, first_high = _loot_message_length_domain(first)
+            for second in candidates[index + 1 :]:
+                second_low, second_high = _loot_message_length_domain(second)
+                if max(first_low, second_low) > min(first_high, second_high):
+                    continue
+                raise ProfileError(
+                    f"Ambiguous LOOT_PREVIEW specs in {source}: opcode "
+                    f"0x{opcode:04X} has distinct layouts with overlapping "
+                    "runtime message-length domains: "
+                    f"{_loot_layout_description(first)} and "
+                    f"{_loot_layout_description(second)}. Keep only the layout for "
+                    "the captured game patch, or recalibrate and replace the "
+                    "LOOT_PREVIEW family instead of merging it."
+                )
+
+
+def _loot_message_length_domain(spec: EventSpec) -> tuple[int, int]:
+    exact_length = spec.single_record_message_length
+    if exact_length is not None:
+        return exact_length, exact_length
+    return spec.min_message_length, MAX_TARGET_MESSAGE_LENGTH
+
+
+def _loot_layout_description(spec: EventSpec) -> str:
+    exact_length = spec.single_record_message_length
+    length = (
+        str(exact_length)
+        if exact_length is not None
+        else f"{spec.min_message_length}..{MAX_TARGET_MESSAGE_LENGTH}"
+    )
+    return (
+        f"(length={length}, item_id_offset={spec.item_offset}, "
+        f"quantity_offset={spec.quantity_offset}, "
+        f"item_instance_offset={spec.item_instance_offset!r})"
     )
 
 
 def _event_spec_from_entry(
     event: str,
-    entry: dict[str, object],
+    entry: Mapping[str, object],
 ) -> Optional[EventSpec]:
     opcode = _parse_opcode(entry.get("opcode"))
     if opcode is None:
@@ -71,6 +144,7 @@ def _event_spec_from_entry(
     if event == "LOOT_PREVIEW":
         if item_id_offset is None or quantity_offset is None:
             return None
+        item_instance_offset = _optional_int(entry.get("item_instance_offset"))
         return EventSpec(
             label="LOOT_PREVIEW",
             opcode=opcode,
@@ -80,8 +154,14 @@ def _event_spec_from_entry(
                 length,
                 item_id_offset + 4,
                 quantity_offset + 4,
-                _optional_int(entry.get("item_instance_offset"), width=8),
+                (
+                    item_instance_offset + 8
+                    if item_instance_offset is not None
+                    else None
+                ),
             ),
+            item_instance_offset=item_instance_offset,
+            single_record_message_length=length,
             default_context="Gathering",
         )
 
@@ -123,6 +203,7 @@ def _event_spec_from_entry(
         if item_id_offset is None or quantity_added_offset is None:
             return None
         context_offset = _optional_int(entry.get("context_offset"))
+        record_count_offset = _optional_int(entry.get("record_count_offset"))
         repeat_stride = _optional_int(entry.get("repeat_stride"))
         return EventSpec(
             label="INVENTORY_TO_STORAGE",
@@ -139,8 +220,14 @@ def _event_spec_from_entry(
                     else None
                 ),
                 context_offset + 4 if context_offset is not None else None,
+                (
+                    record_count_offset + 2
+                    if record_count_offset is not None
+                    else None
+                ),
             ),
             source_context_offset=context_offset,
+            record_count_offset=record_count_offset,
             storage_instance_offset=destination_instance_offset,
             repeat_stride=repeat_stride,
             single_record_message_length=length,
@@ -168,12 +255,12 @@ def _parse_opcode(value: object) -> Optional[int]:
     return opcode
 
 
-def _optional_int(value: object, width: int = 0) -> Optional[int]:
+def _optional_int(value: object) -> Optional[int]:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"expected a non-negative integer, got {value!r}")
-    return value + width if width else value
+    return value
 
 
 def _minimum_event_length(length: Optional[int], *ends: Optional[int]) -> int:
@@ -185,19 +272,14 @@ def _minimum_event_length(length: Optional[int], *ends: Optional[int]) -> int:
 
 def _dedupe_event_specs(specs: Iterable[EventSpec]) -> list[EventSpec]:
     output: list[EventSpec] = []
-    seen: set[tuple[object, ...]] = set()
+    # EventSpec is a frozen value object whose fields are all decode-affecting.
+    # Using the complete value as identity preserves same-opcode layouts that
+    # differ in base length, instance offsets, repeat geometry, context width,
+    # or fallback context while still removing literal duplicates.
+    seen: set[EventSpec] = set()
     for spec in specs:
-        key = (
-            spec.label,
-            spec.opcode,
-            spec.item_offset,
-            spec.quantity_offset,
-            spec.inventory_slot_offset,
-            spec.source_context_offset,
-            spec.storage_instance_offset,
-        )
-        if key in seen:
+        if spec in seen:
             continue
-        seen.add(key)
+        seen.add(spec)
         output.append(spec)
     return output

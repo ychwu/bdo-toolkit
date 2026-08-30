@@ -1,4 +1,4 @@
-"""Public Arena of Solare leaderboard API.
+"""Public experimental Arena of Solare leaderboard API.
 
 This domain shares the toolkit's passive packet acquisition and TCP
 reassembly, but intentionally does not emit :class:`bdo_toolkit.BDOEvent`.

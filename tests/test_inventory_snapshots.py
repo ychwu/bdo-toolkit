@@ -80,6 +80,7 @@ def test_zero_context_inventory_batch_discovers_count_and_stride_atomically():
     normalized = toolkit_event_from_record(decoded[0])
     assert normalized.event_type == "inventory_snapshot"
     assert normalized.raw_context == "0x00000000"
+    assert normalized.source == "Character Load"
 
 
 def test_zero_context_inventory_batch_rejects_every_record_on_one_invalid_instance():
@@ -115,57 +116,39 @@ def _storage_spec_without_context() -> EventSpec:
         item_offset=36,
         quantity_offset=40,
         min_message_length=257,
+        record_count_offset=16,
         storage_instance_offset=71,
         single_record_message_length=257,
         default_context="Storage",
     )
 
 
-def test_current_storage_wrapper_infers_missing_profile_context():
-    decoded = _decode(_storage_spec_without_context(), _storage_message())
+def test_contextless_storage_spec_never_authenticates_destination_bytes():
+    expected_items = [(4802, 1), (4003, 2)]
 
-    assert len(decoded) == 2
-    assert {event.source_context_candidate for event in decoded} == {
-        bytes.fromhex("20000000")
-    }
-    assert {event.storage_id for event in decoded} == {0x0020}
-    assert {event.storage_operation for event in decoded} == {"live"}
-    normalized = toolkit_event_from_record(decoded[0])
-    assert normalized.raw_context == "0x20000000"
-    assert normalized.storage_name == "Heidel"
+    for mode, storage_id in (
+        (1, 0x0020),
+        (3, 0x0020),
+        (1, 0xDEADBEEF),
+        (3, 0xDEADBEEF),
+    ):
+        decoded = _decode(
+            _storage_spec_without_context(),
+            _storage_message(mode=mode, storage_id=storage_id),
+        )
 
+        assert [(event.item_id, event.quantity) for event in decoded] == expected_items, (
+            mode,
+            storage_id,
+        )
+        assert {event.storage_operation for event in decoded} == {"unknown"}
+        assert {event.storage_id for event in decoded} == {None}
+        assert {event.source_context_candidate for event in decoded} == {None}
 
-def test_inferred_unknown_storage_mode_requires_a_mapped_destination():
-    mapped = _decode(
-        _storage_spec_without_context(),
-        _storage_message(mode=3, storage_id=0x0020),
-    )
-    assert {event.storage_operation for event in mapped} == {"unknown"}
-    assert {event.storage_id for event in mapped} == {0x0020}
-    assert {event.source_context_candidate for event in mapped} == {
-        bytes.fromhex("20000000")
-    }
-
-    unmapped = _decode(
-        _storage_spec_without_context(),
-        _storage_message(mode=3, storage_id=0xDEADBEEF),
-    )
-    assert {event.storage_operation for event in unmapped} == {"unknown"}
-    assert {event.storage_id for event in unmapped} == {None}
-    assert {event.source_context_candidate for event in unmapped} == {None}
-
-
-def test_known_storage_mode_may_infer_an_unmapped_destination():
-    decoded = _decode(
-        _storage_spec_without_context(),
-        _storage_message(mode=1, storage_id=0xDEADBEEF),
-    )
-
-    assert {event.storage_operation for event in decoded} == {"live"}
-    assert {event.storage_id for event in decoded} == {0xDEADBEEF}
-    assert {event.source_context_candidate for event in decoded} == {
-        bytes.fromhex("efbeadde")
-    }
+        normalized = toolkit_event_from_record(decoded[0])
+        assert normalized.raw_context is None
+        assert normalized.storage_name is None
+        assert normalized.source is None
 
 
 def test_calibration_keeps_mapped_current_destination_with_unknown_mode():

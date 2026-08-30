@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
 from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit import (
     OriginLearner,
+    OriginLearningLimitError,
     load_opcode_profile,
     promote_origin_candidates,
     replay_pcap,
@@ -134,6 +136,49 @@ def test_learner_summary_reports_empty_and_confirmed_families():
     assert "distinct_tokens=2" in text
 
 
+def test_learner_observation_limit_fails_before_retaining_excess():
+    learner = OriginLearner(max_observations=1)
+    first = _observation(sequence=1000, timestamp=1000.0, token="a" * 16)
+    second = _observation(sequence=2000, timestamp=2000.0, token="b" * 16)
+
+    assert learner.observe(first).observations == 1
+    # Replaying retained evidence remains an idempotent no-op at the limit.
+    assert learner.observe(first).observations == 1
+    with pytest.raises(OriginLearningLimitError, match="observation limit"):
+        learner.observe(second)
+
+    (candidate,) = learner.candidates
+    assert candidate.observations == 1
+
+
+def test_learner_candidate_limit_bounds_distinct_families():
+    learner = OriginLearner(max_candidates=1)
+    first = _observation(sequence=1000, timestamp=1000.0, token="a" * 16)
+    second_family = replace(
+        _observation(sequence=2000, timestamp=2000.0, token="b" * 16),
+        companion_opcodes=(0x2222, 0x3333),
+    )
+
+    learner.observe(first)
+    with pytest.raises(OriginLearningLimitError, match="candidate-family limit"):
+        learner.observe(second_family)
+
+    assert len(learner.candidates) == 1
+
+
+def test_learner_persists_limits_and_rejects_smaller_load_budget(tmp_path):
+    learner = OriginLearner(max_candidates=3, max_observations=2)
+    learner.observe(_observation(sequence=1000, timestamp=1000.0, token="a" * 16))
+    learner.observe(_observation(sequence=2000, timestamp=2000.0, token="b" * 16))
+    path = learner.save(tmp_path / "origin-candidates.json")
+
+    loaded = OriginLearner.load(path)
+    assert loaded.max_candidates == 3
+    assert loaded.max_observations == 2
+    with pytest.raises(OriginLearningLimitError, match="observation limit"):
+        OriginLearner.load(path, max_observations=1)
+
+
 def test_promotion_is_explicit_validated_and_idempotent(tmp_path):
     learner = OriginLearner(min_observations=2)
     learner.observe(_observation(sequence=1000, timestamp=1000.0, token="a" * 16))
@@ -186,8 +231,9 @@ def test_new_patch_family_is_discovered_without_being_known(tmp_path):
                             "item_id_offset": 37,
                             "quantity_added_offset": 41,
                             "destination_instance_offset": 72,
-                            "context_offset": 25,
-                            "repeat_stride": 221,
+                                "context_offset": 25,
+                                "record_count_offset": 35,
+                                "repeat_stride": 221,
                         }
                     ]
                 },
@@ -210,10 +256,10 @@ def test_new_patch_family_is_discovered_without_being_known(tmp_path):
             )
         )
 
-    assert [(event.item_id, event.deposit_origin) for event in events] == [
-        (5004, "worker"),
-        (4604, "worker"),
-        (7003, "worker"),
+    assert [(event.item_id, event.source) for event in events] == [
+        (5004, "Worker Production"),
+        (4604, "Worker Production"),
+        (7003, "Worker Production"),
     ]
     (candidate,) = learner.confirmed_candidates
     assert candidate.companion_opcodes == (0x0F7E, 0x0DE1)
