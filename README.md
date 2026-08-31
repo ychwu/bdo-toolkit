@@ -3,7 +3,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
 ![Tested on NA/EU](https://img.shields.io/badge/tested-NA%2FEU-5b61a8?style=flat-square)
-[![Package: Alpha](https://img.shields.io/badge/package-alpha-d97706?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
+[![Package: Stable](https://img.shields.io/badge/package-stable-2f855a?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a?style=flat-square)](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE)
 
 Passive, read-only Python tooling that turns live or recorded Black Desert
@@ -23,7 +23,7 @@ traffic into structured, application-ready data.
 
 | In-game task | Python result | Status | Guide |
 | --- | --- | --- | --- |
-| Watch supported item changes such as loot, gathering, and storage activity | A continuing stream of typed `BDOEvent` objects | Alpha | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) |
+| Watch supported item changes such as loot, gathering, and storage activity | A continuing stream of typed `BDOEvent` objects | Stable | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) |
 | Log in or switch characters | One observational `ItemStateSnapshot` of inventory, known balances, and town storage | Beta | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
 | Load the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains a leaderboard snapshot | Beta | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
 

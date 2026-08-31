@@ -18,7 +18,7 @@ authors = [
 ]
 keywords = ["bdo", "packets", "parse", "pcap", "passive"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
