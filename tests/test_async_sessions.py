@@ -1015,10 +1015,7 @@ def test_async_calibration_cancelled_reuse_exposes_current_run_for_retry(
         with pytest.raises(asyncio.CancelledError) as cancelled:
             await starting
 
-        # CPython 3.10 reconstructs CancelledError when it crosses the Task
-        # boundary, which necessarily drops custom exception attributes.
-        if hasattr(asyncio.CancelledError, "add_note"):
-            assert cancelled.value.cleanup_owner is session
+        assert cancelled.value.cleanup_owner is session
         assert session.cleanup_incomplete
         assert session.running
         assert session.result is None

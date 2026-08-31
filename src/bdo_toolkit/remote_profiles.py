@@ -339,7 +339,7 @@ def _is_sha256(value: str) -> bool:
 def _next_backup_path(path: Path) -> Path:
     backup_dir = path.parent / "opcodes_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
     candidate = backup_dir / f"{path.name}.bak.{stamp}"
     suffix = 1
     while candidate.exists():

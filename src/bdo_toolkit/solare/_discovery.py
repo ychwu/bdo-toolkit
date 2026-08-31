@@ -25,7 +25,7 @@ from ._constants import (
 )
 
 
-_FamilyKey = tuple[FlowKey, int, int, int]
+type _FamilyKey = tuple[FlowKey, int, int, int]
 
 
 def _family_key(frame: BDOFrame) -> _FamilyKey:

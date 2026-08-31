@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, TypeVar
+from typing import Iterable, Optional
 
 from .events import BDOEvent
-
-
-T = TypeVar("T")
 
 
 _ACTIVITY_EVENT_TYPES = frozenset(
@@ -19,7 +16,7 @@ _SNAPSHOT_RECORD_EVENT_TYPES = frozenset(
 )
 
 
-def _freeze(values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
+def _freeze[T](values: Optional[Iterable[T]]) -> Optional[frozenset[T]]:
     if values is None:
         return None
     if isinstance(values, (str, bytes)):

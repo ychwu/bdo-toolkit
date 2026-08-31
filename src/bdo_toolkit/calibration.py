@@ -1021,11 +1021,10 @@ class CalibrationSession:
                 try:
                     manager.finish()
                 except BaseException as cleanup_error:
-                    if hasattr(exc, "add_note"):
-                        exc.add_note(
-                            "calibration flow cleanup also failed: "
-                            f"{cleanup_error!r}"
-                        )
+                    exc.add_note(
+                        "calibration flow cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
                 self._manager = None
                 self._capture = None
                 raise
@@ -1187,11 +1186,10 @@ class CalibrationSession:
                         self,
                         context="live calibration context",
                     )
-                if hasattr(exc_value, "add_note"):
-                    exc_value.add_note(
-                        "calibration context cleanup also failed: "
-                        f"{cleanup_error!r}"
-                    )
+                exc_value.add_note(
+                    "calibration context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
 
 
 def calibrate_live(
@@ -3029,7 +3027,7 @@ def _calibration_source(options: _Options, action: str) -> str:
 
 def _iso_timestamp(timestamp: float) -> str:
     return (
-        dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc)
+        dt.datetime.fromtimestamp(timestamp, tz=dt.UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
@@ -3037,7 +3035,7 @@ def _iso_timestamp(timestamp: float) -> str:
 
 def _utc_now_text() -> str:
     return (
-        dt.datetime.now(tz=dt.timezone.utc)
+        dt.datetime.now(tz=dt.UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
@@ -3173,7 +3171,7 @@ def _profile_dedupe_keys(data: dict[str, Any]) -> set[tuple[object, ...]]:
 def _backup_path(path: Path) -> Path:
     backup_dir = path.parent / "opcodes_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
     candidate = backup_dir / f"{path.name}.bak.{stamp}"
     suffix = 1
     while candidate.exists():

@@ -52,9 +52,9 @@ from .profiles import (
 
 _PACKET_WORKER_STOP = object()
 _TARGET_FRAME_HISTORY_LIMIT = 4096
-_TargetFrameKey = tuple[FlowKey, int, Optional[int], float, int, int]
+type _TargetFrameKey = tuple[FlowKey, int, Optional[int], float, int, int]
 _INVENTORY_BOUNDARY_COHORT_LIMIT = 64
-_InventoryBoundaryKey = tuple[FlowKey, int, int]
+type _InventoryBoundaryKey = tuple[FlowKey, int, int]
 
 
 @dataclass
@@ -1111,11 +1111,10 @@ class LiveCaptureSession:
             with self._state_lock:
                 self._cleanup_incomplete = True
             for failure in cleanup_failures:
-                if hasattr(error, "add_note"):
-                    error.add_note(
-                        "live item capture startup cleanup also failed: "
-                        f"{failure!r}"
-                    )
+                error.add_note(
+                    "live item capture startup cleanup also failed: "
+                    f"{failure!r}"
+                )
             _attach_cleanup_owner(
                 error,
                 self,
@@ -1124,11 +1123,10 @@ class LiveCaptureSession:
             return
 
         for failure in cleanup_failures:
-            if hasattr(error, "add_note"):
-                error.add_note(
-                    "live item capture startup cleanup reported a fully "
-                    f"released error: {failure!r}"
-                )
+            error.add_note(
+                "live item capture startup cleanup reported a fully "
+                f"released error: {failure!r}"
+            )
         self._reset_after_failed_start()
 
     def _reset_after_failed_start(self) -> None:
@@ -1586,11 +1584,10 @@ class LiveCaptureSession:
                         self,
                         context="live item capture context",
                     )
-                if hasattr(exc_value, "add_note"):
-                    exc_value.add_note(
-                        "live item capture context cleanup also failed: "
-                        f"{cleanup_error!r}"
-                    )
+                exc_value.add_note(
+                    "live item capture context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
 
 
 def capture_live(
@@ -1651,11 +1648,10 @@ def capture_live(
                         session,
                         context="timed live item capture startup",
                     )
-                if hasattr(exc, "add_note"):
-                    exc.add_note(
-                        "timed live item capture startup cleanup also "
-                        f"failed: {cleanup_error!r}"
-                    )
+                exc.add_note(
+                    "timed live item capture startup cleanup also "
+                    f"failed: {cleanup_error!r}"
+                )
             raise
     try:
         while True:

@@ -3244,11 +3244,10 @@ class CharacterLoadSession:
                         self,
                         context="character-load capture context",
                     )
-                if hasattr(exc_value, "add_note"):
-                    exc_value.add_note(
-                        "character-load context cleanup also failed: "
-                        f"{cleanup_error!r}"
-                    )
+                exc_value.add_note(
+                    "character-load context cleanup also failed: "
+                    f"{cleanup_error!r}"
+                )
 
 
 def format_character_state(

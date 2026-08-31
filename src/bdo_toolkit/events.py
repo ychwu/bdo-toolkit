@@ -121,7 +121,7 @@ class BDOEvent:
     def timestamp_iso(self) -> str:
         """Deterministic UTC ISO-8601 timestamp for serialization."""
         return (
-            dt.datetime.fromtimestamp(self.timestamp, tz=dt.timezone.utc)
+            dt.datetime.fromtimestamp(self.timestamp, tz=dt.UTC)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )

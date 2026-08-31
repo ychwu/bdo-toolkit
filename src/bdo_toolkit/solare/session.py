@@ -980,11 +980,10 @@ class LiveSolareSession:
                     self,
                     context="live Solare context",
                 )
-            if hasattr(exc_value, "add_note"):
-                exc_value.add_note(
-                    "live Solare context cleanup also failed: "
-                    f"{cleanup_error!r}"
-                )
+            exc_value.add_note(
+                "live Solare context cleanup also failed: "
+                f"{cleanup_error!r}"
+            )
 
 
 def capture_solare_snapshot(
@@ -1043,7 +1042,7 @@ def capture_solare_snapshot(
                         session,
                         context="live Solare convenience wrapper",
                     )
-                if cleanup_error is not exc and hasattr(exc, "add_note"):
+                if cleanup_error is not exc:
                     exc.add_note(
                         "live Solare convenience cleanup also failed: "
                         f"{cleanup_error!r}"

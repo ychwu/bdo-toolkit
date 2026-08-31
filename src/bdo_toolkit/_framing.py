@@ -18,7 +18,7 @@ from ._protocol import (
 _TRANSFER_RECORD_MARKER = b"\x00" * 4 + b"\xff" * 8
 _TRANSFER_RECORD_MARKER_DELTA = 8
 
-MessageObserver = Callable[
+type MessageObserver = Callable[
     [int, int, str, int, PacketContext, Optional[int]],
     object,
 ]

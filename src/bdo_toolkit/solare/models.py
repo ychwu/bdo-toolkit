@@ -445,7 +445,7 @@ class SolareLeaderboardSnapshot:
     @property
     def observed_at_iso(self) -> str:
         return (
-            dt.datetime.fromtimestamp(self.observed_at, tz=dt.timezone.utc)
+            dt.datetime.fromtimestamp(self.observed_at, tz=dt.UTC)
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )

@@ -330,7 +330,7 @@ class LootEvent:
     storage_operation: Optional[str] = None
 
 
-EventCallback = Callable[[LootEvent, bytes], None]
+type EventCallback = Callable[[LootEvent, bytes], None]
 
 
 @dataclass(frozen=True)

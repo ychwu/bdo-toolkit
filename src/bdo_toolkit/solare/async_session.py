@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from types import TracebackType
-from typing import AsyncIterator, Callable, Optional, TypeVar
+from typing import AsyncIterator, Callable, Optional
 
 from bdo_toolkit._capture_options import PacketCaptureOptions
 from bdo_toolkit._capture_runtime import _attach_cleanup_owner
@@ -22,14 +22,7 @@ from .models import (
 from .session import LiveSolareSession, _validate_timeout
 
 
-T = TypeVar("T")
-
-# Stay above the 15.625 ms monotonic-clock quantum used by Windows CPython
-# 3.10 so terminal cleanup polling yields instead of busy-spinning.
-_TERMINAL_SHUTDOWN_POLL_SECONDS = 0.05
-
-
-async def _settle(future: asyncio.Future[T]) -> T:
+async def _settle[T](future: asyncio.Future[T]) -> T:
     while not future.done():
         try:
             await asyncio.wait((future,))
@@ -38,7 +31,7 @@ async def _settle(future: asyncio.Future[T]) -> T:
     return future.result()
 
 
-async def _await_preserving_future(future: asyncio.Future[T]) -> T:
+async def _await_preserving_future[T](future: asyncio.Future[T]) -> T:
     """Await a worker future without cancelling it or creating a shield."""
 
     await asyncio.wait((future,))
@@ -114,7 +107,7 @@ class AsyncLiveSolareSession:
     def raise_if_failed(self) -> None:
         self._session.raise_if_failed()
 
-    def _submit(self, function: Callable[[], T]) -> asyncio.Future[T]:
+    def _submit[T](self, function: Callable[[], T]) -> asyncio.Future[T]:
         if self._closed:
             raise RuntimeError("async live Solare session is already closed")
         return asyncio.get_running_loop().run_in_executor(self._executor, function)
@@ -131,7 +124,7 @@ class AsyncLiveSolareSession:
 
         async def close_after_worker_and_calls_settle() -> None:
             while not self._session.stopped and not self._closed:
-                await asyncio.sleep(_TERMINAL_SHUTDOWN_POLL_SECONDS)
+                await asyncio.sleep(0.01)
             while not self._closed and (
                 self._start_active
                 or self._poll_active
@@ -141,7 +134,7 @@ class AsyncLiveSolareSession:
                     and not self._stop_future.done()
                 )
             ):
-                await asyncio.sleep(_TERMINAL_SHUTDOWN_POLL_SECONDS)
+                await asyncio.sleep(0.01)
             self._shutdown()
 
         self._terminal_shutdown_task = asyncio.create_task(
@@ -434,11 +427,10 @@ class AsyncLiveSolareSession:
                             self,
                             context="async live Solare context",
                         )
-                    if hasattr(exc_value, "add_note"):
-                        exc_value.add_note(
-                            "async live Solare context cleanup also failed: "
-                            f"{cleanup_error!r}"
-                        )
+                    exc_value.add_note(
+                        "async live Solare context cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
         finally:
             if not self._session.cleanup_incomplete:
                 self._shutdown()

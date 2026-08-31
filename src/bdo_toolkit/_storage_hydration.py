@@ -11,7 +11,7 @@ from typing import Callable, Optional
 from .events import BDOEvent, Flow
 
 
-_HydrationKey = tuple[Flow, int]
+type _HydrationKey = tuple[Flow, int]
 
 
 def _hydration_key(event: BDOEvent) -> _HydrationKey:

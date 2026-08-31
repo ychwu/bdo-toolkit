@@ -1,7 +1,7 @@
 # bdo-toolkit
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
 ![Tested on NA/EU](https://img.shields.io/badge/tested-NA%2FEU-5b61a8?style=flat-square)
 [![Package: Stable](https://img.shields.io/badge/package-stable-2f855a?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a?style=flat-square)](https://github.com/ychwu/bdo-toolkit/blob/main/LICENSE)
@@ -36,7 +36,7 @@ services is unknown.
 python -m pip install bdo-toolkit
 ```
 
-Python 3.10 or newer is required. Before live capture, complete
+Python 3.14 or newer is required. Before live capture, complete
 [Installation & setup](https://ychwu.github.io/bdo-toolkit/#capture-foundation),
 including Npcap on Windows and permission to capture on the selected interface.
 Offline PCAP and PCAPNG replay does not require Npcap.
@@ -108,7 +108,7 @@ python -m pip wheel . --no-deps --wheel-dir dist
 ```
 
 CI runs tests, type checking, wheel construction, and a CLI smoke test on
-Ubuntu and Windows with Python 3.10 and 3.14. Tests that require private
+Ubuntu and Windows with Python 3.14. Tests that require private
 game-session captures skip when those local fixtures are absent.
 
 ## License

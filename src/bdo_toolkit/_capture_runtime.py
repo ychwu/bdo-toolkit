@@ -64,18 +64,17 @@ def _attach_cleanup_owner(
         # Built-in and ordinary application exceptions expose __dict__. Keep
         # the original failure identity even for an exotic immutable subtype.
         pass
-    if hasattr(error, "add_note"):
-        if attached:
-            error.add_note(
-                f"{context} cleanup is incomplete; retry stop() on "
-                "exception.cleanup_owner"
-            )
-        else:
-            error.add_note(
-                f"{context} cleanup is incomplete; this exception subtype "
-                "cannot expose cleanup_owner, so retain and stop the original "
-                "session object"
-            )
+    if attached:
+        error.add_note(
+            f"{context} cleanup is incomplete; retry stop() on "
+            "exception.cleanup_owner"
+        )
+    else:
+        error.add_note(
+            f"{context} cleanup is incomplete; this exception subtype "
+            "cannot expose cleanup_owner, so retain and stop the original "
+            "session object"
+        )
 
 
 @dataclass(frozen=True)
@@ -456,11 +455,10 @@ class LivePacketCapture:
                     # Startup remains the primary failure, but incomplete
                     # cleanup must be explicit in its traceback and remains
                     # retryable through stop().
-                    if hasattr(exc, "add_note"):
-                        exc.add_note(
-                            "live capture startup cleanup also failed: "
-                            f"{cleanup_error!r}"
-                        )
+                    exc.add_note(
+                        "live capture startup cleanup also failed: "
+                        f"{cleanup_error!r}"
+                    )
                 if not self._cleanup_incomplete:
                     self._capture = None
                     self._capture_socket = None

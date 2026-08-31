@@ -2,9 +2,32 @@
 
 All notable released changes to `bdo-toolkit` are documented here.
 
-## [Unreleased]
+## Unreleased
 
-## [1.0.0] - 2026-08-30
+No unreleased changes yet.
+
+## 1.0.1 - 2026-08-31
+
+This release moves the supported runtime to Python 3.14 and removes
+compatibility branches that existed only for older interpreters. Package and
+protocol behavior otherwise remain unchanged.
+
+### Changed
+
+- Require Python 3.14 or newer. Applications still using Python 3.10 through
+  3.13 must upgrade their interpreter before installing this release.
+
+### Maintenance
+
+- Run CI on Python 3.14 across Windows and Ubuntu and configure mypy for the
+  supported interpreter version.
+- Adopt Python 3.14 type-parameter and type-alias syntax, `datetime.UTC`, and
+  the guaranteed exception-note APIs throughout capture, calibration, item
+  state, profile, and Arena of Solare code.
+- Remove Python 3.10-specific async shutdown timing branches while preserving
+  bounded cleanup, cancellation, and retry ownership behavior.
+
+## 1.0.0 - 2026-08-30
 
 The first stable release of `bdo-toolkit` establishes a passive, read-only
 Python and CLI toolkit for live or recorded Black Desert telemetry. Validation
@@ -78,7 +101,7 @@ explicitly experimental APIs inside the stable package.
 - Prevent Python 3.10 async Solare shutdown polling from busy-spinning on the
   coarse Windows monotonic clock.
 
-### Documentation
+### Docs
 
 - Publish the reference-first documentation site and promote it as the
   canonical API reference with task-first navigation, stable deep links,
@@ -101,12 +124,6 @@ explicitly experimental APIs inside the stable package.
 - Retire stale site-draft ledgers while preserving the retained redesign file
   only as a local historical source snapshot.
 
-### Removed
-
-- Remove local protocol-research helpers and private-fixture baseline tooling
-  from repository tracking; maintainer-local copies remain ignored and no
-  private capture evidence is published.
-
 ### Tests
 
 - Refocus the test suite on current public contracts, distinct protocol
@@ -114,7 +131,7 @@ explicitly experimental APIs inside the stable package.
   and reviewed private-fixture regressions.
 - Normalize test source formatting without changing coverage.
 
-### Internal
+### Maintenance
 
 - Establish the local changeset, changelog, version-source, and release
   governance workflow used to prepare this release.
@@ -124,3 +141,6 @@ explicitly experimental APIs inside the stable package.
   warning-free wheel and source-distribution builds.
 - Clean generated caches and local scaffolding without changing package
   behavior.
+- Remove local protocol-research helpers and private-fixture baseline tooling
+  from repository tracking; maintainer-local copies remain ignored and no
+  private capture evidence is published.

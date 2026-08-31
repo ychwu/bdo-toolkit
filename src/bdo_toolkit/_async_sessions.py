@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 from types import TracebackType
-from typing import AsyncIterator, Callable, Optional, TypeVar
+from typing import AsyncIterator, Callable, Optional
 
 from ._capture_runtime import CaptureEndpoint, _attach_cleanup_owner
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
@@ -33,10 +33,7 @@ from .origin_learning import CompanionObservation
 from .profiles import OpcodeProfile
 
 
-T = TypeVar("T")
-
-
-async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
+async def _wait_ignoring_cancellation[T](future: asyncio.Future[T]) -> T:
     """Wait for an already-started operation, even after caller cancellation."""
 
     while not future.done():
@@ -51,14 +48,14 @@ async def _wait_ignoring_cancellation(future: asyncio.Future[T]) -> T:
     return future.result()
 
 
-async def _await_preserving_future(future: asyncio.Future[T]) -> T:
+async def _await_preserving_future[T](future: asyncio.Future[T]) -> T:
     """Await without cancelling or wrapping the submitted worker future."""
 
     await asyncio.wait((future,))
     return future.result()
 
 
-def _thread_task(function: Callable[[], T]) -> asyncio.Task[T]:
+def _thread_task[T](function: Callable[[], T]) -> asyncio.Task[T]:
     return asyncio.create_task(asyncio.to_thread(function))
 
 
@@ -143,7 +140,7 @@ class AsyncLiveCaptureSession:
 
         self._session.raise_if_failed()
 
-    def _submit(self, function: Callable[[], T]) -> asyncio.Future[T]:
+    def _submit[T](self, function: Callable[[], T]) -> asyncio.Future[T]:
         if self._executor_closed:
             raise RuntimeError("async live capture session is already closed")
         loop = asyncio.get_running_loop()
@@ -380,11 +377,10 @@ class AsyncLiveCaptureSession:
                     self,
                     context="async live item capture context",
                 )
-            if hasattr(exc_value, "add_note"):
-                exc_value.add_note(
-                    "async live item capture context cleanup also failed: "
-                    f"{cleanup_error!r}"
-                )
+            exc_value.add_note(
+                "async live item capture context cleanup also failed: "
+                f"{cleanup_error!r}"
+            )
 
 
 class AsyncCalibrationSession:
@@ -644,8 +640,7 @@ class AsyncCalibrationSession:
                     self,
                     context="async live calibration context",
                 )
-            if hasattr(exc_value, "add_note"):
-                exc_value.add_note(
-                    "async live calibration context cleanup also failed: "
-                    f"{cleanup_error!r}"
-                )
+            exc_value.add_note(
+                "async live calibration context cleanup also failed: "
+                f"{cleanup_error!r}"
+            )

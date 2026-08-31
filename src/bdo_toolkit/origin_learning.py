@@ -46,9 +46,9 @@ def _opcode_text(opcode: int) -> str:
 
 def _utc_text(timestamp: Optional[float] = None) -> str:
     value = (
-        dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc)
+        dt.datetime.fromtimestamp(timestamp, tz=dt.UTC)
         if timestamp is not None
-        else dt.datetime.now(tz=dt.timezone.utc)
+        else dt.datetime.now(tz=dt.UTC)
     )
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -752,7 +752,7 @@ def promote_origin_candidates(
 def _unique_backup_path(path: Path) -> Path:
     backup_dir = path.parent / "opcodes_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
     return backup_dir / f"{path.name}.bak.{stamp}"
 
 
