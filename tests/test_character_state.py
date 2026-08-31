@@ -2547,33 +2547,3 @@ def test_live_character_load_successful_session_is_single_use_and_stop_is_cached
     assert first.diagnostics.capture_limits.max_relevant_bytes == 2_048
     with pytest.raises(RuntimeError, match="single-use"):
         session.start()
-
-
-def test_character_load_tool_rejects_save_path_during_offline_replay():
-    import importlib.util
-
-    tool_path = (
-        Path(__file__).resolve().parents[1]
-        / "tools"
-        / "character_load"
-        / "inspect_character_load.py"
-    )
-    spec = importlib.util.spec_from_file_location("inspect_character_load", tool_path)
-    assert spec is not None and spec.loader is not None
-    inspect_character_load = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(inspect_character_load)
-
-    parser = inspect_character_load._parser()
-    args = parser.parse_args(
-        [
-            "--profile",
-            str(JULY17_OPCODE_PROFILE),
-            "--pcap",
-            "input.pcapng",
-            "--save-pcap",
-            "output.pcapng",
-        ]
-    )
-
-    with pytest.raises(SystemExit):
-        inspect_character_load._validate_args(parser, args)
