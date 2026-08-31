@@ -521,10 +521,11 @@ def test_context_cleanup_failure_is_retained_without_masking_block_error(
 
     assert caught.value is block_failure
     assert session.error is _RaisingStopSniffer.failure
-    assert any(
-        "context cleanup also failed" in note
-        for note in getattr(caught.value, "__notes__", ())
-    )
+    if hasattr(BaseException, "add_note"):
+        assert any(
+            "context cleanup also failed" in note
+            for note in caught.value.__notes__
+        )
     assert not session.running
 
 

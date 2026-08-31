@@ -426,7 +426,11 @@ def test_capture_convenience_exposes_hidden_owner_on_incomplete_cleanup(
 
     assert failed.value is primary_failure
     assert primary_failure.cleanup_owner is IncompleteSession.instances[-1]
-    assert any("cleanup also failed" in note for note in primary_failure.__notes__)
+    if hasattr(BaseException, "add_note"):
+        assert any(
+            "cleanup also failed" in note
+            for note in primary_failure.__notes__
+        )
 
 
 def test_capture_convenience_allows_explicit_infinite_wait(
@@ -1673,10 +1677,10 @@ def test_async_finished_poll_closes_executor_after_callback_returns(
         assert not session._closed
         assert not session.stopped
         release_callback.set()
-        for _ in range(200):
-            if session.stopped and session._closed:
-                break
-            await asyncio.sleep(0.01)
+        assert await asyncio.to_thread(session._session._stopped.wait, 2.0)
+        terminal_shutdown = session._terminal_shutdown_task
+        assert terminal_shutdown is not None
+        await asyncio.wait_for(asyncio.shield(terminal_shutdown), timeout=2.0)
         assert session.stopped
         assert session._closed
 
@@ -2057,16 +2061,15 @@ def test_async_cancellation_returns_after_bounded_incomplete_cleanup(
             assert preserved.kind is SolareUpdateKind.FINISHED
 
         release_callback.set()
-        for _ in range(200):
-            if session.stopped:
-                break
-            await asyncio.sleep(0.01)
+        assert await asyncio.to_thread(session._session._stopped.wait, 2.0)
         assert session.stopped
         if operation == "poll":
-            for _ in range(200):
-                if session._closed:
-                    break
-                await asyncio.sleep(0.01)
+            terminal_shutdown = session._terminal_shutdown_task
+            assert terminal_shutdown is not None
+            await asyncio.wait_for(
+                asyncio.shield(terminal_shutdown),
+                timeout=2.0,
+            )
             assert session._closed
         with pytest.raises(RuntimeError, match="worker cleanup is incomplete"):
             await session.stop()

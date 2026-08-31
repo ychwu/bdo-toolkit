@@ -24,6 +24,10 @@ from .session import LiveSolareSession, _validate_timeout
 
 T = TypeVar("T")
 
+# Stay above the 15.625 ms monotonic-clock quantum used by Windows CPython
+# 3.10 so terminal cleanup polling yields instead of busy-spinning.
+_TERMINAL_SHUTDOWN_POLL_SECONDS = 0.05
+
 
 async def _settle(future: asyncio.Future[T]) -> T:
     while not future.done():
@@ -127,7 +131,7 @@ class AsyncLiveSolareSession:
 
         async def close_after_worker_and_calls_settle() -> None:
             while not self._session.stopped and not self._closed:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(_TERMINAL_SHUTDOWN_POLL_SECONDS)
             while not self._closed and (
                 self._start_active
                 or self._poll_active
@@ -137,7 +141,7 @@ class AsyncLiveSolareSession:
                     and not self._stop_future.done()
                 )
             ):
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(_TERMINAL_SHUTDOWN_POLL_SECONDS)
             self._shutdown()
 
         self._terminal_shutdown_task = asyncio.create_task(

@@ -513,10 +513,11 @@ def test_startup_failure_retains_an_unstopped_backend_for_cleanup_retry(
     assert capture.running
     assert capture._capture is sniffer
     assert thread.join_calls == [runtime._CAPTURE_JOIN_TIMEOUT_SECONDS]
-    assert any(
-        "startup cleanup also failed" in note
-        for note in getattr(startup.value, "__notes__", ())
-    )
+    if hasattr(BaseException, "add_note"):
+        assert any(
+            "startup cleanup also failed" in note
+            for note in startup.value.__notes__
+        )
 
     thread.alive = False
     sniffer.running = False
