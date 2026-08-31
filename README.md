@@ -71,22 +71,6 @@ installed with the Python wheel.
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
 for every script, its prerequisites, and the guide that explains it.
 
-## Important boundaries
-
-- **Patch-specific item decoding:** item capture and replay require one explicit
-  local opcode profile matching the traffic. They never fetch, merge, or refresh
-  a profile implicitly.
-- **Observational item state:** a finite `ItemStateSnapshot` reports what the
-  capture established and can be partial. Check its coverage, warnings, and
-  decoder health before treating absence as an empty state.
-- **Beta Solare API:** Solare capture is fail-closed around the currently
-  supported 31 × 20 class-table geometry. Use a snapshot only when
-  `result.complete` is true.
-- **Sensitive captures:** PCAPs can contain character names, gameplay history,
-  item state, leaderboard data, and opaque identifier-like bytes. Keep raw
-  recordings out of source control and obtain any consent appropriate to the
-  application.
-
 ## Documentation
 
 The documentation separates task-focused guides from the symbol-first API
@@ -105,6 +89,12 @@ live there rather than in this README.
 | Use the terminal interface | [Command line](https://ychwu.github.io/bdo-toolkit/#cli) |
 | Diagnose a problem | [Troubleshooting](https://ychwu.github.io/bdo-toolkit/#errors) |
 | Review data handling and project boundaries | [Safety & privacy](https://ychwu.github.io/bdo-toolkit/#stability) |
+
+## Support
+
+For questions, contact me on Discord: `._.__.__._._.__._____.__._.___.`
+
+For bugs and feature requests, [open a GitHub issue](https://github.com/ychwu/bdo-toolkit/issues).
 
 ## Development
 
