@@ -5572,7 +5572,7 @@ for event in replay_pcap(
 <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
 <tr><td><code>TypeError</code></td><td>The required keyword-only <code>opcode_profile</code> argument is omitted.</td><td>Function call</td></tr>
 <tr><td><code>TypeError</code></td><td><code>event_filter</code> is not an <a href="#event-filter"><code>EventFilter</code></a> or <code>None</code>.</td><td>Iteration begins</td></tr>
-<tr><td><code>ValueError</code></td><td>Ports are invalid, or the file cannot be read as PCAP/PCAPNG.</td><td>Iteration begins or reaches the invalid capture data</td></tr>
+<tr><td><code>ValueError</code></td><td>Ports are invalid; the file cannot be read as PCAP/PCAPNG; or selected-flow IPv4/TCP data is malformed, truncated, or fragmented.</td><td>Iteration begins or reaches the invalid capture data</td></tr>
 <tr><td><code>FileNotFoundError</code></td><td>The capture path or explicitly selected profile does not exist.</td><td>Iteration begins</td></tr>
 <tr><td><a href="#profile-errors/profile-error"><code>ProfileError</code></a></td><td>The selected profile is malformed, schema-invalid, inactive, or contains distinct same-opcode <code>LOOT_PREVIEW</code> layouts with overlapping accepted message lengths.</td><td>Iteration begins</td></tr>
 <tr><td><code>RuntimeError</code></td><td>Scapy is unavailable.</td><td>Iteration begins</td></tr>
@@ -7559,7 +7559,7 @@ Registered storages observed: 34</code></pre>
 <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
 <tr><td><code>TypeError</code></td><td><code>opcode_profile</code> is omitted; a path or <code>capture_limits</code> value has the wrong type; or <code>ports</code> is not iterable.</td><td>Function call or analysis setup</td></tr>
 <tr><td><code>FileNotFoundError</code></td><td>The recording or explicit opcode-profile path does not exist.</td><td>Analysis begins</td></tr>
-<tr><td><code>ValueError</code></td><td>Ports are invalid, or the recording cannot be read as PCAP/PCAPNG.</td><td>Analysis begins or reaches invalid capture data</td></tr>
+<tr><td><code>ValueError</code></td><td>Ports are invalid; the recording cannot be read as PCAP/PCAPNG; or selected-flow IPv4/TCP data is malformed, truncated, or fragmented.</td><td>Analysis begins or reaches invalid capture data</td></tr>
 <tr><td><a href="#profile-errors/profile-error"><code>ProfileError</code></a></td><td>The profile is inactive, malformed, schema-invalid, runtime-ambiguous, or lacks the validated identity or storage-wrapper fields required for finite item state.</td><td>Analysis begins</td></tr>
 <tr><td><a href="#item-state-limits/error"><code>ItemStateCaptureLimitError</code></a></td><td>Retaining the next relevant frame, payload byte, or snapshot record would exceed an explicit hard bound. No partial snapshot is returned.</td><td>During replay</td></tr>
 <tr><td><code>RuntimeError</code></td><td>Scapy is unavailable.</td><td>Analysis begins</td></tr>
@@ -8760,7 +8760,7 @@ print(leader.global_rank, leader.name)</code></pre>
 <summary><h2 class="section-heading" data-anchor="raises" data-toc="" id="solare-capture/raises"><span>Raises</span><span aria-hidden="true" class="collapsible-action"><span class="collapsible-action-label"><span class="collapsible-action-closed">Show details</span><span class="collapsible-action-open">Hide details</span></span></span></h2></summary>
 <div class="collapsible-section-body">
 <div class="table-wrap"><table><thead><tr><th>Exception</th><th>Condition</th><th>When</th></tr></thead><tbody>
-<tr><td><code>FileNotFoundError</code> or <code>ValueError</code></td><td>The recording is missing, not a file, or not readable as PCAP/PCAPNG.</td><td>Replay</td></tr>
+<tr><td><code>FileNotFoundError</code> or <code>ValueError</code></td><td>The recording is missing, not a file, not readable as PCAP/PCAPNG, or contains malformed, truncated, or fragmented selected-flow IPv4/TCP data.</td><td>Replay</td></tr>
 <tr><td><code>TypeError</code> or <code>ValueError</code></td><td>A port, option, timeout, callback, Boolean flag, or capture-buffer value is invalid.</td><td>Replay or live</td></tr>
 <tr><td><code>RuntimeError</code> or capture-backend exception</td><td>The capture backend, driver, adapter, permission, BPF, or required native-buffer setup fails.</td><td>Replay or live, as applicable</td></tr>
 <tr><td><code>FileExistsError</code> or <code>ValueError</code></td><td><code>save_pcap</code> already exists or has an unsupported suffix.</td><td>Before live capture starts</td></tr>

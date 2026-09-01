@@ -4,7 +4,12 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 ## Unreleased
 
-No unreleased changes yet.
+### Fixed
+
+- Bound shared Scapy TCP extraction to the application bytes declared by
+  validated IPv4 and TCP headers. Ethernet padding can no longer advance
+  sequence reassembly and hide later storage or worker events; selected-flow
+  truncation and fragmentation now fail closed.
 
 ## 1.0.1 - 2026-08-31
 
