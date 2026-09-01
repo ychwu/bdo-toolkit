@@ -1059,9 +1059,15 @@ def _discover_inventory_tail_layout(
         ):
             continue
 
+        # Observed generations serialize these neighboring fields in both
+        # orders. Keep the bounded tail search, but do not treat their order as
+        # part of the protocol invariant.
         for container_relative in range(
-            slot_relative + 1, min(stride, slot_relative + 5)
+            max(window_start, slot_relative - 4),
+            min(stride, slot_relative + 5),
         ):
+            if container_relative == slot_relative:
+                continue
             observed_codes: set[int] = set()
             valid = True
             for frame, group, _, _ in frame_groups:
