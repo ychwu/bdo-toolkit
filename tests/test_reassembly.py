@@ -204,6 +204,65 @@ def test_reorder_capacity_configuration_is_validated(
         )
 
 
+def test_flow_manager_gap_reset_reports_generation_and_resume_sequence():
+    scanner = _RecordingScanner()
+    resets = []
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        track_flow_generations=True,
+        on_flow_reset=lambda flow, generation, resume_sequence: resets.append(
+            (flow, generation, resume_sequence)
+        ),
+    )
+
+    _segment(manager, sequence=999, timestamp=10.0, syn=True)
+    _segment(manager, sequence=1000, payload=b"a", timestamp=10.0)
+    _segment(manager, sequence=1010, payload=b"b", timestamp=10.1)
+    assert manager.service_gaps(10.1 + GAP_RESET_SECONDS) == 1
+
+    assert resets == [
+        (
+            FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+            1,
+            1010,
+        )
+    ]
+    assert scanner.feeds == [b"a", b"b"]
+
+
+def test_packet_engine_forwards_gap_reset_identity_to_observer():
+    events = []
+    resets = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        flow_reset_observer=lambda flow, generation, resume_sequence: resets.append(
+            (flow, generation, resume_sequence)
+        ),
+    )
+
+    _segment(engine, sequence=999, timestamp=10.0, syn=True)
+    _segment(engine, sequence=1000, payload=b"\xff" * 8, timestamp=10.0)
+    _segment(
+        engine,
+        sequence=1018,
+        payload=_target_frame(),
+        timestamp=10.1,
+    )
+    assert engine.service_gaps(10.1 + GAP_RESET_SECONDS) == 1
+
+    assert resets == [
+        (
+            FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+            1,
+            1018,
+        )
+    ]
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+
+
 def test_wall_clock_service_releases_complete_frame_behind_idle_gap():
     events = []
     manager = FlowManager(

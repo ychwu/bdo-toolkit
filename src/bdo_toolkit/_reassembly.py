@@ -53,7 +53,7 @@ class TCPFlowState:
     unanchored_started_at: Optional[float] = None
     gap_started_at: Optional[float] = None
     generation: int = 0
-    on_gap_reset: Optional[Callable[[], None]] = None
+    on_gap_reset: Optional[Callable[[int], None]] = None
     last_activity_at: Optional[float] = None
     fin_sequence: Optional[int] = None
     fin_observed_at: Optional[float] = None
@@ -363,7 +363,7 @@ class TCPFlowState:
             if self.next_sequence < fin_sequence:
                 self.scanner.reset()
                 if self.on_gap_reset is not None:
-                    self.on_gap_reset()
+                    self.on_gap_reset(fin_sequence)
                 self.next_sequence = fin_sequence
                 self.gap_started_at = None
                 resets += 1
@@ -377,7 +377,7 @@ class TCPFlowState:
         segment = self.pending.pop(sequence)
         self.scanner.reset()
         if self.on_gap_reset is not None:
-            self.on_gap_reset()
+            self.on_gap_reset(sequence)
         self.next_sequence = sequence
         self.gap_started_at = None
         self._deliver(segment.data, segment.context)
@@ -406,6 +406,7 @@ class FlowManager:
         max_flows: Optional[int] = None,
         on_flow_eviction: Optional[Callable[[], None]] = None,
         on_flow_close: Optional[Callable[[FlowKey], None]] = None,
+        on_flow_reset: Optional[Callable[[FlowKey, int, int], None]] = None,
         idle_timeout: Optional[float] = None,
         track_flow_generations: bool = False,
         max_pending_segments: int = MAX_PENDING_SEGMENTS,
@@ -434,6 +435,7 @@ class FlowManager:
         self._max_flows = max_flows
         self._on_flow_eviction = on_flow_eviction
         self._on_flow_close = on_flow_close
+        self._on_flow_reset = on_flow_reset
         self._idle_timeout = idle_timeout
         self._track_flow_generations = track_flow_generations
         self._max_pending_segments = max_pending_segments
@@ -447,7 +449,7 @@ class FlowManager:
         # different threads. Serialize both paths around the same flow state.
         self._lock = RLock()
 
-    def _new_flow_state(self) -> TCPFlowState:
+    def _new_flow_state(self, flow: FlowKey) -> TCPFlowState:
         generation = 0
         if self._track_flow_generations:
             self._next_flow_generation += 1
@@ -457,12 +459,23 @@ class FlowManager:
             max_pending_segments=self._max_pending_segments,
             max_pending_bytes=self._max_pending_bytes,
             generation=generation,
-            on_gap_reset=self._record_gap_reset,
+            on_gap_reset=lambda resume_sequence: self._record_gap_reset(
+                flow,
+                generation,
+                resume_sequence,
+            ),
         )
 
-    def _record_gap_reset(self) -> None:
+    def _record_gap_reset(
+        self,
+        flow: FlowKey,
+        generation: int,
+        resume_sequence: int,
+    ) -> None:
         with self._diagnostics_lock:
             self._tcp_gap_resets += 1
+        if self._on_flow_reset is not None:
+            self._on_flow_reset(flow, generation, resume_sequence)
 
     @property
     def tcp_gap_resets(self) -> int:
@@ -587,7 +600,7 @@ class FlowManager:
             self._notify_flow_close(flow)
 
         if flow not in self._flows:
-            self._flows[flow] = self._new_flow_state()
+            self._flows[flow] = self._new_flow_state(flow)
 
         state = self._flows[flow]
         state.last_activity_at = timestamp

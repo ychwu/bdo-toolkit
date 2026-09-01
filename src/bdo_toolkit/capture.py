@@ -304,6 +304,7 @@ class _EventCollector:
             ),
             stream_observer=(tracker.observe_stream if tracker is not None else None),
             flow_close_observer=self._close_flow,
+            flow_reset_observer=(tracker.reset_flow if tracker is not None else None),
             message_observer=(
                 self._observe_storage_message if observe_storage_messages else None
             ),

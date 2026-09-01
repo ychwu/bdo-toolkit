@@ -13,7 +13,12 @@ from threading import Event as ThreadEvent, RLock, Thread
 
 import pytest
 
-from fixture_paths import JULY6_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
+from fixture_paths import (
+    JULY6_OPCODE_PROFILE,
+    JULY17_OPCODE_PROFILE,
+    fixture_path,
+    has_fixture_pcaps,
+)
 from bdo_toolkit import EventFilter, replay_pcap
 from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
@@ -232,6 +237,45 @@ def _tracker(emitted):
     return DepositOriginTracker(
         decrement_specs=(DecrementSpec(0x1A32, 52, 42),),
         emit=emitted.append,
+    )
+
+
+def _instance_manual_tracker(emitted):
+    return DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x11AD,
+                47,
+                27,
+                source_instance_offset=35,
+            ),
+        ),
+        emit=emitted.append,
+    )
+
+
+def _manual_decrement_frame(
+    *,
+    seq,
+    quantity,
+    source_instance,
+    timestamp=999.0,
+    flow_generation=0,
+):
+    message = bytearray(47)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x11AD).to_bytes(2, "little")
+    message[27:31] = quantity.to_bytes(4, "little")
+    message[35:43] = source_instance
+    return BDOFrame(
+        0,
+        bytes(message),
+        PacketContext(
+            timestamp,
+            FLOW,
+            flow_generation=flow_generation,
+        ),
+        seq,
     )
 
 
@@ -474,14 +518,17 @@ def test_current_decrement_stride_accepts_odd_and_even_batch_counts(record_count
         BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
     )
     message_length = 270 + (record_count - 1) * 228
-    tracker.observe_frame(_frame(0x1C51, seq=1000, length=message_length))
+    storage_sequence = 900 + len(decrement)
+    tracker.observe_frame(
+        _frame(0x1C51, seq=storage_sequence, length=message_length)
+    )
     for index, instance in enumerate(instances, start=1):
         tracker.register(
             replace(
                 _storage_event(
                     item_id=15156,
                     quantity=1,
-                    seq=1000,
+                    seq=storage_sequence,
                     message_length=message_length,
                     record_offset=44 + (index - 1) * 228,
                     storage_instance=f"0x{instance.hex()}",
@@ -503,6 +550,638 @@ def test_current_decrement_stride_accepts_odd_and_even_batch_counts(record_count
         ]
         for event in emitted
     ] == list(range(1, record_count + 1))
+
+
+def test_exact_manual_decrement_survives_unrelated_frame_displacement():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+        )
+    )
+    for index in range(3):
+        tracker.observe_frame(
+            _frame(0x2000 + index, seq=947 + index * 10, length=10)
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=977))
+    tracker.register(
+        replace(
+            _storage_event(
+                quantity=8,
+                seq=977,
+                storage_instance=f"0x{instance.hex()}",
+            ),
+            event_type="storage_record",
+        )
+    )
+    tracker.finalize_all()
+
+    assert len(emitted) == 1
+    assert emitted[0].event_type == "storage_delta"
+    assert emitted[0].source == "Player Inventory"
+    assert emitted[0].extra["deposit_origin_evidence"]["manual_decrement"][
+        "confidence"
+    ] == "observed"
+
+
+@pytest.mark.parametrize(
+    ("unrelated_frames", "expected_manual"),
+    ((0, True), (1, True), (2, False)),
+)
+def test_quantity_only_decrement_is_limited_to_two_successor_frames(
+    unrelated_frames,
+    expected_manual,
+):
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(DecrementSpec(0x11AD, 47, 27),),
+        emit=emitted.append,
+    )
+    instance = bytes.fromhex("1122334455667788")
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+        )
+    )
+    sequence = 947
+    for index in range(unrelated_frames):
+        tracker.observe_frame(_frame(0x2000 + index, seq=sequence, length=10))
+        sequence += 10
+    tracker.observe_frame(_frame(0x0E6A, seq=sequence))
+    original = replace(
+        _storage_event(quantity=8, seq=sequence),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    if expected_manual:
+        assert len(emitted) == 1
+        assert emitted[0].event_type == "storage_delta"
+        assert emitted[0].source == "Player Inventory"
+        manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
+        assert manual["confidence"] == "heuristic"
+        assert manual["match_kind"] == "quantity-only"
+    else:
+        assert emitted == [original]
+
+
+def test_one_manual_decrement_cannot_classify_two_storage_wrappers():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=1,
+            source_instance=instance,
+        )
+    )
+    for index, sequence in enumerate((947, 952)):
+        tracker.observe_frame(_frame(0x0E6A, seq=sequence))
+        tracker.register(
+            replace(
+                _storage_event(
+                    item_id=7002 + index,
+                    quantity=1,
+                    seq=sequence,
+                    storage_instance=f"0x{instance.hex()}",
+                ),
+                event_type="storage_record",
+            )
+        )
+    tracker.finalize_all()
+
+    assert [
+        (event.item_id, event.event_type, event.source) for event in emitted
+    ] == [
+        (7002, "storage_delta", "Player Inventory"),
+        (7003, "storage_record", None),
+    ]
+
+
+def test_competing_exact_decrements_leave_storage_origin_neutral():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    for sequence in (800, 847):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+            )
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=894))
+    original = replace(
+        _storage_event(
+            quantity=1,
+            seq=894,
+            storage_instance=f"0x{instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+    assert emitted[0].event_type == "storage_record"
+    assert emitted[0].source is None
+    assert "deposit_origin_evidence" not in emitted[0].extra
+
+
+def test_competing_structural_decrements_leave_storage_origin_neutral():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    source_instances = (
+        bytes.fromhex("1020304050607080"),
+        bytes.fromhex("1122334455667788"),
+    )
+    destination_instance = bytes.fromhex("8877665544332211")
+
+    for sequence, instance in zip((800, 847), source_instances):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+            )
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=894))
+    original = replace(
+        _storage_event(
+            quantity=1,
+            seq=894,
+            storage_instance=f"0x{destination_instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_ambiguous_decrement_contenders_are_not_reused_later():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    source_instances = (
+        bytes.fromhex("1020304050607080"),
+        bytes.fromhex("1122334455667788"),
+    )
+    for sequence, instance in zip((800, 847), source_instances):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+            )
+        )
+
+    originals = []
+    for item_id, sequence, destination_instance in (
+        (7002, 894, bytes.fromhex("8877665544332211")),
+        (7003, 899, source_instances[0]),
+    ):
+        tracker.observe_frame(_frame(0x0E6A, seq=sequence))
+        original = replace(
+            _storage_event(
+                item_id=item_id,
+                quantity=1,
+                seq=sequence,
+                storage_instance=f"0x{destination_instance.hex()}",
+            ),
+            event_type="storage_record",
+        )
+        originals.append(original)
+        tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == originals
+
+
+def test_candidate_internal_ambiguity_quarantines_the_physical_frame():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x1A32,
+                52,
+                42,
+                source_instance_offset=34,
+                repeat_stride=23,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    repeated_instance = bytes.fromhex("1122334455667788")
+    unique_instance = bytes.fromhex("8877665544332211")
+    decrement = bytearray(98)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x1A32).to_bytes(2, "little")
+    for index, (quantity, instance) in enumerate(
+        ((1, repeated_instance), (1, repeated_instance), (2, unique_instance))
+    ):
+        delta = index * 23
+        decrement[34 + delta : 42 + delta] = instance
+        decrement[42 + delta : 46 + delta] = quantity.to_bytes(4, "little")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+
+    originals = []
+    for item_id, sequence, quantity, instance in (
+        (7002, 998, 1, repeated_instance),
+        (7003, 1003, 2, unique_instance),
+    ):
+        tracker.observe_frame(_frame(0x0E6A, seq=sequence))
+        original = replace(
+            _storage_event(
+                item_id=item_id,
+                quantity=quantity,
+                seq=sequence,
+                storage_instance=f"0x{instance.hex()}",
+            ),
+            event_type="storage_record",
+        )
+        originals.append(original)
+        tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == originals
+
+
+def test_unique_exact_decrement_outranks_structural_candidate():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    structural_instance = bytes.fromhex("1020304050607080")
+    exact_instance = bytes.fromhex("1122334455667788")
+
+    for sequence, instance in (
+        (800, structural_instance),
+        (847, exact_instance),
+    ):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+            )
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=894))
+    tracker.register(
+        replace(
+            _storage_event(
+                quantity=1,
+                seq=894,
+                storage_instance=f"0x{exact_instance.hex()}",
+            ),
+            event_type="storage_record",
+        )
+    )
+    tracker.finalize_all()
+
+    assert len(emitted) == 1
+    assert emitted[0].event_type == "storage_delta"
+    assert emitted[0].source == "Player Inventory"
+    manual = emitted[0].extra["deposit_origin_evidence"]["manual_decrement"]
+    assert manual["confidence"] == "observed"
+    assert manual["instance_matches_destination"] is True
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit"),
+    (
+        ("MAX_MANUAL_CANDIDATES_PER_FLOW", 1),
+        ("MAX_MANUAL_CANDIDATES_TOTAL", 1),
+        ("MAX_MANUAL_CANDIDATE_BYTES_PER_FLOW", 47),
+        ("MAX_MANUAL_CANDIDATE_BYTES_TOTAL", 47),
+    ),
+)
+def test_manual_candidate_cap_pressure_does_not_manufacture_uniqueness(
+    limit_name,
+    limit,
+):
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    setattr(tracker, limit_name, limit)
+    source_instances = (
+        bytes.fromhex("1020304050607080"),
+        bytes.fromhex("1122334455667788"),
+    )
+    destination_instance = bytes.fromhex("8877665544332211")
+
+    for sequence, instance in zip((800, 847), source_instances):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+            )
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=894))
+    original = replace(
+        _storage_event(
+            quantity=1,
+            seq=894,
+            storage_instance=f"0x{destination_instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_candidate_cap_suppression_survives_decreasing_packet_timestamps():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    tracker.MAX_MANUAL_CANDIDATES_PER_FLOW = 1
+    source_instances = (
+        bytes.fromhex("1020304050607080"),
+        bytes.fromhex("1122334455667788"),
+    )
+    destination_instance = bytes.fromhex("8877665544332211")
+
+    for sequence, timestamp, instance in (
+        (800, 1005.0, source_instances[0]),
+        (847, 1000.0, source_instances[1]),
+    ):
+        tracker.observe_frame(
+            _manual_decrement_frame(
+                seq=sequence,
+                quantity=1,
+                source_instance=instance,
+                timestamp=timestamp,
+            )
+        )
+    tracker.observe_frame(_frame(0x0E6A, seq=894, timestamp=1000.0))
+    original = replace(
+        _storage_event(
+            quantity=1,
+            seq=894,
+            timestamp=1000.0,
+            storage_instance=f"0x{destination_instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_buffered_manual_pair_survives_a_newer_earlier_stream_timestamp():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    tracker.observe_frame(_frame(0x2000, seq=890, timestamp=1005.0))
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+            timestamp=1001.0,
+        )
+    )
+    tracker.observe_frame(_frame(0x0E6A, seq=947, timestamp=1001.0))
+    tracker.register(
+        replace(
+            _storage_event(
+                quantity=8,
+                seq=947,
+                timestamp=1001.0,
+                storage_instance=f"0x{instance.hex()}",
+            ),
+            event_type="storage_record",
+        )
+    )
+    tracker.finalize_all()
+
+    assert len(emitted) == 1
+    assert emitted[0].event_type == "storage_delta"
+    assert emitted[0].source == "Player Inventory"
+
+
+def test_stale_flush_expires_unclaimed_manual_decrements():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+            timestamp=1000.0,
+        )
+    )
+    tracker.flush_stale(now=1000.0 + tracker.STALE_SECONDS + 0.1)
+    tracker.observe_frame(
+        _frame(
+            0x0E6A,
+            seq=947,
+            timestamp=1000.0 + tracker.STALE_SECONDS + 0.1,
+        )
+    )
+    original = replace(
+        _storage_event(
+            quantity=8,
+            seq=947,
+            timestamp=1000.0 + tracker.STALE_SECONDS + 0.1,
+            storage_instance=f"0x{instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_manual_decrement_cannot_cross_flow_generation():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+            flow_generation=1,
+        )
+    )
+    storage_frame = _frame(0x0E6A, seq=947)
+    tracker.observe_frame(
+        BDOFrame(
+            storage_frame.index,
+            storage_frame.message,
+            PacketContext(
+                storage_frame.context.timestamp,
+                FLOW,
+                flow_generation=2,
+            ),
+            storage_frame.stream_sequence,
+        )
+    )
+    original = replace(
+        _storage_event(
+            quantity=8,
+            seq=947,
+            storage_instance=f"0x{instance.hex()}",
+        ),
+        event_type="storage_record",
+        _flow_generation=2,
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_flow_close_releases_unclaimed_manual_decrement():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+    tracker.observe_frame(
+        _manual_decrement_frame(
+            seq=900,
+            quantity=8,
+            source_instance=instance,
+        )
+    )
+
+    tracker.close_flow(FLOW)
+    tracker.observe_frame(_frame(0x0E6A, seq=947))
+    original = replace(
+        _storage_event(
+            quantity=8,
+            seq=947,
+            storage_instance=f"0x{instance.hex()}",
+        ),
+        event_type="storage_record",
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_gap_reset_rejects_pre_reset_decrement_retransmission():
+    emitted = []
+    tracker = _instance_manual_tracker(emitted)
+    instance = bytes.fromhex("1122334455667788")
+    old_decrement = _manual_decrement_frame(
+        seq=900,
+        quantity=8,
+        source_instance=instance,
+        flow_generation=3,
+    )
+    tracker.observe_frame(old_decrement)
+
+    tracker.reset_flow(FLOW, 3, 1000)
+    tracker.observe_frame(
+        replace(
+            old_decrement,
+            context=PacketContext(1001.0, FLOW, flow_generation=3),
+        )
+    )
+    storage_frame = _frame(0x0E6A, seq=1000, timestamp=1001.0)
+    tracker.observe_frame(
+        replace(
+            storage_frame,
+            context=PacketContext(1001.0, FLOW, flow_generation=3),
+        )
+    )
+    original = replace(
+        _storage_event(
+            quantity=8,
+            seq=1000,
+            timestamp=1001.0,
+            storage_instance=f"0x{instance.hex()}",
+        ),
+        event_type="storage_record",
+        _flow_generation=3,
+    )
+    tracker.register(original)
+    tracker.finalize_all()
+
+    assert emitted == [original]
+
+
+def test_manual_batch_owns_decrement_records_atomically_once():
+    emitted = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(
+            DecrementSpec(
+                0x1A32,
+                52,
+                42,
+                source_instance_offset=34,
+                repeat_stride=23,
+            ),
+        ),
+        emit=emitted.append,
+    )
+    instances = (
+        bytes.fromhex("1020304050607080"),
+        bytes.fromhex("1122334455667788"),
+    )
+    quantities = (2, 8)
+    decrement = bytearray(75)
+    decrement[0:2] = len(decrement).to_bytes(2, "little")
+    decrement[3:5] = (0x1A32).to_bytes(2, "little")
+    for index, (quantity, instance) in enumerate(zip(quantities, instances)):
+        delta = index * 23
+        decrement[34 + delta : 42 + delta] = instance
+        decrement[42 + delta : 46 + delta] = quantity.to_bytes(4, "little")
+    tracker.observe_frame(
+        BDOFrame(0, bytes(decrement), PacketContext(999.0, FLOW), 900)
+    )
+
+    for batch_index, sequence in enumerate((975, 1075)):
+        tracker.observe_frame(_frame(0x0E6A, seq=sequence, length=100))
+        for record_index, (quantity, instance) in enumerate(
+            zip(quantities, instances),
+            start=1,
+        ):
+            tracker.register(
+                replace(
+                    _storage_event(
+                        item_id=7000 + batch_index * 10 + record_index,
+                        quantity=quantity,
+                        seq=sequence,
+                        message_length=100,
+                        record_offset=20 + (record_index - 1) * 30,
+                        storage_instance=f"0x{instance.hex()}",
+                    ),
+                    event_type="storage_record",
+                    record_index=record_index,
+                    record_count=2,
+                )
+            )
+    tracker.finalize_all()
+
+    assert [
+        (event.item_id, event.event_type, event.source) for event in emitted
+    ] == [
+        (7001, "storage_delta", "Player Inventory"),
+        (7002, "storage_delta", "Player Inventory"),
+        (7011, "storage_record", None),
+        (7012, "storage_record", None),
+    ]
 
 
 def test_malformed_declared_decrement_geometry_is_not_downgraded():
@@ -727,7 +1406,10 @@ def _july17_unknown_operation_storage(
     records,
     *,
     token=bytes.fromhex("3141592653589793"),
+    storage_instances=None,
 ):
+    if storage_instances is not None and len(storage_instances) != len(records):
+        raise ValueError("storage_instances must align with records")
     stride = 222
     message = bytearray(257 + (len(records) - 1) * stride)
     message[0:2] = len(message).to_bytes(2, "little")
@@ -741,15 +1423,33 @@ def _july17_unknown_operation_storage(
         message[item_offset : item_offset + 4] = item_id.to_bytes(4, "little")
         message[item_offset + 4 : item_offset + 8] = quantity.to_bytes(4, "little")
         message[item_offset + 12 : item_offset + 20] = b"\xff" * 8
-        message[item_offset + 35 : item_offset + 43] = bytes([index + 1]) * 8
+        instance = (
+            bytes([index + 1]) * 8
+            if storage_instances is None
+            else storage_instances[index]
+        )
+        message[item_offset + 35 : item_offset + 43] = instance
     return bytes(message)
 
 
-def _july17_manual_decrement(quantity):
+def _july17_manual_decrement(quantity, source_instance=None):
     message = bytearray(47)
     message[0:2] = len(message).to_bytes(2, "little")
     message[3:5] = (0x11AD).to_bytes(2, "little")
     message[27:31] = quantity.to_bytes(4, "little")
+    if source_instance is not None:
+        message[35:43] = source_instance
+    return bytes(message)
+
+
+def _july17_inventory_receipt(item_id, quantity, item_instance):
+    message = bytearray(254)
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x194A).to_bytes(2, "little")
+    message[27:31] = bytes.fromhex("d0f205a3")  # Storage
+    message[31:35] = item_id.to_bytes(4, "little")
+    message[35:39] = quantity.to_bytes(4, "little")
+    message[66:74] = item_instance
     return bytes(message)
 
 
@@ -766,23 +1466,150 @@ def _current_companions(token):
 
 
 def _collect_synthetic_current_storage(profile, payload, event_filter=None):
+    return _collect_synthetic_current_segments(
+        profile,
+        (payload,),
+        event_filter,
+    )
+
+
+def _collect_synthetic_current_segments(profile, payloads, event_filter=None):
     collector = _EventCollector(
         server_ports=(8889,),
         event_filter=event_filter,
         opcode_profile=profile,
+    )
+    sequence = 1000
+    for index, payload in enumerate(payloads):
+        collector.engine.process_tcp_segment(
+            source_ip=FLOW.source_ip,
+            source_port=FLOW.source_port,
+            destination_ip=FLOW.destination_ip,
+            destination_port=FLOW.destination_port,
+            sequence=sequence & 0xFFFFFFFF,
+            payload=payload,
+            timestamp=1000.0 + index * 0.01,
+        )
+        sequence += len(payload)
+    collector.engine.finish()
+    collector.finalize()
+    return list(collector.drain_events())
+
+
+def test_manual_ledger_correlates_across_tcp_sequence_wrap():
+    instance = bytes.fromhex("1122334455667788")
+    payload = _july17_manual_decrement(8, instance) + (
+        _july17_unknown_operation_storage(
+            ((7307, 8),),
+            storage_instances=(instance,),
+        )
+    )
+    collector = _EventCollector(
+        server_ports=(8889,),
+        opcode_profile=JULY17_OPCODE_PROFILE,
     )
     collector.engine.process_tcp_segment(
         source_ip=FLOW.source_ip,
         source_port=FLOW.source_port,
         destination_ip=FLOW.destination_ip,
         destination_port=FLOW.destination_port,
-        sequence=1000,
+        sequence=0xFFFFFFEF,
         payload=payload,
         timestamp=1000.0,
+        syn=True,
     )
     collector.engine.finish()
     collector.finalize()
-    return list(collector.drain_events())
+    events = list(collector.drain_events())
+
+    assert len(events) == 1
+    assert events[0].event_type == "storage_delta"
+    assert events[0].source == "Player Inventory"
+    assert (events[0].item_id, events[0].quantity) == (7307, 8)
+
+
+@pytest.mark.parametrize("segment_layout", ("coalesced", "fragmented"))
+def test_manual_ledger_survives_24_alternating_transfers(segment_layout):
+    expected_manual = []
+    expected_receipts = []
+    messages = []
+    worker_token = bytes.fromhex("3141592653589793")
+    worker_instance = bytes.fromhex("8877665544332211")
+
+    for index in range(24):
+        if index == 20:
+            # A matching ambient decrement must not outrank the worker's
+            # operation-specific companion chain.
+            messages.append(_july17_manual_decrement(1, worker_instance))
+            messages.append(
+                _july17_unknown_operation_storage(
+                    ((4607, 1),),
+                    token=worker_token,
+                    storage_instances=(worker_instance,),
+                )
+            )
+            messages.extend(_current_companions(worker_token))
+
+        item_id = 7003 if index % 2 == 0 else 1000306
+        quantity = 1 if index % 2 else (index % 5) + 2
+        instance = (0x1020304050607000 + index).to_bytes(8, "little")
+        token = (0x2020304050607000 + index).to_bytes(8, "little")
+        messages.extend(
+            (
+                _july17_manual_decrement(quantity, instance),
+                _july17_unknown_operation_storage(
+                    ((item_id, quantity),),
+                    token=token,
+                    storage_instances=(instance,),
+                ),
+                _july17_inventory_receipt(item_id, quantity, instance),
+            )
+        )
+        expected_manual.append((item_id, quantity, f"0x{instance.hex()}"))
+        expected_receipts.append((item_id, quantity, f"0x{instance.hex()}"))
+
+    payload = b"".join(messages)
+    if segment_layout == "coalesced":
+        payloads = (payload,)
+    else:
+        first_cut = len(payload) // 3 + 7
+        second_cut = 2 * len(payload) // 3 + 19
+        # Both cuts intentionally land inside messages, so this also exercises
+        # TCP reassembly rather than merely dividing at application boundaries.
+        payloads = (
+            payload[:first_cut],
+            payload[first_cut:second_cut],
+            payload[second_cut:],
+        )
+
+    events = _collect_synthetic_current_segments(
+        JULY17_OPCODE_PROFILE,
+        payloads,
+    )
+
+    assert not [event for event in events if event.event_type == "storage_record"]
+    manual = [
+        event
+        for event in events
+        if event.event_type == "storage_delta"
+        and event.source == "Player Inventory"
+    ]
+    assert sorted(
+        (event.item_id, event.quantity, event.storage_instance) for event in manual
+    ) == sorted(expected_manual)
+    receipts = [event for event in events if event.event_type == "item_received"]
+    assert sorted(
+        (event.item_id, event.quantity, event.item_instance) for event in receipts
+    ) == sorted(expected_receipts)
+    assert {event.source for event in receipts} == {"Storage"}
+
+    worker = [event for event in events if event.item_id == 4607]
+    assert len(worker) == 1
+    assert worker[0].event_type == "storage_delta"
+    assert worker[0].source == "Worker Production"
+    worker_evidence = worker[0].extra["deposit_origin_evidence"]
+    assert worker_evidence["worker_companions"] is True
+    assert worker_evidence["matching_decrement"] is True
 
 
 def test_unknown_operation_manual_is_promoted_before_filtering(tmp_path):
