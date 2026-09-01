@@ -1,11 +1,12 @@
 """Fail-closed worker/manual classification for storage events.
 
-Manual deposits carry a calibrated source-stack decrement immediately before
-the storage delta. Worker deposits carry two ordered companion frames within a
-bounded lookahead window that repeat the same high-entropy token from the
-delta's pre-record prefix. The relationship survived a patch that changed
-every involved opcode, length, and token offset, so classification does not
-trust raw opcode values.
+Manual deposits carry a preceding calibrated source-stack decrement. Strong
+instance-backed evidence survives bounded interleaving, while legacy
+quantity-only shapes remain restricted to the immediate window. Worker
+deposits carry two ordered companion frames within a bounded lookahead window
+that repeat the same high-entropy token from the delta's pre-record prefix.
+The relationship survived a patch that changed every involved opcode, length,
+and token offset, so classification does not trust raw opcode values.
 
 Missing or conflicting evidence leaves ``source=None`` on an already-live
 ``storage_delta``. A neutral ``storage_record`` is promoted to a live delta
@@ -127,6 +128,37 @@ class _ManualDecrementMatch:
         return output
 
 
+type _ManualFlowKey = tuple[FlowKey, int]
+type _ManualOperationKey = tuple[
+    FlowKey,
+    int,
+    Optional[int],
+    Optional[int],
+    Optional[int],
+    float,
+]
+
+
+@dataclass(eq=False)
+class _ManualDecrementCandidate:
+    """One physical calibrated decrement frame awaiting unique ownership."""
+
+    flow: FlowKey
+    flow_generation: int
+    stream_start: int
+    stream_end: int
+    timestamp: float
+    opcode: int
+    message: bytes
+    specs: tuple[DecrementSpec, ...]
+    successor_starts: list[int] = field(default_factory=list)
+    reserved_by: Optional[_ManualOperationKey] = None
+
+    @property
+    def message_length(self) -> int:
+        return len(self.message)
+
+
 @dataclass
 class _PendingDeposit:
     event: BDOEvent
@@ -170,8 +202,8 @@ class _CompanionScan:
 
 
 @dataclass
-class _StagedNeutralBatch:
-    """Records from one unfamiliar-mode wrapper awaiting atomic routing."""
+class _StagedStorageBatch:
+    """Records from one storage wrapper awaiting one atomic decision."""
 
     expected_count: int
     entries: dict[int, tuple[BDOEvent, Optional[bytes]]] = field(
@@ -193,7 +225,11 @@ class DepositOriginTracker:
     STALE_SECONDS = 2.0
     BACKWARD_WINDOW = 16
     STREAM_SPAN_HISTORY_LIMIT = 64
-    MANUAL_LOOKBACK_FRAMES = 2
+    MANUAL_IMMEDIATE_SUCCESSORS = 2
+    MAX_MANUAL_CANDIDATES_PER_FLOW = 128
+    MAX_MANUAL_CANDIDATES_TOTAL = 4096
+    MAX_MANUAL_CANDIDATE_BYTES_PER_FLOW = 2 * 1024 * 1024
+    MAX_MANUAL_CANDIDATE_BYTES_TOTAL = 32 * 1024 * 1024
     OBSERVATION_HISTORY_LIMIT = 4096
     COMPANION_PAIR_HISTORY_LIMIT = 4096
     RECORD_BOUNDARY_HISTORY_LIMIT = 4096
@@ -252,10 +288,29 @@ class DepositOriginTracker:
         self._storage_delta_opcodes.update(storage_delta_opcodes)
         self._recent: dict[FlowKey, deque[BDOFrame]] = {}
         self._stream_spans: dict[FlowKey, deque[_StreamSpan]] = {}
+        self._manual_candidates: dict[
+            _ManualFlowKey,
+            deque[_ManualDecrementCandidate],
+        ] = {}
+        self._manual_candidate_count = 0
+        self._manual_candidate_bytes = 0
+        self._manual_candidate_bytes_by_flow: dict[_ManualFlowKey, int] = {}
+        self._manual_active_generations: dict[FlowKey, int] = {}
+        self._manual_frame_frontiers: dict[_ManualFlowKey, int] = {}
+        self._manual_reset_floors: dict[_ManualFlowKey, int] = {}
+        self._manual_latest_timestamps: dict[_ManualFlowKey, float] = {}
+        self._manual_suppressed_until: dict[_ManualFlowKey, float] = {}
         self._pending: list[_PendingDeposit] = []
         self._staged_neutral_batches: dict[
-            tuple[FlowKey, Optional[int], Optional[int], Optional[int], float],
-            _StagedNeutralBatch,
+            tuple[
+                FlowKey,
+                int,
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                float,
+            ],
+            _StagedStorageBatch,
         ] = {}
         self._observed_chains: set[
             tuple[
@@ -332,6 +387,7 @@ class DepositOriginTracker:
         self._drain_outbox()
 
     def _observe_frame_locked(self, frame: BDOFrame) -> None:
+        self._observe_manual_frame_locked(frame)
         window = self._recent.setdefault(
             frame.context.flow,
             deque(maxlen=self.BACKWARD_WINDOW),
@@ -368,6 +424,190 @@ class DepositOriginTracker:
                 still.append(pending)
         self._pending = still
 
+    def _observe_manual_frame_locked(self, frame: BDOFrame) -> None:
+        """Retain only calibrated decrement frames for manual correlation."""
+
+        flow = frame.context.flow
+        generation = frame.context.flow_generation
+        if not self._activate_manual_generation_locked(flow, generation):
+            return
+        key = (flow, generation)
+        now = frame.context.timestamp
+        self._manual_latest_timestamps[key] = max(
+            now,
+            self._manual_latest_timestamps.get(key, now),
+        )
+
+        start = frame.stream_sequence
+        if start is None:
+            return
+        end = start + len(frame.message)
+        reset_floor = self._manual_reset_floors.get(key)
+        if reset_floor is not None and start < reset_floor:
+            return
+
+        # Generic callbacks normally advance monotonically. A frame wholly or
+        # partly behind this frontier came from standalone retransmission
+        # scanning and must not resurrect an old physical decrement.
+        frontier = self._manual_frame_frontiers.get(key)
+        if frontier is not None and start < frontier:
+            return
+
+        candidates = self._manual_candidates.get(key, ())
+        for candidate in candidates:
+            if (
+                candidate.stream_end <= start
+                and len(candidate.successor_starts)
+                < self.MANUAL_IMMEDIATE_SUCCESSORS
+                and start not in candidate.successor_starts
+            ):
+                candidate.successor_starts.append(start)
+        self._manual_frame_frontiers[key] = max(end, frontier or end)
+
+        specs = tuple(
+            spec
+            for spec in self._decrement_specs.get(frame.opcode, ())
+            if self._manual_spec_accepts_message(spec, frame.message)
+        )
+        if not specs:
+            return
+
+        self._prune_manual_candidates_locked(now)
+        ledger = self._manual_candidates.setdefault(key, deque())
+        for candidate in ledger:
+            if (
+                candidate.stream_start == start
+                and candidate.stream_end == end
+                and candidate.opcode == frame.opcode
+            ):
+                return
+
+        if self._manual_key_is_suppressed_locked(key):
+            self._suppress_manual_key_locked(key, now)
+            return
+
+        message_size = len(frame.message)
+        flow_bytes = self._manual_candidate_bytes_by_flow.get(key, 0)
+        if (
+            len(ledger) >= self.MAX_MANUAL_CANDIDATES_PER_FLOW
+            or self._manual_candidate_count >= self.MAX_MANUAL_CANDIDATES_TOTAL
+            or flow_bytes + message_size
+            > self.MAX_MANUAL_CANDIDATE_BYTES_PER_FLOW
+            or self._manual_candidate_bytes + message_size
+            > self.MAX_MANUAL_CANDIDATE_BYTES_TOTAL
+        ):
+            # Dropping one contender and then selecting from the survivors can
+            # manufacture false uniqueness. Suppress the affected generation
+            # until every possibly dropped candidate has naturally expired.
+            self._suppress_manual_key_locked(key, now)
+            return
+
+        candidate = _ManualDecrementCandidate(
+            flow=flow,
+            flow_generation=generation,
+            stream_start=start,
+            stream_end=end,
+            timestamp=now,
+            opcode=frame.opcode,
+            message=bytes(frame.message),
+            specs=specs,
+        )
+        ledger.append(candidate)
+        self._manual_candidate_count += 1
+        self._manual_candidate_bytes += message_size
+        self._manual_candidate_bytes_by_flow[key] = flow_bytes + message_size
+
+    @staticmethod
+    def _manual_spec_accepts_message(
+        spec: DecrementSpec,
+        message: bytes,
+    ) -> bool:
+        if len(message) < spec.min_message_length:
+            return False
+        if spec.repeat_stride is None:
+            return True
+        return (
+            len(message) - spec.min_message_length
+        ) % spec.repeat_stride == 0
+
+    def _activate_manual_generation_locked(
+        self,
+        flow: FlowKey,
+        generation: int,
+    ) -> bool:
+        active = self._manual_active_generations.get(flow)
+        if active is None:
+            self._manual_active_generations[flow] = generation
+            return True
+        if generation == active:
+            return True
+        if generation < active:
+            return False
+        self._purge_manual_flow_locked(flow)
+        self._manual_active_generations[flow] = generation
+        return True
+
+    def _manual_key_is_suppressed_locked(self, key: _ManualFlowKey) -> bool:
+        suppressed_until = self._manual_suppressed_until.get(key)
+        if suppressed_until is None:
+            return False
+        latest = self._manual_latest_timestamps.get(key, suppressed_until)
+        if latest <= suppressed_until:
+            return True
+        self._manual_suppressed_until.pop(key, None)
+        return False
+
+    def _suppress_manual_key_locked(
+        self,
+        key: _ManualFlowKey,
+        timestamp: float,
+    ) -> None:
+        suppression_clock = max(
+            timestamp,
+            self._manual_latest_timestamps.get(key, timestamp),
+        )
+        self._manual_suppressed_until[key] = max(
+            self._manual_suppressed_until.get(key, suppression_clock),
+            suppression_clock + self.STALE_SECONDS,
+        )
+
+    def _prune_manual_candidates_locked(self, now: float) -> None:
+        for key, candidates in tuple(self._manual_candidates.items()):
+            retained: deque[_ManualDecrementCandidate] = deque()
+            removed_count = 0
+            removed_bytes = 0
+            for candidate in candidates:
+                if now - candidate.timestamp > self.STALE_SECONDS:
+                    removed_count += 1
+                    removed_bytes += candidate.message_length
+                else:
+                    retained.append(candidate)
+            if retained:
+                self._manual_candidates[key] = retained
+            else:
+                self._manual_candidates.pop(key, None)
+            if removed_count:
+                self._manual_candidate_count -= removed_count
+                self._manual_candidate_bytes -= removed_bytes
+                remaining_bytes = (
+                    self._manual_candidate_bytes_by_flow.get(key, 0)
+                    - removed_bytes
+                )
+                if remaining_bytes:
+                    self._manual_candidate_bytes_by_flow[key] = remaining_bytes
+                else:
+                    self._manual_candidate_bytes_by_flow.pop(key, None)
+
+        for key, suppressed_until in tuple(
+            self._manual_suppressed_until.items()
+        ):
+            latest = max(
+                now,
+                self._manual_latest_timestamps.get(key, now),
+            )
+            if latest > suppressed_until:
+                self._manual_suppressed_until.pop(key, None)
+
     @staticmethod
     def _frame_is_after(frame: BDOFrame, pending: _PendingDeposit) -> bool:
         if pending.stream_sequence is None or frame.stream_sequence is None:
@@ -399,6 +639,7 @@ class DepositOriginTracker:
         )
         raw_sequence = event.extra.get("stream_sequence")
         stream_sequence = raw_sequence if isinstance(raw_sequence, int) else None
+        self._activate_manual_generation_locked(flow, event._flow_generation)
 
         if self._stage_neutral_batch(
             event,
@@ -422,12 +663,11 @@ class DepositOriginTracker:
         flow: FlowKey,
         stream_sequence: Optional[int],
     ) -> bool:
-        """Buffer unknown-operation multi-record wrappers as one decision."""
+        """Buffer every multi-record storage wrapper as one decision."""
         record_index = event.record_index
         record_count = event.record_count
         if (
-            event.event_type != "storage_record"
-            or isinstance(record_index, bool)
+            isinstance(record_index, bool)
             or not isinstance(record_index, int)
             or isinstance(record_count, bool)
             or not isinstance(record_count, int)
@@ -438,6 +678,7 @@ class DepositOriginTracker:
 
         key = (
             flow,
+            event._flow_generation,
             stream_sequence,
             event.opcode,
             event.message_length,
@@ -445,7 +686,7 @@ class DepositOriginTracker:
         )
         staged = self._staged_neutral_batches.get(key)
         if staged is None:
-            staged = _StagedNeutralBatch(expected_count=record_count)
+            staged = _StagedStorageBatch(expected_count=record_count)
             self._staged_neutral_batches[key] = staged
         elif staged.expected_count != record_count:
             staged.invalid = True
@@ -467,6 +708,9 @@ class DepositOriginTracker:
             return True
 
         ordered = tuple(staged.entries[index] for index in sorted(staged.entries))
+        if len({entry[0].event_type for entry in ordered}) != 1:
+            self._emit_neutral_entries(staged)
+            return True
         messages = {entry[1] for entry in ordered if entry[1] is not None}
         if len(messages) > 1:
             self._emit_neutral_entries(staged)
@@ -480,7 +724,7 @@ class DepositOriginTracker:
         )
         return True
 
-    def _emit_neutral_entries(self, staged: _StagedNeutralBatch) -> None:
+    def _emit_neutral_entries(self, staged: _StagedStorageBatch) -> None:
         for record_index in sorted(staged.entries):
             self._queue_emit(staged.entries[record_index][0])
 
@@ -538,17 +782,12 @@ class DepositOriginTracker:
             # Retry it now that the authoritative first-record boundary is
             # available; never substitute the entire record body as a prefix.
             self._retry_boundary_waiters(flow, stream_sequence)
-        manual_matches: list[tuple[int, _ManualDecrementMatch]] = []
-        for index, candidate_event in enumerate(events, 1):
-            match = self._matching_decrement(
-                flow,
-                stream_sequence,
-                candidate_event,
-            )
-            if match is not None:
-                manual_matches.append(
-                    (candidate_event.record_index or index, match)
-                )
+        manual_matches = self._reserve_matching_decrement(
+            flow,
+            event._flow_generation,
+            stream_sequence,
+            events,
+        )
         matching_indexes = tuple(index for index, _match in manual_matches)
         pending = _PendingDeposit(
             event=event,
@@ -1143,164 +1382,280 @@ class DepositOriginTracker:
 
     # --- calibrated manual-decrement signal ---
 
-    def _matching_decrement(
+    def _reserve_matching_decrement(
         self,
         flow: FlowKey,
+        flow_generation: int,
         stream_sequence: Optional[int],
+        events: tuple[BDOEvent, ...],
+    ) -> list[tuple[int, _ManualDecrementMatch]]:
+        """Uniquely assign one physical decrement to one storage wrapper."""
+
+        if stream_sequence is None or not events:
+            return []
+        if not self._activate_manual_generation_locked(flow, flow_generation):
+            return []
+        key = (flow, flow_generation)
+        event = events[0]
+        self._manual_latest_timestamps[key] = max(
+            event.timestamp,
+            self._manual_latest_timestamps.get(key, event.timestamp),
+        )
+        self._prune_manual_candidates_locked(event.timestamp)
+        if self._manual_key_is_suppressed_locked(key):
+            return []
+
+        operation_key: _ManualOperationKey = (
+            flow,
+            flow_generation,
+            stream_sequence,
+            event.opcode,
+            event.message_length,
+            event.timestamp,
+        )
+        evaluated: list[
+            tuple[
+                tuple[int, int, int],
+                _ManualDecrementCandidate,
+                list[tuple[int, _ManualDecrementMatch]],
+            ]
+        ] = []
+        for candidate in self._manual_candidates.get(key, ()):
+            if candidate.reserved_by is not None:
+                continue
+            if candidate.stream_end > stream_sequence:
+                continue
+            if event.timestamp - candidate.timestamp > self.STALE_SECONDS:
+                continue
+            result = self._manual_candidate_group_match(
+                candidate,
+                events,
+                stream_sequence,
+            )
+            if result is None:
+                continue
+            score, matches = result
+            evaluated.append((score, candidate, matches))
+
+        if not evaluated:
+            return []
+        best_score = min(entry[0] for entry in evaluated)
+        winners = [entry for entry in evaluated if entry[0] == best_score]
+        if len(winners) != 1:
+            # These candidates were all equally attributable to this wrapper.
+            # Leaving them free would let a later operation manufacture a
+            # unique match merely because another contender was consumed.
+            for _score, candidate, _matches in winners:
+                candidate.reserved_by = operation_key
+            return []
+        _score, candidate, matches = winners[0]
+        candidate.reserved_by = operation_key
+        return matches
+
+    def _manual_candidate_group_match(
+        self,
+        candidate: _ManualDecrementCandidate,
+        events: tuple[BDOEvent, ...],
+        storage_sequence: int,
+    ) -> Optional[
+        tuple[tuple[int, int, int], list[tuple[int, _ManualDecrementMatch]]]
+    ]:
+        rank = {"observed": 0, "structural": 1, "heuristic": 2}
+        compatible_ranks: list[int] = []
+        selected: list[
+            tuple[
+                int,
+                tuple[int, Optional[int]],
+                _ManualDecrementMatch,
+            ]
+        ] = []
+        for fallback_index, event in enumerate(events, 1):
+            choices = self._manual_candidate_record_matches(
+                candidate,
+                event,
+                storage_sequence,
+            )
+            if not choices:
+                continue
+            compatible_ranks.append(rank[choices[0][1].confidence])
+            if len(choices) != 1:
+                continue
+            record_key, match = choices[0]
+            selected.append(
+                (event.record_index or fallback_index, record_key, match)
+            )
+
+        # One source record cannot prove two destination records. A repeated
+        # quantity without identity is therefore ambiguous inside a batch.
+        record_key_counts: dict[tuple[int, Optional[int]], int] = {}
+        for _event_index, record_key, _match in selected:
+            record_key_counts[record_key] = record_key_counts.get(record_key, 0) + 1
+        unique = [
+            (event_index, match)
+            for event_index, record_key, match in selected
+            if record_key_counts[record_key] == 1
+        ]
+        if not compatible_ranks:
+            return None
+
+        best_rank = min(compatible_ranks)
+        best_count = compatible_ranks.count(best_rank)
+        # Strength dominates. At equal strength, broader compatible coverage
+        # wins; recency is intentionally not a tie-breaker.
+        score = (best_rank, -best_count, -len(compatible_ranks))
+        return score, unique
+
+    def _manual_candidate_record_matches(
+        self,
+        candidate: _ManualDecrementCandidate,
         event: BDOEvent,
-    ) -> Optional[_ManualDecrementMatch]:
+        storage_sequence: int,
+    ) -> list[
+        tuple[tuple[int, Optional[int]], _ManualDecrementMatch]
+    ]:
         quantity_bytes = event.quantity.to_bytes(4, "little")
         destination_instance = self._event_storage_instance(event)
-        eligible = [
-            frame
-            for frame in self._recent.get(flow, ())
-            if not (
-                stream_sequence is not None
-                and frame.stream_sequence is not None
-                and frame.stream_sequence >= stream_sequence
-            )
-        ][-self.MANUAL_LOOKBACK_FRAMES :]
-        matches: list[_ManualDecrementMatch] = []
-        for frame in eligible:
-            for spec in self._decrement_specs.get(frame.opcode, ()):
-                # Profile lengths are calibrated single-record minima. Batch
-                # decrements append more records to the same frame.
-                if len(frame.message) < spec.min_message_length:
-                    continue
-                inferred_repeat_stride: Optional[int] = None
-                if spec.repeat_stride is not None:
-                    extra_length = len(frame.message) - spec.min_message_length
-                    if extra_length % spec.repeat_stride:
-                        continue
-                    record_deltas: Iterable[int] = range(
-                        0,
-                        extra_length + 1,
-                        spec.repeat_stride,
-                    )
-                elif (
-                    spec.source_instance_offset is not None
-                    and destination_instance is not None
-                    and isinstance(event.record_index, int)
-                    and not isinstance(event.record_index, bool)
-                    and isinstance(event.record_count, int)
-                    and not isinstance(event.record_count, bool)
-                    and event.record_count > 1
-                    and 1 <= event.record_index <= event.record_count
-                ):
-                    # Older calibrated profiles predate repeat_stride, but
-                    # their multi-record captures still expose enough
-                    # geometry to recover it safely: the captured decrement
-                    # and storage batch cardinalities align, while exact
-                    # source/destination instance equality validates every
-                    # inferred record after the first. This never expands
-                    # quantity-only matching.
-                    extra_length = len(frame.message) - spec.min_message_length
-                    divisor = event.record_count - 1
-                    if extra_length <= 0 or extra_length % divisor:
+        matches: dict[
+            tuple[int, Optional[int]],
+            _ManualDecrementMatch,
+        ] = {}
+        rank = {"observed": 0, "structural": 1, "heuristic": 2}
+
+        for spec in candidate.specs:
+            inferred_repeat_stride: Optional[int] = None
+            if spec.repeat_stride is not None:
+                extra_length = candidate.message_length - spec.min_message_length
+                record_deltas: Iterable[int] = range(
+                    0,
+                    extra_length + 1,
+                    spec.repeat_stride,
+                )
+            elif (
+                spec.source_instance_offset is not None
+                and destination_instance is not None
+                and isinstance(event.record_index, int)
+                and not isinstance(event.record_index, bool)
+                and isinstance(event.record_count, int)
+                and not isinstance(event.record_count, bool)
+                and event.record_count > 1
+                and 1 <= event.record_index <= event.record_count
+            ):
+                # Older profiles predate repeat_stride. Batch cardinality can
+                # recover it only when exact identity validates inferred
+                # nonzero records; quantity-only evidence never expands.
+                extra_length = candidate.message_length - spec.min_message_length
+                divisor = event.record_count - 1
+                if extra_length <= 0 or extra_length % divisor:
+                    record_deltas = (0,)
+                else:
+                    inferred_stride = extra_length // divisor
+                    prefix_length = spec.min_message_length - inferred_stride
+                    if (
+                        inferred_stride <= 0
+                        or prefix_length < 5
+                        or spec.quantity_offset < prefix_length
+                        or spec.source_instance_offset < prefix_length
+                    ):
                         record_deltas = (0,)
                     else:
-                        inferred_stride = extra_length // divisor
-                        prefix_length = (
-                            spec.min_message_length - inferred_stride
+                        inferred_repeat_stride = inferred_stride
+                        record_deltas = range(
+                            0,
+                            extra_length + 1,
+                            inferred_stride,
                         )
-                        if (
-                            inferred_stride <= 0
-                            or prefix_length < 5
-                            or spec.quantity_offset < prefix_length
-                            or spec.source_instance_offset < prefix_length
-                        ):
-                            record_deltas = (0,)
-                        else:
-                            inferred_repeat_stride = inferred_stride
-                            record_deltas = range(
-                                0,
-                                extra_length + 1,
-                                inferred_stride,
-                            )
-                else:
-                    record_deltas = (0,)
+            else:
+                record_deltas = (0,)
 
-                for delta in record_deltas:
-                    quantity_offset = spec.quantity_offset + delta
-                    quantity_end = quantity_offset + 4
-                    if (
-                        quantity_end > len(frame.message)
-                        or frame.message[quantity_offset:quantity_end]
-                        != quantity_bytes
+            for delta in record_deltas:
+                quantity_offset = spec.quantity_offset + delta
+                quantity_end = quantity_offset + 4
+                if (
+                    quantity_end > candidate.message_length
+                    or candidate.message[quantity_offset:quantity_end]
+                    != quantity_bytes
+                ):
+                    continue
+
+                source_offset = spec.source_instance_offset
+                record_key: tuple[int, Optional[int]]
+                if source_offset is None:
+                    if not self._quantity_only_is_immediate(
+                        candidate,
+                        storage_sequence,
                     ):
                         continue
-
-                    source_offset = spec.source_instance_offset
-                    if source_offset is None:
-                        matches.append(
-                            _ManualDecrementMatch(
-                                opcode=frame.opcode,
-                                message_length=len(frame.message),
-                                quantity_offset=quantity_offset,
-                                source_instance_offset=None,
-                                match_kind="quantity-only",
-                                confidence="heuristic",
-                                instance_matches_destination=None,
-                            )
-                        )
-                        continue
-
+                    match = _ManualDecrementMatch(
+                        opcode=candidate.opcode,
+                        message_length=candidate.message_length,
+                        quantity_offset=quantity_offset,
+                        source_instance_offset=None,
+                        match_kind="quantity-only",
+                        confidence="heuristic",
+                        instance_matches_destination=None,
+                    )
+                    record_key = (quantity_offset, None)
+                else:
                     source_offset += delta
                     source_end = source_offset + 8
-                    if source_end > len(frame.message):
+                    if source_end > candidate.message_length:
                         continue
                     source_instance = bytes(
-                        frame.message[source_offset:source_end]
+                        candidate.message[source_offset:source_end]
                     )
                     if not self._nonempty_source_instance(source_instance):
-                        # A declared instance field that is empty invalidates
-                        # this candidate. Do not fall back to a common
-                        # quantity elsewhere in the frame.
                         continue
-
                     exact = (
                         destination_instance is not None
                         and source_instance == destination_instance
                     )
                     if not exact:
                         if inferred_repeat_stride is not None and delta:
-                            # The profile did not declare this repeated field
-                            # location. Exact identity is the guard that makes
-                            # the inferred nonzero record offset trustworthy.
                             continue
-                        # A partial stack move can allocate a different
-                        # destination instance: the controlled legacy
-                        # new_potato_1_1_1 capture proves that mismatch is not
-                        # contradictory. Retain it as anchored structural
-                        # evidence, but require entropy in both halves. Exact
-                        # cross-frame equality needs no such heuristic guard.
-                        if not self._structural_source_instance(
-                            source_instance
-                        ):
+                        if not self._structural_source_instance(source_instance):
                             continue
-                    matches.append(
-                        _ManualDecrementMatch(
-                            opcode=frame.opcode,
-                            message_length=len(frame.message),
-                            quantity_offset=quantity_offset,
-                            source_instance_offset=source_offset,
-                            match_kind=(
-                                "instance-and-quantity"
-                                if exact
-                                else "anchored-instance-and-quantity"
-                            ),
-                            confidence="observed" if exact else "structural",
-                            instance_matches_destination=(
-                                exact if destination_instance is not None else None
-                            ),
-                        )
+                    match = _ManualDecrementMatch(
+                        opcode=candidate.opcode,
+                        message_length=candidate.message_length,
+                        quantity_offset=quantity_offset,
+                        source_instance_offset=source_offset,
+                        match_kind=(
+                            "instance-and-quantity"
+                            if exact
+                            else "anchored-instance-and-quantity"
+                        ),
+                        confidence="observed" if exact else "structural",
+                        instance_matches_destination=(
+                            exact if destination_instance is not None else None
+                        ),
                     )
+                    record_key = (quantity_offset, source_offset)
+
+                previous = matches.get(record_key)
+                if previous is None or rank[match.confidence] < rank[
+                    previous.confidence
+                ]:
+                    matches[record_key] = match
 
         if not matches:
-            return None
-        rank = {"observed": 0, "structural": 1, "heuristic": 2}
-        matches.sort(key=lambda match: rank[match.confidence])
-        return matches[0]
+            return []
+        best_rank = min(rank[match.confidence] for match in matches.values())
+        return [
+            (record_key, match)
+            for record_key, match in matches.items()
+            if rank[match.confidence] == best_rank
+        ]
+
+    def _quantity_only_is_immediate(
+        self,
+        candidate: _ManualDecrementCandidate,
+        storage_sequence: int,
+    ) -> bool:
+        intervening = sum(
+            successor < storage_sequence
+            for successor in candidate.successor_starts
+        )
+        return intervening < self.MANUAL_IMMEDIATE_SUCCESSORS
 
     @staticmethod
     def _event_storage_instance(event: BDOEvent) -> Optional[bytes]:
@@ -1353,9 +1708,36 @@ class DepositOriginTracker:
             self._purge_flow_history_locked(flow)
         self._drain_outbox()
 
+    def reset_flow(
+        self,
+        flow: FlowKey,
+        flow_generation: int,
+        resume_sequence: int,
+    ) -> None:
+        """Drop unowned manual evidence across one TCP gap reset."""
+
+        with self._state_lock:
+            key = (flow, flow_generation)
+            if self._manual_active_generations.get(flow) not in (
+                None,
+                flow_generation,
+            ):
+                return
+            self._remove_manual_key_locked(key)
+            self._manual_active_generations[flow] = flow_generation
+            self._manual_reset_floors[key] = max(
+                resume_sequence,
+                self._manual_reset_floors.get(key, resume_sequence),
+            )
+            self._manual_frame_frontiers[key] = max(
+                resume_sequence,
+                self._manual_frame_frontiers.get(key, resume_sequence),
+            )
+
     def _purge_flow_history_locked(self, flow: FlowKey) -> None:
         self._recent.pop(flow, None)
         self._stream_spans.pop(flow, None)
+        self._purge_manual_flow_locked(flow)
 
         self._family_chain_order = deque(
             (family, chain)
@@ -1393,7 +1775,40 @@ class DepositOriginTracker:
             if key[0] != flow
         }
 
+    def _remove_manual_key_locked(self, key: _ManualFlowKey) -> None:
+        candidates = self._manual_candidates.pop(key, ())
+        removed_count = len(candidates)
+        removed_bytes = sum(
+            candidate.message_length for candidate in candidates
+        )
+        self._manual_candidate_count -= removed_count
+        self._manual_candidate_bytes -= removed_bytes
+        self._manual_candidate_bytes_by_flow.pop(key, None)
+        self._manual_frame_frontiers.pop(key, None)
+        self._manual_reset_floors.pop(key, None)
+        self._manual_latest_timestamps.pop(key, None)
+        self._manual_suppressed_until.pop(key, None)
+
+    def _purge_manual_flow_locked(self, flow: FlowKey) -> None:
+        keys = {
+            key
+            for mapping in (
+                self._manual_candidates,
+                self._manual_candidate_bytes_by_flow,
+                self._manual_frame_frontiers,
+                self._manual_reset_floors,
+                self._manual_latest_timestamps,
+                self._manual_suppressed_until,
+            )
+            for key in mapping
+            if key[0] == flow
+        }
+        for key in keys:
+            self._remove_manual_key_locked(key)
+        self._manual_active_generations.pop(flow, None)
+
     def _flush_stale_locked(self, now: float) -> None:
+        self._prune_manual_candidates_locked(now)
         stale_batches = [
             key
             for key, staged in self._staged_neutral_batches.items()
@@ -1429,6 +1844,15 @@ class DepositOriginTracker:
             self._close_pending(deposit)
         self._recent.clear()
         self._stream_spans.clear()
+        self._manual_candidates.clear()
+        self._manual_candidate_count = 0
+        self._manual_candidate_bytes = 0
+        self._manual_candidate_bytes_by_flow.clear()
+        self._manual_active_generations.clear()
+        self._manual_frame_frontiers.clear()
+        self._manual_reset_floors.clear()
+        self._manual_latest_timestamps.clear()
+        self._manual_suppressed_until.clear()
         self._family_chains.clear()
         self._family_chain_order.clear()
         self._observed_chains.clear()

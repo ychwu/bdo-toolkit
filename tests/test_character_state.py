@@ -259,10 +259,13 @@ def _synthetic_inventory_tail_group(
     slot_relative: int,
     container_relative: int,
     container_code: int,
+    count: int = 3,
+    slot_start: int = 2,
+    item_id_start: int = 7003,
     decoy_slot_relative: int | None = None,
+    decoy_container_relative: int | None = None,
 ) -> tuple[BDOFrame, list[BDOEvent], EventSpec, int]:
     item_offset = 31
-    count = 3
     base_length = item_offset + stride
     message_length = base_length + (count - 1) * stride
     message = bytearray(message_length)
@@ -274,16 +277,18 @@ def _synthetic_inventory_tail_group(
     records: list[BDOEvent] = []
     for index in range(count):
         record_offset = item_offset + index * stride
-        message[record_offset + slot_relative] = 2 + index
+        message[record_offset + slot_relative] = slot_start + index
         message[record_offset + container_relative] = container_code
         if decoy_slot_relative is not None:
             message[record_offset + decoy_slot_relative] = 20 + index
+        if decoy_container_relative is not None:
+            message[record_offset + decoy_container_relative] = container_code
         records.append(
             BDOEvent(
                 event_type="inventory_snapshot",
                 timestamp=float(sequence),
                 flow=flow,
-                item_id=7003 + index,
+                item_id=item_id_start + index,
                 quantity=1,
                 opcode=0x194A,
                 message_length=message_length,
@@ -345,6 +350,78 @@ def test_inventory_tail_layout_is_discovered_for_prior_observed_geometry():
     assert {metadata[event.record_offset].container_code for event in records} == {0x0B}
 
 
+def test_inventory_tail_layout_is_discovered_when_container_precedes_slot():
+    groups = [
+        _synthetic_inventory_tail_group(
+            sequence=150 + code,
+            stride=226,
+            slot_relative=225,
+            container_relative=224,
+            container_code=code,
+        )
+        for code in (0x00, 0x0B)
+    ]
+
+    layout = character_state_module._discover_inventory_tail_layout(groups)
+
+    assert layout == (225, 224)
+    frame, records, spec, stride = groups[1]
+    metadata = character_state_module._inventory_record_metadata(
+        frame,
+        records,
+        spec,
+        stride,
+        layout,
+    )
+    assert metadata is not None
+    assert [metadata[event.record_offset].slot for event in records] == [2, 3, 4]
+    assert {metadata[event.record_offset].container_code for event in records} == {0x0B}
+
+
+def test_reversed_inventory_tail_layout_is_reused_for_single_currency_record():
+    groups = [
+        _synthetic_inventory_tail_group(
+            sequence=170 + code,
+            stride=226,
+            slot_relative=225,
+            container_relative=224,
+            container_code=code,
+        )
+        for code in (0x00, 0x0B)
+    ]
+    groups.append(
+        _synthetic_inventory_tail_group(
+            sequence=190,
+            stride=226,
+            slot_relative=225,
+            container_relative=224,
+            container_code=0x18,
+            count=1,
+            slot_start=9,
+            item_id_start=1,
+        )
+    )
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(groups[0][2],),
+    )
+
+    assembly = accumulator._inventory_summary(
+        tuple(frame for frame, _, _, _ in groups),
+        tuple(event for _, records, _, _ in groups for event in records),
+        generations_observed=1,
+    )
+    summary = assembly.summary
+
+    assert summary.unclassified_records == 0
+    assert summary.container(0x00).occupied_stacks == 3
+    assert summary.container(0x0B).occupied_stacks == 3
+    assert summary.currency_balance_records == 1
+    silver = summary.currency("Silver")
+    assert silver is not None
+    assert silver.inventory_slot == 9
+
+
 def test_inventory_tail_layout_fails_closed_when_slot_column_is_ambiguous():
     groups = [
         _synthetic_inventory_tail_group(
@@ -361,6 +438,22 @@ def test_inventory_tail_layout_fails_closed_when_slot_column_is_ambiguous():
     assert character_state_module._discover_inventory_tail_layout(groups) is None
 
 
+def test_inventory_tail_layout_fails_closed_when_container_side_is_ambiguous():
+    groups = [
+        _synthetic_inventory_tail_group(
+            sequence=250 + code,
+            stride=223,
+            slot_relative=221,
+            container_relative=222,
+            container_code=code,
+            decoy_container_relative=220,
+        )
+        for code in (0x00, 0x10)
+    ]
+
+    assert character_state_module._discover_inventory_tail_layout(groups) is None
+
+
 def test_inventory_tail_layout_fails_closed_for_an_unknown_container_code():
     groups = [
         _synthetic_inventory_tail_group(
@@ -368,6 +461,21 @@ def test_inventory_tail_layout_fails_closed_for_an_unknown_container_code():
             stride=223,
             slot_relative=221,
             container_relative=222,
+            container_code=code,
+        )
+        for code in (0x00, 0x42)
+    ]
+
+    assert character_state_module._discover_inventory_tail_layout(groups) is None
+
+
+def test_reversed_inventory_tail_layout_fails_closed_for_unknown_container_code():
+    groups = [
+        _synthetic_inventory_tail_group(
+            sequence=320 + code,
+            stride=226,
+            slot_relative=225,
+            container_relative=224,
             container_code=code,
         )
         for code in (0x00, 0x42)
@@ -2003,6 +2111,70 @@ def test_offline_character_state_loads_one_profile_revision(monkeypatch):
     assert state.provenance.profile_source == str(profile)
 
 
+def test_offline_character_load_retains_a_large_out_of_order_storage_frame(
+    monkeypatch,
+):
+    message = bytearray(257)
+    message[:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x126D).to_bytes(2, "little")
+    message[16:18] = (1).to_bytes(2, "little")
+    message[27:31] = (0x20).to_bytes(4, "little")
+    message[36:40] = (7003).to_bytes(4, "little")
+    message[40:44] = (42).to_bytes(4, "little")
+    message[71:79] = (1).to_bytes(8, "little")
+    resets = []
+
+    def replay_delayed_prefix(_path, engine):
+        segment = {
+            "source_ip": "10.0.0.1",
+            "source_port": 8889,
+            "destination_ip": "10.0.0.2",
+            "destination_port": 50000,
+        }
+        engine.process_tcp_segment(
+            **segment,
+            sequence=999,
+            payload=b"",
+            timestamp=1.0,
+            syn=True,
+        )
+        yield None
+        for offset, value in enumerate(message[1:], start=1):
+            engine.process_tcp_segment(
+                **segment,
+                sequence=1000 + offset,
+                payload=bytes((value,)),
+                timestamp=1.0 + offset / 10_000,
+            )
+            yield None
+        engine.process_tcp_segment(
+            **segment,
+            sequence=1000,
+            payload=bytes(message[:1]),
+            timestamp=1.1,
+        )
+        yield None
+        engine.finish()
+        resets.append(engine.tcp_gap_resets)
+
+    monkeypatch.setattr(
+        character_state_module,
+        "iter_pcap_file",
+        replay_delayed_prefix,
+    )
+
+    state = analyze_character_load_pcap(
+        "unused.pcapng",
+        opcode_profile=JULY17_OPCODE_PROFILE,
+    )
+
+    assert resets == [0]
+    assert state.decoder_health.storage_status == "compatible"
+    assert state.decoder_health.storage_messages_observed == 1
+    assert state.decoder_health.storage_messages_decoded == 1
+    assert state.decoder_health.storage_records_decoded == 1
+
+
 def test_live_character_load_pins_profile_revision_at_construction(
     monkeypatch,
     character_load_live_fakes,
@@ -2026,6 +2198,10 @@ def test_live_character_load_pins_profile_revision_at_construction(
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", unexpected_reload)
     session.start()
+    assert session._engine is not None
+    manager = session._engine._flow_manager
+    assert manager._max_pending_segments == 2048
+    assert manager._max_pending_bytes == 8 * 1024 * 1024
     state = session.stop()
 
     assert state.provenance.profile_source == str(JULY17_OPCODE_PROFILE)

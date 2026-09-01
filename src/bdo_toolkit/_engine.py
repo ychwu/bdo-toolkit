@@ -11,6 +11,7 @@ from ._framing import FrameCollectorScanner, MessageObserver, TargetMessageScann
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
     DEDUP_HISTORY_LIMIT,
+    MAX_PENDING_SEGMENTS,
     BDOFrame,
     EventSpec,
     FlowKey,
@@ -182,7 +183,12 @@ class PacketEngine:
         frame_observer: Optional[Callable[[BDOFrame], None]] = None,
         stream_observer: Optional[Callable[[bytes, PacketContext], None]] = None,
         flow_close_observer: Optional[Callable[[FlowKey], None]] = None,
+        flow_reset_observer: Optional[
+            Callable[[FlowKey, int, int], None]
+        ] = None,
         message_observer: Optional[MessageObserver] = None,
+        max_pending_segments: int = MAX_PENDING_SEGMENTS,
+        max_pending_bytes: Optional[int] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
@@ -216,7 +222,10 @@ class PacketEngine:
             max_flows=_ITEM_MAX_ACTIVE_FLOWS,
             on_flow_eviction=self._count_flow_state_eviction,
             on_flow_close=flow_close_observer,
+            on_flow_reset=flow_reset_observer,
             idle_timeout=_ITEM_FLOW_IDLE_SECONDS,
+            max_pending_segments=max_pending_segments,
+            max_pending_bytes=max_pending_bytes,
         )
         self._seen_event_keys: set[
             tuple[FlowKey, int, int, int, Optional[int], bytes]

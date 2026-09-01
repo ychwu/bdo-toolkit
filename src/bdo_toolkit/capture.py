@@ -32,6 +32,7 @@ from ._protocol import (
     BDOFrame,
     CHARACTER_LOAD_CONTEXT,
     DEFAULT_SERVER_PORTS,
+    MAX_PENDING_SEGMENTS,
     FlowKey,
     LootEvent,
     PacketContext,
@@ -213,6 +214,8 @@ class _EventCollector:
         on_diagnostic: Optional[Callable[[DecoderDiagnostic], object]] = None,
         preflight: bool = True,
         _profile_authority: Optional[_ProfileAuthority] = None,
+        _max_pending_segments: int = MAX_PENDING_SEGMENTS,
+        _max_pending_bytes: Optional[int] = None,
     ) -> None:
         if _profile_authority is not None:
             if opcode_profile is not None:
@@ -304,9 +307,12 @@ class _EventCollector:
             ),
             stream_observer=(tracker.observe_stream if tracker is not None else None),
             flow_close_observer=self._close_flow,
+            flow_reset_observer=(tracker.reset_flow if tracker is not None else None),
             message_observer=(
                 self._observe_storage_message if observe_storage_messages else None
             ),
+            max_pending_segments=_max_pending_segments,
+            max_pending_bytes=_max_pending_bytes,
         )
         self._preflight_done = False
         if preflight:

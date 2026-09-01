@@ -200,12 +200,24 @@ def test_shared_capture_keeps_calibration_frame_delivery(monkeypatch) -> None:
     class IPLayer:
         src = "203.0.113.10"
         dst = "198.51.100.20"
+        version = 4
+        proto = 6
+        ihl = 5
+        flags = 0
+        frag = 0
+
+        def __init__(self, payload: bytes) -> None:
+            self.len = 40 + len(payload)
+
+        def __bytes__(self) -> bytes:
+            return b"\x00" * self.len
 
     class TCPLayer:
         sport = 8889
         dport = 51000
         seq = 1000
         flags = 0
+        dataofs = 5
 
         def __init__(self, payload: bytes) -> None:
             self.payload = payload
@@ -215,7 +227,7 @@ def test_shared_capture_keeps_calibration_frame_delivery(monkeypatch) -> None:
 
         def __init__(self, payload: bytes) -> None:
             self.layers = {
-                ip_layer: IPLayer(),
+                ip_layer: IPLayer(payload),
                 tcp_layer: TCPLayer(payload),
             }
 

@@ -110,6 +110,80 @@ def test_consumer_can_raise_reorder_count_without_changing_default_policy():
     assert manager.tcp_gap_resets == 0
 
 
+def test_packet_engine_forwards_a_larger_bounded_reorder_policy():
+    events = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        max_pending_segments=256,
+        max_pending_bytes=1_024,
+    )
+    stream = (b"\xff" * 130) + _target_frame()
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset, value in enumerate(stream[1:], start=1):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=bytes((value,)),
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    assert events == []
+    assert engine.tcp_gap_resets == 0
+
+    _segment(
+        engine,
+        sequence=100,
+        payload=stream[:1],
+        timestamp=1.2,
+    )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert engine.tcp_gap_resets == 0
+
+
+def test_packet_engine_keeps_the_generic_reorder_policy_by_default():
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda _event, _raw: None,
+    )
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset in range(1, MAX_PENDING_SEGMENTS + 2):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=b"x",
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    assert engine.tcp_gap_resets == 1
+
+
+def test_packet_engine_custom_reorder_count_remains_fail_closed():
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda _event, _raw: None,
+        max_pending_segments=2_048,
+        max_pending_bytes=8 * 1024 * 1024,
+    )
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset in range(1, 2_050):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=b"x",
+            timestamp=1.0 + offset / 10_000,
+        )
+
+    assert engine.tcp_gap_resets == 1
+
+
 def test_default_reorder_count_policy_remains_unchanged():
     scanner = _RecordingScanner()
     manager = FlowManager(
@@ -202,6 +276,65 @@ def test_reorder_capacity_configuration_is_validated(
             scanner_factory=_RecordingScanner,
             **{keyword: value},
         )
+
+
+def test_flow_manager_gap_reset_reports_generation_and_resume_sequence():
+    scanner = _RecordingScanner()
+    resets = []
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        track_flow_generations=True,
+        on_flow_reset=lambda flow, generation, resume_sequence: resets.append(
+            (flow, generation, resume_sequence)
+        ),
+    )
+
+    _segment(manager, sequence=999, timestamp=10.0, syn=True)
+    _segment(manager, sequence=1000, payload=b"a", timestamp=10.0)
+    _segment(manager, sequence=1010, payload=b"b", timestamp=10.1)
+    assert manager.service_gaps(10.1 + GAP_RESET_SECONDS) == 1
+
+    assert resets == [
+        (
+            FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+            1,
+            1010,
+        )
+    ]
+    assert scanner.feeds == [b"a", b"b"]
+
+
+def test_packet_engine_forwards_gap_reset_identity_to_observer():
+    events = []
+    resets = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        flow_reset_observer=lambda flow, generation, resume_sequence: resets.append(
+            (flow, generation, resume_sequence)
+        ),
+    )
+
+    _segment(engine, sequence=999, timestamp=10.0, syn=True)
+    _segment(engine, sequence=1000, payload=b"\xff" * 8, timestamp=10.0)
+    _segment(
+        engine,
+        sequence=1018,
+        payload=_target_frame(),
+        timestamp=10.1,
+    )
+    assert engine.service_gaps(10.1 + GAP_RESET_SECONDS) == 1
+
+    assert resets == [
+        (
+            FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000),
+            1,
+            1018,
+        )
+    ]
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
 
 
 def test_wall_clock_service_releases_complete_frame_behind_idle_gap():

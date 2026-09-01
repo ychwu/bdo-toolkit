@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Protocol
+from typing import Any, Iterable, Iterator, Optional, Protocol
 
 
 class SegmentConsumer(Protocol):
@@ -93,21 +93,138 @@ def validate_server_ports(ports: Iterable[int]) -> tuple[int, ...]:
     return tuple(normalized)
 
 
+def _required_header_integer(value: Any, field_name: str) -> int:
+    """Return one decoded header field or reject an incomplete dissection."""
+    if value is None:
+        raise ValueError(f"IPv4/TCP {field_name} is unavailable")
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"IPv4/TCP {field_name} is invalid: {value!r}") from exc
+
+
+def _validate_unfragmented_ipv4_tcp(ip: Any) -> None:
+    """Reject IP states that cannot be handed to TCP reassembly safely."""
+    version = _required_header_integer(getattr(ip, "version", None), "version")
+    if version != 4:
+        raise ValueError(f"expected IPv4 version 4, got {version}")
+
+    fragment_offset = _required_header_integer(
+        getattr(ip, "frag", None),
+        "fragment offset",
+    )
+    flags = _required_header_integer(getattr(ip, "flags", None), "flags")
+    if fragment_offset != 0 or flags & 0x01:
+        raise ValueError(
+            "fragmented IPv4/TCP packets are unsupported; "
+            "TCP reassembly requires a complete IP datagram"
+        )
+
+
+def _captured_ipv4_length(ip: Any) -> int:
+    """Return captured bytes without reserializing ordinary Scapy packets."""
+    original = getattr(ip, "original", None)
+    if isinstance(original, (bytes, bytearray, memoryview)) and original:
+        return len(original)
+    return len(bytes(ip))
+
+
+def _extract_ipv4_tcp_payload(ip: Any, tcp: Any) -> bytes:
+    """Return only application bytes declared by complete IPv4/TCP headers.
+
+    Scapy exposes link-layer padding through ``tcp.payload`` even though those
+    bytes lie beyond the IPv4 total length. The wire header lengths are the
+    authority at this boundary so padding can never advance TCP sequence state.
+    """
+    total_length = _required_header_integer(
+        getattr(ip, "len", None),
+        "total length",
+    )
+    ip_header_words = _required_header_integer(
+        getattr(ip, "ihl", None),
+        "header length",
+    )
+    tcp_header_words = _required_header_integer(
+        getattr(tcp, "dataofs", None),
+        "TCP header length",
+    )
+
+    if not 5 <= ip_header_words <= 15:
+        raise ValueError(
+            f"invalid IPv4 header length: {ip_header_words} 32-bit words"
+        )
+    if not 5 <= tcp_header_words <= 15:
+        raise ValueError(
+            f"invalid TCP header length: {tcp_header_words} 32-bit words"
+        )
+    if not 0 <= total_length <= 0xFFFF:
+        raise ValueError(f"invalid IPv4 total length: {total_length}")
+
+    captured_length = _captured_ipv4_length(ip)
+    if captured_length < total_length:
+        raise ValueError(
+            "truncated IPv4 packet: "
+            f"header declares {total_length} bytes, capture has {captured_length}"
+        )
+
+    header_length = (ip_header_words + tcp_header_words) * 4
+    if total_length < header_length:
+        raise ValueError(
+            "invalid IPv4/TCP header lengths: "
+            f"total length {total_length} is smaller than {header_length}"
+        )
+
+    declared_length = total_length - header_length
+    available = bytes(getattr(tcp, "payload", b""))
+    if len(available) < declared_length:
+        raise ValueError(
+            "truncated IPv4/TCP payload: "
+            f"header declares {declared_length} bytes, capture has {len(available)}"
+        )
+    return available[:declared_length]
+
+
+def _consumer_server_ports(engine: SegmentConsumer) -> Optional[frozenset[int]]:
+    """Read the validated port set exposed by each built-in consumer."""
+    ports = getattr(engine, "server_ports", None)
+    if ports is None:
+        # Solare's internal collector predates the shared ``server_ports`` name.
+        ports = getattr(engine, "ports", None)
+    if ports is None:
+        return None
+    return frozenset(ports)
+
+
 def make_packet_handler(engine: SegmentConsumer):
     IP, TCP, _, _, _ = import_scapy()
+    server_ports = _consumer_server_ports(engine)
 
     def handle(packet) -> None:
-        if IP not in packet or TCP not in packet:
+        if IP not in packet:
             return
 
         ip = packet[IP]
+        protocol = _required_header_integer(getattr(ip, "proto", None), "protocol")
+        if protocol != 6:
+            return
+
+        if TCP not in packet:
+            # Non-initial fragments and severely truncated headers have no
+            # source port, so they cannot be attributed to a selected flow.
+            return
+
         tcp = packet[TCP]
-        payload = bytes(tcp.payload)
+        source_port = int(tcp.sport)
+        if server_ports is not None and source_port not in server_ports:
+            return
+
+        _validate_unfragmented_ipv4_tcp(ip)
+        payload = _extract_ipv4_tcp_payload(ip, tcp)
         flags = int(tcp.flags)
 
         engine.process_tcp_segment(
             source_ip=str(ip.src),
-            source_port=int(tcp.sport),
+            source_port=source_port,
             destination_ip=str(ip.dst),
             destination_port=int(tcp.dport),
             sequence=int(tcp.seq),

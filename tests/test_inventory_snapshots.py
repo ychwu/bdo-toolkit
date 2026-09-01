@@ -1,5 +1,7 @@
 """Atomic inventory hydration and current storage-wrapper regressions."""
 
+from dataclasses import replace
+
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.calibration import _discover_storage_context_offset
@@ -36,6 +38,7 @@ def _inventory_snapshot(
     *,
     count: int = 3,
     count_fields: tuple[tuple[int, int], ...] | None = None,
+    quantities: tuple[int, ...] | None = None,
 ) -> bytearray:
     stride = 223
     length = 254 + (count - 1) * stride
@@ -45,10 +48,16 @@ def _inventory_snapshot(
     for offset, value in count_fields or ((22, count),):
         message[offset : offset + 2] = value.to_bytes(2, "little")
     message[27:31] = b"\x00" * 4
+    if quantities is None:
+        quantities = tuple(range(1, count + 1))
+    assert len(quantities) == count
     for index in range(count):
         item_offset = 31 + index * stride
         message[item_offset : item_offset + 4] = (7003 + index).to_bytes(4, "little")
-        message[item_offset + 4 : item_offset + 8] = (index + 1).to_bytes(4, "little")
+        message[item_offset + 4 : item_offset + 12] = quantities[index].to_bytes(
+            8,
+            "little",
+        )
         message[item_offset + 35 : item_offset + 43] = (index + 1).to_bytes(8, "little")
     return message
 
@@ -81,6 +90,39 @@ def test_zero_context_inventory_batch_discovers_count_and_stride_atomically():
     assert normalized.event_type == "inventory_snapshot"
     assert normalized.raw_context == "0x00000000"
     assert normalized.source == "Character Load"
+
+
+def test_zero_context_inventory_batch_preserves_positive_uint64_quantities():
+    quantities = (256, 1 << 32, 456_789_012_345_678)
+    message = _inventory_snapshot(quantities=quantities)
+
+    decoded = _decode(_inventory_spec(), bytes(message))
+
+    assert tuple(event.quantity for event in decoded) == quantities
+    assert all(
+        toolkit_event_from_record(event).event_type == "inventory_snapshot"
+        for event in decoded
+    )
+
+
+def test_zero_context_inventory_batch_keeps_zero_quantity_unresolved():
+    message = _inventory_snapshot(quantities=(1, 0, 3))
+
+    assert _decode(_inventory_spec(), bytes(message)) == []
+
+
+def test_non_snapshot_inventory_transfer_quantity_remains_uint32():
+    message = _inventory_snapshot(
+        count=1,
+        quantities=((9 << 32) | 5,),
+    )
+    message[27:31] = bytes.fromhex("01020304")
+    spec = replace(_inventory_spec(), item_instance_offset=None)
+
+    decoded = _decode(spec, bytes(message))
+
+    assert len(decoded) == 1
+    assert decoded[0].quantity == 5
 
 
 def test_zero_context_inventory_batch_rejects_every_record_on_one_invalid_instance():

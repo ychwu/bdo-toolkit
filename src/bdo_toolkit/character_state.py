@@ -52,6 +52,11 @@ _STORAGE_HYDRATION_EPOCH_SECONDS = 30.0
 _STORAGE_HYDRATION_MIN_DESTINATIONS = 8
 _ITEM_STATE_SCHEMA_VERSION = 5
 _CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
+# Windows/Npcap may deliver a lossless character-load burst more than a
+# thousand callbacks out of TCP sequence. Keep this larger reorder allowance
+# local to finite character-load analysis and retain an explicit byte ceiling.
+_CHARACTER_LOAD_MAX_PENDING_SEGMENTS = 2048
+_CHARACTER_LOAD_MAX_PENDING_BYTES = 8 * 1024 * 1024
 
 # These interpretations agree across the July 17 initial-load and character-
 # switch captures, and the 0x00/0x10/0x0B families agree with legacy research.
@@ -1059,9 +1064,15 @@ def _discover_inventory_tail_layout(
         ):
             continue
 
+        # Observed generations serialize these neighboring fields in both
+        # orders. Keep the bounded tail search, but do not treat their order as
+        # part of the protocol invariant.
         for container_relative in range(
-            slot_relative + 1, min(stride, slot_relative + 5)
+            max(window_start, slot_relative - 4),
+            min(stride, slot_relative + 5),
         ):
+            if container_relative == slot_relative:
+                continue
             observed_codes: set[int] = set()
             valid = True
             for frame, group, _, _ in frame_groups:
@@ -2948,6 +2959,8 @@ def analyze_character_load_pcap(
         on_event=accumulator.observe_event,
         frame_observer=accumulator.observe_frame,
         _profile_authority=authority,
+        _max_pending_segments=_CHARACTER_LOAD_MAX_PENDING_SEGMENTS,
+        _max_pending_bytes=_CHARACTER_LOAD_MAX_PENDING_BYTES,
     )
     for _ in iter_pcap_file(Path(path), collector.engine):
         pass
@@ -3092,6 +3105,8 @@ class CharacterLoadSession:
             on_event=accumulator.observe_event,
             frame_observer=accumulator.observe_frame,
             _profile_authority=self._profile_authority,
+            _max_pending_segments=_CHARACTER_LOAD_MAX_PENDING_SEGMENTS,
+            _max_pending_bytes=_CHARACTER_LOAD_MAX_PENDING_BYTES,
         )
         engine = collector.engine
         packet_handler = make_packet_handler(engine)
