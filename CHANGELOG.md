@@ -6,6 +6,50 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.2 - 2026-09-01
+
+This patch hardens passive capture and character-load decoding across padded
+packets, burst reordering, rapid storage transfers, and updated inventory
+layouts.
+
+### Fixed
+
+- Preserve character-load snapshots during reordered receive bursts. Finite
+  replay and live sessions now retain larger bounded Windows/Npcap receive-order
+  inversions without changing the ordinary continuous-item allowance.
+  Persistent gaps, timeouts, memory ceilings, and frame validation remain
+  fail-closed.
+- Restore inventory category detection after tail-field reordering. Hydration
+  layouts with the validated container code immediately before the slot byte
+  again classify Main, Pearl, Global Currencies, and Enhancement inventory
+  records and recover known currency balances. Count-zero wrappers remain
+  unclassified because they contain no record-level category evidence.
+- Preserve full-width inventory snapshot quantities. Positive character-load
+  amounts now retain their unsigned 64-bit wire values in low-level events and
+  assembled item state; zero remains unresolved. Live receipts, loot previews,
+  storage events, decrement evidence, and calibration quantities retain their
+  existing unsigned 32-bit semantics.
+- Preserve manual storage origins during rapid transfers. A bounded,
+  generation-aware evidence ledger now retains unique manual attribution
+  through rapid and fragmented traffic without allowing stale, ambiguous,
+  reused, or pre-reset evidence to classify another deposit.
+- Ignore Ethernet padding outside validated TCP payloads. Shared Scapy capture
+  extraction now follows validated IPv4 and TCP header lengths so link-layer
+  padding cannot advance sequence reassembly and hide later storage or worker
+  events; selected-flow truncation and fragmentation fail closed.
+
+### Tests
+
+- Make the IPv6 scope regression independent of host routes by assigning
+  explicit local Ethernet addresses to the synthetic exclusion packet.
+
+### Maintenance
+
+- Align GitHub release notes with the established `v1.0.0` house format:
+  Highlights, a one-sentence theme, relevant New, Improvements, and Fixes
+  sections, followed by the full-changelog link. Empty categories and routine
+  internal detail remain omitted.
+
 ## 1.0.1 - 2026-08-31
 
 This release moves the supported runtime to Python 3.14 and removes

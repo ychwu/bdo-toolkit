@@ -326,7 +326,10 @@ def test_ipv6_non_tcp_and_non_ip_packets_remain_out_of_scope() -> None:
 
     handler(
         _parsed_ether(
-            Ether()
+            Ether(
+                src="02:00:00:00:00:01",
+                dst="02:00:00:00:00:02",
+            )
             / IPv6(src="2001:db8::1", dst="2001:db8::2")
             / TCP(sport=8889, dport=51000)
             / Raw(load=b"ipv6")
