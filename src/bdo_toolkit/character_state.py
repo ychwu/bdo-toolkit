@@ -52,6 +52,11 @@ _STORAGE_HYDRATION_EPOCH_SECONDS = 30.0
 _STORAGE_HYDRATION_MIN_DESTINATIONS = 8
 _ITEM_STATE_SCHEMA_VERSION = 5
 _CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
+# Windows/Npcap may deliver a lossless character-load burst more than a
+# thousand callbacks out of TCP sequence. Keep this larger reorder allowance
+# local to finite character-load analysis and retain an explicit byte ceiling.
+_CHARACTER_LOAD_MAX_PENDING_SEGMENTS = 2048
+_CHARACTER_LOAD_MAX_PENDING_BYTES = 8 * 1024 * 1024
 
 # These interpretations agree across the July 17 initial-load and character-
 # switch captures, and the 0x00/0x10/0x0B families agree with legacy research.
@@ -2954,6 +2959,8 @@ def analyze_character_load_pcap(
         on_event=accumulator.observe_event,
         frame_observer=accumulator.observe_frame,
         _profile_authority=authority,
+        _max_pending_segments=_CHARACTER_LOAD_MAX_PENDING_SEGMENTS,
+        _max_pending_bytes=_CHARACTER_LOAD_MAX_PENDING_BYTES,
     )
     for _ in iter_pcap_file(Path(path), collector.engine):
         pass
@@ -3098,6 +3105,8 @@ class CharacterLoadSession:
             on_event=accumulator.observe_event,
             frame_observer=accumulator.observe_frame,
             _profile_authority=self._profile_authority,
+            _max_pending_segments=_CHARACTER_LOAD_MAX_PENDING_SEGMENTS,
+            _max_pending_bytes=_CHARACTER_LOAD_MAX_PENDING_BYTES,
         )
         engine = collector.engine
         packet_handler = make_packet_handler(engine)

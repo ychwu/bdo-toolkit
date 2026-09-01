@@ -2111,6 +2111,70 @@ def test_offline_character_state_loads_one_profile_revision(monkeypatch):
     assert state.provenance.profile_source == str(profile)
 
 
+def test_offline_character_load_retains_a_large_out_of_order_storage_frame(
+    monkeypatch,
+):
+    message = bytearray(257)
+    message[:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x126D).to_bytes(2, "little")
+    message[16:18] = (1).to_bytes(2, "little")
+    message[27:31] = (0x20).to_bytes(4, "little")
+    message[36:40] = (7003).to_bytes(4, "little")
+    message[40:44] = (42).to_bytes(4, "little")
+    message[71:79] = (1).to_bytes(8, "little")
+    resets = []
+
+    def replay_delayed_prefix(_path, engine):
+        segment = {
+            "source_ip": "10.0.0.1",
+            "source_port": 8889,
+            "destination_ip": "10.0.0.2",
+            "destination_port": 50000,
+        }
+        engine.process_tcp_segment(
+            **segment,
+            sequence=999,
+            payload=b"",
+            timestamp=1.0,
+            syn=True,
+        )
+        yield None
+        for offset, value in enumerate(message[1:], start=1):
+            engine.process_tcp_segment(
+                **segment,
+                sequence=1000 + offset,
+                payload=bytes((value,)),
+                timestamp=1.0 + offset / 10_000,
+            )
+            yield None
+        engine.process_tcp_segment(
+            **segment,
+            sequence=1000,
+            payload=bytes(message[:1]),
+            timestamp=1.1,
+        )
+        yield None
+        engine.finish()
+        resets.append(engine.tcp_gap_resets)
+
+    monkeypatch.setattr(
+        character_state_module,
+        "iter_pcap_file",
+        replay_delayed_prefix,
+    )
+
+    state = analyze_character_load_pcap(
+        "unused.pcapng",
+        opcode_profile=JULY17_OPCODE_PROFILE,
+    )
+
+    assert resets == [0]
+    assert state.decoder_health.storage_status == "compatible"
+    assert state.decoder_health.storage_messages_observed == 1
+    assert state.decoder_health.storage_messages_decoded == 1
+    assert state.decoder_health.storage_records_decoded == 1
+
+
 def test_live_character_load_pins_profile_revision_at_construction(
     monkeypatch,
     character_load_live_fakes,
@@ -2134,6 +2198,10 @@ def test_live_character_load_pins_profile_revision_at_construction(
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", unexpected_reload)
     session.start()
+    assert session._engine is not None
+    manager = session._engine._flow_manager
+    assert manager._max_pending_segments == 2048
+    assert manager._max_pending_bytes == 8 * 1024 * 1024
     state = session.stop()
 
     assert state.provenance.profile_source == str(JULY17_OPCODE_PROFILE)

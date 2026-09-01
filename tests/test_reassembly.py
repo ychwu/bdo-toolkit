@@ -110,6 +110,80 @@ def test_consumer_can_raise_reorder_count_without_changing_default_policy():
     assert manager.tcp_gap_resets == 0
 
 
+def test_packet_engine_forwards_a_larger_bounded_reorder_policy():
+    events = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda event, _raw: events.append(event),
+        max_pending_segments=256,
+        max_pending_bytes=1_024,
+    )
+    stream = (b"\xff" * 130) + _target_frame()
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset, value in enumerate(stream[1:], start=1):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=bytes((value,)),
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    assert events == []
+    assert engine.tcp_gap_resets == 0
+
+    _segment(
+        engine,
+        sequence=100,
+        payload=stream[:1],
+        timestamp=1.2,
+    )
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7307, 8)]
+    assert engine.tcp_gap_resets == 0
+
+
+def test_packet_engine_keeps_the_generic_reorder_policy_by_default():
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda _event, _raw: None,
+    )
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset in range(1, MAX_PENDING_SEGMENTS + 2):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=b"x",
+            timestamp=1.0 + offset / 1_000,
+        )
+
+    assert engine.tcp_gap_resets == 1
+
+
+def test_packet_engine_custom_reorder_count_remains_fail_closed():
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=(_SPEC,),
+        on_event=lambda _event, _raw: None,
+        max_pending_segments=2_048,
+        max_pending_bytes=8 * 1024 * 1024,
+    )
+
+    _segment(engine, sequence=99, timestamp=1.0, syn=True)
+    for offset in range(1, 2_050):
+        _segment(
+            engine,
+            sequence=100 + offset,
+            payload=b"x",
+            timestamp=1.0 + offset / 10_000,
+        )
+
+    assert engine.tcp_gap_resets == 1
+
+
 def test_default_reorder_count_policy_remains_unchanged():
     scanner = _RecordingScanner()
     manager = FlowManager(

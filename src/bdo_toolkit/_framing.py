@@ -17,6 +17,8 @@ from ._protocol import (
 
 _TRANSFER_RECORD_MARKER = b"\x00" * 4 + b"\xff" * 8
 _TRANSFER_RECORD_MARKER_DELTA = 8
+_TRANSFER_QUANTITY_BYTES = 4
+_INVENTORY_SNAPSHOT_QUANTITY_BYTES = 8
 
 type MessageObserver = Callable[
     [int, int, str, int, PacketContext, Optional[int]],
@@ -72,16 +74,24 @@ def _has_plausible_transfer_record_values(
     item_offset: int,
     quantity_offset: int,
     instance_offset: int,
+    quantity_bytes: int,
 ) -> bool:
     """Validate the value-bearing fields that every transfer record needs."""
-    required_end = max(item_offset + 4, quantity_offset + 4, instance_offset + 8)
+    required_end = max(
+        item_offset + 4,
+        quantity_offset + quantity_bytes,
+        instance_offset + 8,
+    )
     if min(item_offset, quantity_offset, instance_offset) < 0:
         return False
     if required_end > len(message):
         return False
 
     item_id = int.from_bytes(message[item_offset : item_offset + 4], "little")
-    quantity = int.from_bytes(message[quantity_offset : quantity_offset + 4], "little")
+    quantity = int.from_bytes(
+        message[quantity_offset : quantity_offset + quantity_bytes],
+        "little",
+    )
     instance = message[instance_offset : instance_offset + 8]
     return (
         0 < item_id <= MAX_PLAUSIBLE_ITEM_ID
@@ -149,7 +159,7 @@ def _declared_inventory_snapshot_record_deltas(
                 continue
             required_record_end = max(
                 relative_offsets[0] + 4,
-                relative_offsets[1] + 4,
+                relative_offsets[1] + _INVENTORY_SNAPSHOT_QUANTITY_BYTES,
                 relative_offsets[2] + 8,
             )
             if required_record_end > stride:
@@ -162,6 +172,7 @@ def _declared_inventory_snapshot_record_deltas(
                 item_offset=spec.item_offset + delta,
                 quantity_offset=spec.quantity_offset + delta,
                 instance_offset=instance_offset + delta,
+                quantity_bytes=_INVENTORY_SNAPSHOT_QUANTITY_BYTES,
             )
             for delta in deltas
         ):
@@ -242,6 +253,7 @@ def _declared_storage_record_deltas(
             item_offset=spec.item_offset + delta,
             quantity_offset=spec.quantity_offset + delta,
             instance_offset=instance_offset + delta,
+            quantity_bytes=_TRANSFER_QUANTITY_BYTES,
         )
         for delta in deltas
     ):
@@ -736,6 +748,11 @@ class TargetMessageScanner:
             spec.label == "INVENTORY_TRANSFER"
             and source_context_candidate == CHARACTER_LOAD_CONTEXT
         )
+        quantity_bytes = (
+            _INVENTORY_SNAPSHOT_QUANTITY_BYTES
+            if is_inventory_snapshot
+            else _TRANSFER_QUANTITY_BYTES
+        )
         declared_storage_deltas = (
             _declared_storage_record_deltas(spec, message)
             if spec.label == "INVENTORY_TO_STORAGE"
@@ -772,7 +789,9 @@ class TargetMessageScanner:
                 while True:
                     required_end = max(
                         spec.item_offset + offset_delta + 4,
-                        spec.quantity_offset + offset_delta + 4,
+                        spec.quantity_offset
+                        + offset_delta
+                        + _TRANSFER_QUANTITY_BYTES,
                     )
                     if spec.inventory_slot_offset is not None:
                         required_end = max(
@@ -800,7 +819,10 @@ class TargetMessageScanner:
         for offset_delta in candidate_deltas:
             item_offset = spec.item_offset + offset_delta
             quantity_offset = spec.quantity_offset + offset_delta
-            required_end = max(item_offset + 4, quantity_offset + 4)
+            required_end = max(
+                item_offset + 4,
+                quantity_offset + quantity_bytes,
+            )
             if spec.inventory_slot_offset is not None:
                 required_end = max(
                     required_end, spec.inventory_slot_offset + offset_delta + 1
@@ -842,7 +864,7 @@ class TargetMessageScanner:
             quantity_offset = spec.quantity_offset + offset_delta
             item_id = int.from_bytes(message[item_offset : item_offset + 4], "little")
             quantity = int.from_bytes(
-                message[quantity_offset : quantity_offset + 4],
+                message[quantity_offset : quantity_offset + quantity_bytes],
                 "little",
             )
 
