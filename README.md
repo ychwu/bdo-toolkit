@@ -21,15 +21,14 @@ traffic into structured, application-ready data.
 
 ## Capabilities
 
-bdo-toolkit exposes four passive workflows. Each can observe live traffic or
+bdo-toolkit exposes three passive workflows. Each can observe live traffic or
 replay a saved PCAP or PCAPNG file.
 
-| Capability | What it provides | Main interfaces | Status |
+| Capability | What it provides | Guide | Status |
 | --- | --- | --- | --- |
-| Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [`capture_live()` and `replay_pcap()`](https://ychwu.github.io/bdo-toolkit/#capture-functions), [`EventFilter`](https://ychwu.github.io/bdo-toolkit/#event-filter) | Stable |
-| Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [`bdo_toolkit.item_state`](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
-| Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [`bdo_toolkit.solare`](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
-| Item-profile calibration | A local opcode profile rebuilt from controlled capture evidence when a game patch changes item traffic | [Calibration APIs and workflow](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) | Stable |
+| Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) | Stable |
+| Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
+| Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
 
 These workflows include synchronous and
 [asyncio](https://ychwu.github.io/bdo-toolkit/#asyncio) sessions, capture and
