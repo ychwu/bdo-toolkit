@@ -21,11 +21,22 @@ traffic into structured, application-ready data.
 
 ## Capabilities
 
-| In-game task | Python result | Status | Guide |
+bdo-toolkit exposes four passive workflows. Each can observe live traffic or
+replay a saved PCAP or PCAPNG file.
+
+| Capability | What it provides | Main interfaces | Status |
 | --- | --- | --- | --- |
-| Watch supported item changes such as loot, gathering, and storage activity | A continuing stream of typed `BDOEvent` objects | Stable | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) |
-| Log in or switch characters | One observational `ItemStateSnapshot` of inventory, known balances, and town storage | Beta | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
-| Load the Arena of Solare Leaderboard | One `SolareCaptureResult`; a complete result contains a leaderboard snapshot | Beta | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
+| Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [`capture_live()` and `replay_pcap()`](https://ychwu.github.io/bdo-toolkit/#capture-functions), [`EventFilter`](https://ychwu.github.io/bdo-toolkit/#event-filter) | Stable |
+| Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [`bdo_toolkit.item_state`](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
+| Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [`bdo_toolkit.solare`](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
+| Item-profile calibration | A local opcode profile rebuilt from controlled capture evidence when a game patch changes item traffic | [Calibration APIs and workflow](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) | Stable |
+
+These workflows include synchronous and
+[asyncio](https://ychwu.github.io/bdo-toolkit/#asyncio) sessions, capture and
+decoder health diagnostics, console and JSONL event writers, and a
+[command-line interface](https://ychwu.github.io/bdo-toolkit/#cli). Exact
+signatures, fields, lifecycle behavior, and failure contracts are in the
+[API index](https://ychwu.github.io/bdo-toolkit/#api-index).
 
 Testing and validation cover **NA/EU only**. Compatibility with other regional
 services is unknown.
@@ -71,45 +82,11 @@ installed with the Python wheel.
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
 for every script, its prerequisites, and the guide that explains it.
 
-## Documentation
-
-The documentation separates task-focused guides from the symbol-first API
-reference. Exact signatures, fields, lifecycle behavior, and failure contracts
-live there rather than in this README.
-
-| Goal | Start here |
-| --- | --- |
-| Understand the package | [Overview](https://ychwu.github.io/bdo-toolkit/#overview) |
-| Build with live item events | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) |
-| Query character inventory and town storage | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) |
-| Rebuild item decoding after a patch | [Calibration](https://ychwu.github.io/bdo-toolkit/#calibration-workflow) |
-| Capture and query an Arena of Solare leaderboard | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) |
-| Integrate with an asyncio application | [Asyncio integration](https://ychwu.github.io/bdo-toolkit/#asyncio) |
-| Look up a class, function, or model | [API index](https://ychwu.github.io/bdo-toolkit/#api-index) |
-| Use the terminal interface | [Command line](https://ychwu.github.io/bdo-toolkit/#cli) |
-| Diagnose a problem | [Troubleshooting](https://ychwu.github.io/bdo-toolkit/#errors) |
-| Review data handling and project boundaries | [Safety & privacy](https://ychwu.github.io/bdo-toolkit/#stability) |
-
 ## Support
 
 For questions, contact me on Discord: `._.__.__._._.__._____.__._.___.`
 
 For bugs and feature requests, [open a GitHub issue](https://github.com/ychwu/bdo-toolkit/issues).
-
-## Development
-
-```powershell
-git clone https://github.com/ychwu/bdo-toolkit.git
-cd bdo-toolkit
-python -m pip install -e ".[dev]"
-python -m pytest -q -W error
-python -m mypy src/bdo_toolkit
-python -m pip wheel . --no-deps --wheel-dir dist
-```
-
-CI runs tests, type checking, wheel construction, and a CLI smoke test on
-Ubuntu and Windows with Python 3.14. Tests that require private
-game-session captures skip when those local fixtures are absent.
 
 ## License
 
