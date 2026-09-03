@@ -99,7 +99,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
         container.confidence == "provisional"
         for container in state.inventory.containers
     )
-    assert state.inventory.currency("Silver").quantity == 1_832_291_219
+    assert state.inventory.currency("Silver").quantity == 637_487_451_027
     assert state.inventory.currency(6).quantity == 363
     assert state.inventory.currency("Loyalties").quantity == 17_600
     assert state.inventory.currency(10).quantity == 105_742
@@ -137,7 +137,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
     assert "capacity: unavailable" in output
     assert "Main Inventory [0x00, provisional]: 74 item stacks" in output
     assert "2 empty wrappers: unclassified" in output
-    assert "Silver: 1,832,291,219" in output
+    assert "Silver: 637,487,451,027" in output
     assert "/192" not in output
     assert "initial login vs character switch" in output
 
@@ -223,7 +223,7 @@ def test_july17_character_switch_classifies_exact_inventory_state():
         )
         for balance in inventory.currency_balances
     } == {
-        1: ("Silver", 1_832_291_219, 3, 0x18),
+        1: ("Silver", 637_487_451_027, 3, 0x18),
         6: ("Pearl", 363, 0, 0x10),
         7: ("Loyalties", 17_900, 1, 0x10),
         10: ("Crow Coin", 105_742, 0, 0x18),
