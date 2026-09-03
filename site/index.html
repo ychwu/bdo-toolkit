@@ -4672,7 +4672,7 @@ def inspect_result(result: CalibrationResult) -&gt; None:
 <tr><td><code>INVENTORY_TRANSFER</code></td><td><strong>Required</strong> for storage withdrawals, <code>item_received</code>, and inventory hydration/state.</td></tr>
 <tr><td><code>STORAGE_ITEM_DELTA</code></td><td><strong>Required</strong> for storage deposits, destination-town identity, and storage hydration/state.</td></tr>
 <tr><td><code>SOURCE_STACK_DECREMENT</code></td><td><strong>Required</strong> to reliably promote a manual deposit to <code>storage_delta</code> with <code>source="Player Inventory"</code>.</td></tr>
-<tr><td><code>SOURCE_CONTAINER_DECREMENT</code></td><td><strong>Not consumed at runtime.</strong> Retained only as calibration and audit evidence.</td></tr>
+<tr><td><code>SOURCE_CONTAINER_DECREMENT</code></td><td><strong>Not consumed at runtime.</strong> Retained only as calibration and audit evidence. Calibration permits a context-after-quantity layout only when an exact receipt-instance anchor proves the companion.</td></tr>
 <tr><td><code>SOURCE_ITEM_REFERENCE</code></td><td><strong>Not consumed at runtime.</strong> Retained only as calibration and audit evidence.</td></tr>
 </tbody></table></div>
 <p><code>LOOT_PREVIEW</code> is a separate optional event-producing family. Automatic transfer calibration does not search for it; the <a href="#calibration-loot-preview">loot-preview walkthrough</a> uses an explicit action and preserves unrelated transfer families.</p>
