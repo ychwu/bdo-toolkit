@@ -47,6 +47,7 @@ class TCPFlowState:
     scanner: StreamScanner
     max_pending_segments: int = MAX_PENDING_SEGMENTS
     max_pending_bytes: Optional[int] = None
+    defer_gap_timeouts: bool = False
     next_sequence: Optional[int] = None
     pending: dict[int, PendingSegment] = field(default_factory=dict)
     unanchored: dict[int, PendingSegment] = field(default_factory=dict)
@@ -280,7 +281,7 @@ class TCPFlowState:
                 # capture loss through the ordinary gap-reset accounting.
                 while self._pending_capacity_exceeded(self.pending):
                     self._resume_after_gap()
-            else:
+            elif not self.defer_gap_timeouts:
                 self.service_gaps(context.timestamp)
             return
 
@@ -411,6 +412,7 @@ class FlowManager:
         track_flow_generations: bool = False,
         max_pending_segments: int = MAX_PENDING_SEGMENTS,
         max_pending_bytes: Optional[int] = None,
+        defer_gap_timeouts: bool = False,
     ) -> None:
         if max_flows is not None and max_flows <= 0:
             raise ValueError("max_flows must be positive or None")
@@ -430,6 +432,8 @@ class FlowManager:
             raise TypeError("max_pending_bytes must be an integer or None")
         if max_pending_bytes is not None and max_pending_bytes <= 0:
             raise ValueError("max_pending_bytes must be positive or None")
+        if not isinstance(defer_gap_timeouts, bool):
+            raise TypeError("defer_gap_timeouts must be a boolean")
         self.server_ports = frozenset(server_ports)
         self._scanner_factory = scanner_factory
         self._max_flows = max_flows
@@ -440,6 +444,7 @@ class FlowManager:
         self._track_flow_generations = track_flow_generations
         self._max_pending_segments = max_pending_segments
         self._max_pending_bytes = max_pending_bytes
+        self._defer_gap_timeouts = defer_gap_timeouts
         self._next_flow_generation = 0
         self._flows: OrderedDict[FlowKey, TCPFlowState] = OrderedDict()
         self._tcp_gap_resets = 0
@@ -458,6 +463,7 @@ class FlowManager:
             scanner=self._scanner_factory(),
             max_pending_segments=self._max_pending_segments,
             max_pending_bytes=self._max_pending_bytes,
+            defer_gap_timeouts=self._defer_gap_timeouts,
             generation=generation,
             on_gap_reset=lambda resume_sequence: self._record_gap_reset(
                 flow,
@@ -484,13 +490,12 @@ class FlowManager:
             return self._tcp_gap_resets
 
     def service_gaps(self, now: float) -> int:
-        """Advance pending-gap timers using a caller-supplied wall clock.
+        """Advance pending-gap timers using a caller-supplied clock.
 
-        ``FlowManager`` does not own a timer thread. Live capture roots that
-        require wall-clock release should call this during their normal
-        poll/tick even when no packets arrived. The return value is the number
-        of new resets performed during this call; ``tcp_gap_resets`` is
-        cumulative.
+        ``FlowManager`` does not own a timer thread. Callers that defer
+        per-packet timeouts may invoke this at a lifecycle boundary they know
+        is safe. The return value is the number of new resets performed during
+        this call; ``tcp_gap_resets`` is cumulative.
         """
         with self._lock:
             before = self.tcp_gap_resets

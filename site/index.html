@@ -5155,10 +5155,10 @@ for record in entry.classes_played:
 <details class="doc-section collapsible-section">
 <summary><h2 class="section-heading" data-anchor="capture-bounds" data-toc="" id="solare-internals/capture-bounds"><span>Capture integrity and bounded resources <span class="field-badge advanced">Advanced</span> <span class="reading-label">Optional reference</span></span><span aria-hidden="true" class="collapsible-action"><span class="collapsible-action-label"><span class="collapsible-action-closed">Show details</span><span class="collapsible-action-open">Hide details</span></span></span></h2></summary>
 <div class="collapsible-section-body">
-<p>A leaderboard load can deliver more than 5 MiB in under a second. Windows live capture therefore requests a 64 MiB Npcap buffer, keeps packet callbacks minimal, and moves writing and decoding to a worker.</p>
+<p>A leaderboard load can deliver more than 5 MiB in under a second. Windows live capture therefore requests a 64 MiB Npcap buffer, keeps packet callbacks minimal, and moves writing and decoding to a worker. Timeout recovery waits until capture finalization, so callback latency, native batching, or worker backlog cannot make the decoder skip a prefix that is still arriving.</p>
 <div class="table-wrap"><table><thead><tr><th>Boundary</th><th>Current Solare limit</th><th>Effect</th></tr></thead><tbody>
 <tr><td>Live packet handoff</td><td>4,096 packets</td><td>Overflow makes health unclean and requests resource-limit shutdown.</td></tr>
-<tr><td>TCP reorder pressure</td><td>2,048 pending segments or 8 MiB per flow</td><td>An anchored flow beyond either threshold can reset at retained data; a pre-confirmation reset prevents publication.</td></tr>
+<tr><td>TCP reorder pressure</td><td>2,048 pending segments or 8 MiB per flow</td><td>An anchored flow beyond either threshold can reset immediately at retained data. Timeout recovery is deferred until live finalization; any pre-confirmation reset prevents publication.</td></tr>
 <tr><td>Active reassembly</td><td>64 flows</td><td>Flow-state eviction makes health unclean.</td></tr>
 <tr><td>Discovery ownership</td><td>768 candidate messages or 16 MiB</td><td>The complete retained window is evaluated before an older batch is released. Rollover alone is diagnostic, not packet loss.</td></tr>
 <tr><td>Progress delivery</td><td>64 updates</td><td>Intermediate milestones can coalesce; the queue is not an audit log.</td></tr>

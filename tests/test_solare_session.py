@@ -598,16 +598,7 @@ def test_live_session_auto_stops_when_candidate_idle_confirms_final_window(
     assert session.stop_reason == "complete-snapshot"
 
 
-def test_drained_clock_service_waits_for_decoder_backlog() -> None:
-    class RecordingCollector:
-        def __init__(self) -> None:
-            self.service_calls = 0
-            self.tcp_gap_resets = 0
-
-        def service_gaps(self, _now: float) -> int:
-            self.service_calls += 1
-            return 0
-
+def test_drained_candidate_clock_waits_for_decoder_backlog() -> None:
     class RecordingTracker:
         complete = False
 
@@ -619,29 +610,26 @@ def test_drained_clock_service_waits_for_decoder_backlog() -> None:
             return False
 
     session = LiveSolareSession()
-    collector = RecordingCollector()
     tracker = RecordingTracker()
-    session._collector = collector  # type: ignore[assignment]
     session._tracker = tracker  # type: ignore[assignment]
     session._packet_queue.put_nowait(object())
 
     session._service_drained_clocks()
 
-    assert collector.service_calls == 0
     assert tracker.service_calls == 0
 
     session._packet_queue.get_nowait()
     session._service_drained_clocks()
 
-    assert collector.service_calls == 1
     assert tracker.service_calls == 1
 
 
-def test_drained_clock_services_quiet_tcp_gap_and_warns_fail_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_live_clock_leaves_quiet_tcp_gap_for_finalization() -> None:
     session = LiveSolareSession()
-    collector = session_module.SolareFrameCollector((8889,))
+    collector = session_module.SolareFrameCollector(
+        (8889,),
+        defer_gap_timeouts=True,
+    )
     session._collector = collector
 
     collector.process_tcp_segment(
@@ -663,14 +651,14 @@ def test_drained_clock_services_quiet_tcp_gap_and_warns_fail_closed(
         payload=b"x",
         timestamp=100.1,
     )
-    monkeypatch.setattr(session_module.time, "time", lambda: 102.0)
-
     session._service_drained_clocks()
 
+    assert collector.tcp_gap_resets == 0
+    assert session._update_queue.empty()
+
+    collector.finish()
+
     assert collector.tcp_gap_resets == 1
-    warning = session._update_queue.get_nowait()
-    assert warning.kind is SolareUpdateKind.WARNING
-    assert "remain fail-closed" in warning.message
 
 
 def test_live_session_refuses_to_overwrite_existing_capture(

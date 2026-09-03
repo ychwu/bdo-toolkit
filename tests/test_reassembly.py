@@ -371,6 +371,69 @@ def test_wall_clock_service_releases_complete_frame_behind_idle_gap():
     assert manager.tcp_gap_resets == 1
 
 
+def test_deferred_live_gap_timeout_does_not_skip_a_queued_prefix():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        defer_gap_timeouts=True,
+    )
+
+    _segment(
+        manager,
+        sequence=99,
+        timestamp=100.0,
+        syn=True,
+    )
+    _segment(
+        manager,
+        sequence=100,
+        payload=b"a",
+        timestamp=100.0,
+    )
+    _segment(
+        manager,
+        sequence=102,
+        payload=b"c",
+        timestamp=100.1,
+    )
+    # Processing a later queued packet after the deadline must not recover the
+    # gap before its already-queued prefix gets a chance to run.
+    _segment(
+        manager,
+        sequence=103,
+        payload=b"d",
+        timestamp=102.0,
+    )
+    _segment(
+        manager,
+        sequence=101,
+        payload=b"b",
+        timestamp=102.1,
+    )
+
+    assert b"".join(scanner.feeds) == b"abcd"
+    assert scanner.resets == 0
+    assert manager.tcp_gap_resets == 0
+
+
+def test_deferred_live_gap_timeout_still_resets_after_explicit_service():
+    scanner = _RecordingScanner()
+    manager = FlowManager(
+        server_ports=(8889,),
+        scanner_factory=lambda: scanner,
+        defer_gap_timeouts=True,
+    )
+
+    _segment(manager, sequence=99, timestamp=100.0, syn=True)
+    _segment(manager, sequence=100, payload=b"a", timestamp=100.0)
+    _segment(manager, sequence=102, payload=b"c", timestamp=100.1)
+
+    assert manager.service_gaps(100.1 + GAP_RESET_SECONDS) == 1
+    assert b"".join(scanner.feeds) == b"ac"
+    assert manager.tcp_gap_resets == 1
+
+
 @pytest.mark.parametrize("syn_sequence", [1000, 0xFFFFFFF8])
 def test_empty_syn_anchor_reassembles_second_half_first_and_deduplicates(
     syn_sequence: int,

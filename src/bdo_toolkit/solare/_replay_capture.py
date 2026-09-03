@@ -36,6 +36,7 @@ class SolareFrameCollector:
         on_traffic: Optional[Callable[[], None]] = None,
         *,
         retain_frames: bool = True,
+        defer_gap_timeouts: bool = False,
     ) -> None:
         self.ports = validate_server_ports(ports)
         self.frames: list[BDOFrame] = []
@@ -57,6 +58,7 @@ class SolareFrameCollector:
             max_flows=SOLARE_MAX_ACTIVE_FLOWS,
             max_pending_segments=SOLARE_MAX_PENDING_SEGMENTS,
             max_pending_bytes=SOLARE_MAX_PENDING_BYTES,
+            defer_gap_timeouts=defer_gap_timeouts,
             on_flow_eviction=self._count_flow_eviction,
             track_flow_generations=True,
         )
