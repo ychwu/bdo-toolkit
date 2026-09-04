@@ -6,6 +6,48 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.3 - 2026-09-03
+
+This patch improves post-patch calibration and live Arena of Solare capture
+reliability while documenting the current capture-environment and game-client
+lifecycle boundaries.
+
+### Fixed
+
+- Recognize trailing-context storage decrement evidence. Transfer calibration
+  now retains `SOURCE_CONTAINER_DECREMENT` evidence when a patch moves the
+  source context after the removed quantity. The fallback requires one exact
+  receipt-instance anchor and rejects ambiguous trailing contexts; historical
+  layouts and runtime decoding remain unchanged.
+- Prevent premature Solare live TCP gap recovery. Timeout-based recovery is now
+  deferred until live finalization so Npcap batching, callback latency, or
+  worker backlog cannot age a fresh out-of-order gap past its deadline and
+  withhold an otherwise complete leaderboard snapshot. Bounded-memory recovery
+  remains immediate, and deterministic capture-time replay is unchanged.
+
+### Docs
+
+- Clarify the toolkit capabilities in the README with a capability-led overview
+  of item events, item-state snapshots, and Arena of Solare leaderboards, plus
+  direct links to each workflow guide. Remove overlapping documentation and
+  contributor sections so the README stays focused on package users.
+- Document current storage and Solare capture boundaries. Current NA/EU town
+  storage must be captured on the first world load after a fresh game launch;
+  later character switches continue to hydrate inventory only. Arena of Solare
+  guidance now recommends saving live traffic and reusing the completed
+  recording for repeatable offline analysis.
+- Document live-capture compatibility and interface selection, including the
+  validated Windows/Npcap baseline, the IPv4/TCP boundary, VPN-aware automatic
+  and explicit interface selection, and the limits of queue sizing and
+  Python-side filtering. Expand acquisition troubleshooting and support-report
+  guidance without exposing private packet contents.
+
+### Tests
+
+- Refresh full-width Silver fixture expectations so the reviewed July
+  character-state assertions and August replay baseline retain complete
+  unsigned 64-bit quantities instead of only their lower 32 bits.
+
 ## 1.0.2 - 2026-09-01
 
 This patch hardens passive capture and character-load decoding across padded
