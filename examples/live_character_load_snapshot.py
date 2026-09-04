@@ -24,8 +24,9 @@ def main() -> None:
 
     try:
         input(
-            "Capture started. Open the game or switch characters, wait until "
-            "the playable world has settled, then press Enter to summarize.\n"
+            "Capture started. For storage, enter the world for the first time "
+            "after a fresh game launch; a later character switch captures "
+            "inventory only. Press Enter after the world has settled.\n"
         )
     except KeyboardInterrupt:
         print("\nStopping capture and summarizing collected state...")

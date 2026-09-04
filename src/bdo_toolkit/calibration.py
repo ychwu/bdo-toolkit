@@ -2354,9 +2354,29 @@ def _discover_source_container_decrement(
         )
 
         for quantity_offset in quantity_offsets:
-            # The current layout places context after instance; older layouts
-            # place it before instance. Both put context before the quantity.
+            # Known layouts vary whether context is before or after instance.
+            # Historical layouts put context before quantity. A newer layout
+            # puts quantity first, so admit a trailing context only when the
+            # same frame has one exact receipt-instance anchor; quantity and a
+            # context label alone are too weak.
             context_offset = _discover_context_offset(frame, quantity_offset)
+            if context_offset is None and exact_instance_offset is not None:
+                trailing_context_offset = (
+                    _discover_source_container_trailing_context_offset(
+                        frame,
+                        quantity_offset + 4,
+                    )
+                )
+                if (
+                    trailing_context_offset is not None
+                    and not _ranges_overlap(
+                        exact_instance_offset,
+                        8,
+                        trailing_context_offset,
+                        4,
+                    )
+                ):
+                    context_offset = trailing_context_offset
             if context_offset is None:
                 continue
             if exact_instance_offset is not None and _ranges_overlap(
@@ -2783,6 +2803,34 @@ def _discover_context_offset(frame: BDOFrame, before_offset: int) -> Optional[in
                 best_offset = offset if best_offset is None else max(best_offset, offset)
             search_at = offset + 1
     return best_offset
+
+
+def _discover_source_container_trailing_context_offset(
+    frame: BDOFrame,
+    after_offset: int,
+) -> Optional[int]:
+    """Return one unique source context after a container quantity field.
+
+    This is deliberately narrower than ``_discover_context_offset``. The
+    caller requires an exact receipt-instance match before using this fallback,
+    and ambiguity among trailing context labels fails closed.
+    """
+
+    offsets: set[int] = set()
+    for context_bytes in SOURCE_CONTEXT_LABELS:
+        if (
+            context_bytes == CHARACTER_LOAD_CONTEXT
+            or context_bytes in STORAGE_DELTA_CONTEXTS
+        ):
+            continue
+        search_at = max(5, after_offset)
+        while True:
+            offset = frame.message.find(context_bytes, search_at)
+            if offset < 0:
+                break
+            offsets.add(offset)
+            search_at = offset + 1
+    return next(iter(offsets)) if len(offsets) == 1 else None
 
 
 def _discover_storage_context_offset(

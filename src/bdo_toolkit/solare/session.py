@@ -198,6 +198,7 @@ class LiveSolareSession:
                     on_frame=tracker.observe,
                     on_traffic=self._announce_traffic,
                     retain_frames=False,
+                    defer_gap_timeouts=True,
                 )
                 capture = LivePacketCapture(
                     capture_options=self._capture_options,
@@ -709,22 +710,14 @@ class LiveSolareSession:
             self._latch_confirmation()
 
     def _service_drained_clocks(self) -> None:
-        """Advance live-only clocks only after queued packet work is caught up.
+        """Advance candidate-idle time only after packet work is caught up.
 
-        Wall-clock TCP-gap recovery or candidate-tail closure while packets
-        remain queued could skip a delayed prefix or a later same-family
-        frame that Npcap already delivered. Waiting for an empty decode queue
-        preserves that evidence. The second check protects candidate
-        finalization from packets enqueued while gap service was running.
+        Live Solare deliberately does not perform timeout-based TCP gap
+        recovery while capture remains active. Native callback batching can
+        pause longer than the generic deadline even when the missing prefix is
+        still buffered. Reorder pressure remains bounded and immediate, and
+        finalization resolves any genuinely unfinished gap fail-closed.
         """
-
-        if not self._packet_queue.empty():
-            return
-
-        collector = self._collector
-        if collector is not None:
-            collector.service_gaps(time.time())
-            self._announce_tcp_gap_loss()
 
         if not self._packet_queue.empty():
             return

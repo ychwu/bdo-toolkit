@@ -643,17 +643,18 @@ def test_one_session_1_4_deposits_and_5_withdrawal_keep_all_strides():
 
 
 @pytest.mark.parametrize(
-    ("layout", "expected_context", "expected_instance", "expected_quantity"),
+    ("layout", "expected_offsets"),
     [
-        ("current", 13, 5, 17),
-        ("legacy-different-instance", 7, 23, 32),
+        ("instance-context-quantity", (13, 5, 17)),
+        ("context-instance-quantity-different-instance", (7, 23, 32)),
+        ("quantity-instance-context", (34, 21, 5)),
+        ("trailing-context-without-exact-instance", None),
+        ("ambiguous-trailing-context", None),
     ],
 )
-def test_container_companion_discovers_both_known_field_orders(
+def test_container_companion_handles_known_field_orders_safely(
     layout,
-    expected_context,
-    expected_instance,
-    expected_quantity,
+    expected_offsets,
 ):
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
     from bdo_toolkit.calibration import (
@@ -679,17 +680,30 @@ def test_container_companion_discovers_both_known_field_orders(
     receipt_instance = bytes.fromhex("1122334455667788")
     source_context = bytes.fromhex("d0f205a3")
 
-    if layout == "current":
+    if layout == "instance-context-quantity":
         companion_message = bytearray(42)
         companion_message[5:13] = receipt_instance
         companion_message[13:17] = source_context
         companion_message[17:21] = quantity.to_bytes(4, "little")
-    else:
+    elif layout == "context-instance-quantity-different-instance":
         companion_message = bytearray(40)
         companion_message[7:11] = source_context
         companion_message[23:31] = bytes.fromhex("0102030405060708")
         companion_message[31] = 0x02
         companion_message[32:36] = quantity.to_bytes(4, "little")
+    else:
+        companion_message = bytearray(
+            48 if layout == "ambiguous-trailing-context" else 40
+        )
+        companion_message[5:9] = quantity.to_bytes(4, "little")
+        companion_message[21:29] = (
+            bytes.fromhex("0102030405060708")
+            if layout == "trailing-context-without-exact-instance"
+            else receipt_instance
+        )
+        companion_message[34:38] = source_context
+        if layout == "ambiguous-trailing-context":
+            companion_message[40:44] = bytes.fromhex("0471ee0e")
     companion = frame(0, 0xBEEF, companion_message)
 
     receipt_frame = frame(1, 0xCAFE, bytearray(80))
@@ -709,6 +723,11 @@ def test_container_companion_discovers_both_known_field_orders(
         [companion, receipt_frame], receipt, options
     )
 
+    if expected_offsets is None:
+        assert spec is None
+        return
+
+    expected_context, expected_instance, expected_quantity = expected_offsets
     assert spec is not None
     assert (spec.opcode, spec.length) == (0xBEEF, len(companion_message))
     assert spec.context_offset == expected_context
