@@ -23,8 +23,9 @@ def capture_snapshot() -> ItemStateSnapshot:
 
     try:
         input(
-            "Capture started. Open the game or switch characters, wait until "
-            "the playable world has settled, then press Enter to continue.\n"
+            "Capture started. After a fresh game launch, enter the world for "
+            "the first time, wait until it has settled, then press Enter to "
+            "continue. Character switches do not rehydrate storage.\n"
         )
     except KeyboardInterrupt:
         print("\nStopping capture...")
