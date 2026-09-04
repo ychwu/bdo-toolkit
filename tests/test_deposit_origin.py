@@ -1449,6 +1449,7 @@ def _july17_inventory_receipt(item_id, quantity, item_instance):
     message[27:31] = bytes.fromhex("d0f205a3")  # Storage
     message[31:35] = item_id.to_bytes(4, "little")
     message[35:39] = quantity.to_bytes(4, "little")
+    message[43:51] = b"\xff" * 8
     message[66:74] = item_instance
     return bytes(message)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from threading import Event, Thread
+from threading import Event, Thread, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -1321,13 +1321,22 @@ def test_session_services_tcp_gap_clock_while_idle(live_fakes):
     )
     session.start()
     engine = FakeCollector.instances[-1].engine
+    clock_threads = []
+
+    def service_gaps(now):
+        clock_threads.append(get_ident())
+        engine.service_gap_calls.append(now)
+        return 0
+
+    engine.service_gaps = service_gaps
 
     deadline = time.monotonic() + 1.0
-    while not engine.service_gap_calls and time.monotonic() < deadline:
+    while not clock_threads and time.monotonic() < deadline:
         time.sleep(0.01)
 
     session.stop()
     assert engine.service_gap_calls
+    assert set(clock_threads) == {session._packet_worker.ident}
 
 
 def test_packet_queue_overflow_fails_closed_and_reports_health(

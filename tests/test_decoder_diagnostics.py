@@ -482,6 +482,8 @@ def test_same_opcode_nonstorage_layout_is_not_a_storage_rejection(tmp_path) -> N
 
     message = bytearray(_storage_message(declared_count=2))
     message[20:24] = bytes.fromhex("d0f205a3")
+    # This alternative is a structurally valid inventory receipt.
+    message[49:57] = b"\xff" * 8
     _feed(collector, bytes(message))
 
     events = list(collector.drain_events())

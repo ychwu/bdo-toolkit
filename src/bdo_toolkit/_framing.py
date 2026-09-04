@@ -274,6 +274,10 @@ def _structural_record_deltas(
     other transfer families may use their item-record marker and relative
     instance offset. The base-length equation guards against marker-like bytes
     elsewhere in the same message.
+
+    None means structural validation is unsupported for this spec. An empty
+    list means it was attempted and rejected; configured-stride fallback must
+    not turn that rejection into a partial or unvalidated event.
     """
     if declared_storage_deltas is not None:
         return declared_storage_deltas
@@ -299,15 +303,15 @@ def _structural_record_deltas(
     # The calibrated first record is the anchor. Refuse a partial or shifted
     # match instead of turning an embedded item structure into an event.
     if not offsets or offsets[0] != spec.item_offset:
-        return None
+        return []
 
     if len(offsets) > 1:
         strides = [b - a for a, b in zip(offsets, offsets[1:])]
         minimum_stride = max(20, instance_delta + 8)
         if any(stride < minimum_stride for stride in strides):
-            return None
+            return []
         if len(set(strides)) != 1:
-            return None
+            return []
         inferred_stride = strides[0]
     else:
         inferred_stride = 0
@@ -316,7 +320,7 @@ def _structural_record_deltas(
     if base_length is not None:
         expected_length = base_length + (len(offsets) - 1) * inferred_stride
         if len(message) != expected_length:
-            return None
+            return []
 
     return [offset - spec.item_offset for offset in offsets]
 
@@ -357,11 +361,13 @@ class FrameCollectorScanner:
         self._buffer_start_sequence: Optional[int] = None
         self._frame_index = 0
         self._synchronized = False
+        self._framed_stream_start: Optional[int] = None
 
     def reset(self) -> None:
         self._buffer.clear()
         self._buffer_start_sequence = None
         self._synchronized = False
+        self._framed_stream_start = None
 
     def can_anchor_at_start(self, data: bytes) -> bool:
         """Return whether byte zero is an evidence-backed frame boundary."""
@@ -396,9 +402,22 @@ class FrameCollectorScanner:
     def scan_standalone(self, data: bytes, context: PacketContext) -> None:
         if not data:
             return
+        if (
+            self._framed_stream_start is not None
+            and context.stream_start is not None
+        ):
+            # Reassembly calls this only for already-delivered overlap bytes.
+            # They must not acquire new boundaries when a retransmission cuts
+            # into an outer frame. Only an earlier, previously unframed prefix
+            # is eligible for independent recovery.
+            prefix_length = self._framed_stream_start - context.stream_start
+            if prefix_length <= 0:
+                return
+            data = data[:prefix_length]
         saved_buffer = self._buffer
         saved_buffer_start_sequence = self._buffer_start_sequence
         saved_synchronized = self._synchronized
+        saved_framed_stream_start = self._framed_stream_start
         self._buffer = bytearray(data)
         self._buffer_start_sequence = context.stream_start
         self._synchronized = False
@@ -408,6 +427,7 @@ class FrameCollectorScanner:
             self._buffer = saved_buffer
             self._buffer_start_sequence = saved_buffer_start_sequence
             self._synchronized = saved_synchronized
+            self._framed_stream_start = saved_framed_stream_start
 
     def _discard_prefix(self, byte_count: int) -> None:
         if byte_count <= 0:
@@ -428,6 +448,8 @@ class FrameCollectorScanner:
                 if candidate_start:
                     self._discard_prefix(candidate_start)
                 self._synchronized = True
+                if self._framed_stream_start is None:
+                    self._framed_stream_start = self._buffer_start_sequence
 
             message_length = int.from_bytes(self._buffer[0:2], "little")
             if not 5 <= message_length <= MAX_TARGET_MESSAGE_LENGTH:
@@ -779,9 +801,9 @@ class TargetMessageScanner:
             if structural_deltas is not None:
                 candidate_deltas = structural_deltas
             else:
-                # Structural discovery is deliberately strict. Preserve support
-                # for older/synthetic layouts through the calibrated stride, but
-                # never accept an off-stride message merely because record 1 fits.
+                # None means this layout cannot use structural validation.
+                # A supported layout that fails it returns [] and must never
+                # reach this weaker configured-length/stride decoder.
                 if not _configured_message_length_matches_spec(spec, message_length):
                     return None
                 candidate_deltas = []

@@ -251,6 +251,8 @@ class _EventCollector:
         self._accepted_storage_frame_order: deque[_TargetFrameKey] = deque()
         self._generic_inventory_frames: set[_TargetFrameKey] = set()
         self._generic_inventory_frame_order: deque[_TargetFrameKey] = deque()
+        self._generic_activity_frames: set[_TargetFrameKey] = set()
+        self._generic_activity_frame_order: deque[_TargetFrameKey] = deque()
         self._inventory_boundary_states: OrderedDict[
             _InventoryBoundaryKey, _InventoryBoundaryState
         ] = OrderedDict()
@@ -263,6 +265,11 @@ class _EventCollector:
             spec.opcode
             for spec in self.event_specs
             if spec.label == "INVENTORY_TRANSFER"
+        )
+        self._activity_opcodes = frozenset(
+            spec.opcode
+            for spec in self.event_specs
+            if spec.label in {"LOOT_PREVIEW", "INVENTORY_TRANSFER"}
         )
         self._requested_storage_ids = tuple(
             sorted(event_filter.storage_ids)
@@ -303,6 +310,7 @@ class _EventCollector:
                 or frame_observer is not None
                 or self._storage_is_requested()
                 or self._inventory_snapshot_is_requested()
+                or self._activity_opcodes
                 else None
             ),
             stream_observer=(tracker.observe_stream if tracker is not None else None),
@@ -347,6 +355,18 @@ class _EventCollector:
             ):
                 self._handle_accepted_record(accepted_record, accepted_message)
             return
+        if not is_storage:
+            frame_key = (
+                record.context.flow,
+                record.context.flow_generation,
+                record.stream_sequence,
+                record.context.timestamp,
+                record.opcode,
+                record.message_length,
+            )
+            with self._diagnostic_lock:
+                if frame_key not in self._generic_activity_frames:
+                    return
         self._handle_accepted_record(record, raw_message)
 
     def _handle_accepted_record(
@@ -475,7 +495,7 @@ class _EventCollector:
 
             self._inventory_boundary_states[boundary_key] = _InventoryBoundaryState(
                 frame_key=frame_key,
-                stream_end=(stream_sequence + record.message_length) & 0xFFFFFFFF,
+                stream_end=stream_sequence + record.message_length,
                 raw_message=raw_message,
                 records=[] if accepted else [record],
                 accepted=accepted,
@@ -717,7 +737,8 @@ class _EventCollector:
     def _remember_generic_target_frame(self, frame: BDOFrame) -> None:
         is_storage = frame.opcode in self._storage_opcodes
         is_inventory = frame.opcode in self._inventory_transfer_opcodes
-        if not is_storage and not is_inventory:
+        is_activity = frame.opcode in self._activity_opcodes
+        if not is_storage and not is_inventory and not is_activity:
             return
         key = (
             frame.context.flow,
@@ -728,6 +749,15 @@ class _EventCollector:
             frame.length,
         )
         with self._diagnostic_lock:
+            if is_activity and key not in self._generic_activity_frames:
+                self._generic_activity_frames.add(key)
+                self._generic_activity_frame_order.append(key)
+                while (
+                    len(self._generic_activity_frame_order)
+                    > _TARGET_FRAME_HISTORY_LIMIT
+                ):
+                    expired = self._generic_activity_frame_order.popleft()
+                    self._generic_activity_frames.discard(expired)
             if is_storage and key not in self._generic_storage_frames:
                 self._generic_storage_frames.add(key)
                 self._generic_storage_frame_order.append(key)
@@ -746,6 +776,52 @@ class _EventCollector:
                 ):
                     expired = self._generic_inventory_frame_order.popleft()
                     self._generic_inventory_frames.discard(expired)
+
+        if (
+            is_storage
+            and frame.flag == 0
+            and (self._storage_is_requested() or self._tracker is not None)
+        ):
+            self._observe_short_storage_frame(frame)
+
+    def _observe_short_storage_frame(self, frame: BDOFrame) -> None:
+        """Account for framed storage messages excluded by target length gates."""
+        candidates = tuple(
+            spec for spec in self.event_specs if spec.opcode == frame.opcode
+        )
+        if any(frame.length >= spec.min_message_length for spec in candidates):
+            # The target scanner owns normal candidates and same-opcode
+            # alternatives, including their ambiguity/rejection accounting.
+            return
+        for spec in candidates:
+            if spec.label != "INVENTORY_TO_STORAGE":
+                continue
+            count_offset = spec.record_count_offset
+            context_offset = spec.source_context_offset
+            if (
+                count_offset is not None
+                and 5 <= count_offset
+                and count_offset + 2 <= frame.length <= spec.item_offset
+                and int.from_bytes(
+                    frame.message[count_offset : count_offset + 2], "little"
+                ) == 0
+                and (
+                    context_offset is None
+                    or context_offset + spec.source_context_length <= frame.length
+                )
+            ):
+                # Compact count-zero envelopes carry no item record. They are
+                # left to the finite snapshot assembler's cohort validation;
+                # this observation alone proves neither loss nor hydration.
+                return
+        self._observe_storage_message(
+            frame.opcode,
+            frame.length,
+            "rejected",
+            0,
+            frame.context,
+            frame.stream_sequence,
+        )
 
     def _emit_diagnostic(
         self,
@@ -1300,11 +1376,18 @@ class LiveCaptureSession:
             self._packet_queue_peak = max(self._packet_queue_peak, depth)
 
     def _run_packet_worker(self) -> None:
-        """Decode accepted packets in FIFO order away from capture callback."""
+        """Decode FIFO packets and service gap clocks only at an idle boundary."""
 
         decode_enabled = True
+        next_clock_service = time.monotonic() + self._POLL_INTERVAL_SECONDS
         while True:
-            packet = self._packet_queue.get()
+            try:
+                packet = self._packet_queue.get(timeout=self._POLL_INTERVAL_SECONDS)
+            except Empty:
+                if decode_enabled:
+                    self._service_engine_clock()
+                    next_clock_service = time.monotonic() + self._POLL_INTERVAL_SECONDS
+                continue
             if packet is _PACKET_WORKER_STOP:
                 return
             if not decode_enabled:
@@ -1324,9 +1407,15 @@ class LiveCaptureSession:
                 self._record_error(exc)
                 self._stop_requested.set()
                 decode_enabled = False
+            if decode_enabled and time.monotonic() >= next_clock_service:
+                # Frequent traffic can keep timed get() from returning Empty
+                # even when decoding keeps up. Service at a drained packet
+                # boundary too, so other idle flows do not starve their clock.
+                self._service_engine_clock()
+                next_clock_service = time.monotonic() + self._POLL_INTERVAL_SECONDS
 
     def _monitor_stop_request(self) -> None:
-        """Service idle state and stop failures without an active consumer."""
+        """Monitor capture termination and stop without an active consumer."""
 
         while not self._stop_requested.wait(self._POLL_INTERVAL_SECONDS):
             capture = self._capture
@@ -1338,7 +1427,6 @@ class LiveCaptureSession:
             if capture is not None and not capture.running:
                 self._stop_requested.set()
                 break
-            self._service_engine_clock()
         if not self._stopped.is_set():
             capture = self._capture
             capture_error = capture.error if capture is not None else None
@@ -1370,7 +1458,12 @@ class LiveCaptureSession:
             return
         try:
             with self._decoder_lock:
-                service_gaps(time.time())
+                # The packet worker owns idle servicing as well as decoding.
+                # Never expire a gap while accepted bytes await that worker,
+                # including a packet arriving after its timed get returned.
+                now = time.time()
+                if self._packet_queue.empty():
+                    service_gaps(now)
         except BaseException as exc:
             self._record_error(exc)
             self._stop_requested.set()

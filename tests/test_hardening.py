@@ -431,6 +431,7 @@ def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
     inventory[24:28] = bytes.fromhex("d0f205a3")
     inventory[33:37] = (7003).to_bytes(4, "little")
     inventory[37:41] = (5).to_bytes(4, "little")
+    inventory[45:53] = b"\xff" * 8
     inventory[68:76] = b"\x11" * 8
 
     storage = bytearray(258)
