@@ -58,6 +58,27 @@ _INVENTORY_BOUNDARY_COHORT_LIMIT = 64
 type _InventoryBoundaryKey = tuple[FlowKey, int, int]
 
 
+class _FrameHistory:
+    """FIFO membership with a fixed budget; the collector owns synchronization."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._keys: set[_TargetFrameKey] = set()
+        self._order: deque[_TargetFrameKey] = deque()
+
+    def __contains__(self, key: _TargetFrameKey) -> bool:
+        return key in self._keys
+
+    def add(self, key: _TargetFrameKey) -> None:
+        # Duplicate observations must not refresh their original retention age.
+        if key in self._keys:
+            return
+        self._keys.add(key)
+        self._order.append(key)
+        if len(self._order) > self._limit:
+            self._keys.remove(self._order.popleft())
+
+
 @dataclass
 class _InventoryBoundaryState:
     """One fully decoded inventory wrapper awaiting boundary evidence."""
@@ -245,14 +266,10 @@ class _EventCollector:
         self._diagnostics_emitted = 0
         self._storage_incompatible = False
         self._storage_destination_validator = StorageDestinationValidator()
-        self._generic_storage_frames: set[_TargetFrameKey] = set()
-        self._generic_storage_frame_order: deque[_TargetFrameKey] = deque()
-        self._accepted_storage_frames: set[_TargetFrameKey] = set()
-        self._accepted_storage_frame_order: deque[_TargetFrameKey] = deque()
-        self._generic_inventory_frames: set[_TargetFrameKey] = set()
-        self._generic_inventory_frame_order: deque[_TargetFrameKey] = deque()
-        self._generic_activity_frames: set[_TargetFrameKey] = set()
-        self._generic_activity_frame_order: deque[_TargetFrameKey] = deque()
+        self._generic_storage_frames = _FrameHistory(_TARGET_FRAME_HISTORY_LIMIT)
+        self._accepted_storage_frames = _FrameHistory(_TARGET_FRAME_HISTORY_LIMIT)
+        self._generic_inventory_frames = _FrameHistory(_TARGET_FRAME_HISTORY_LIMIT)
+        self._generic_activity_frames = _FrameHistory(_TARGET_FRAME_HISTORY_LIMIT)
         self._inventory_boundary_states: OrderedDict[
             _InventoryBoundaryKey, _InventoryBoundaryState
         ] = OrderedDict()
@@ -713,15 +730,7 @@ class _EventCollector:
                 self._storage_incompatible = True
             else:
                 self._storage_messages_decoded += 1
-                if frame_key not in self._accepted_storage_frames:
-                    self._accepted_storage_frames.add(frame_key)
-                    self._accepted_storage_frame_order.append(frame_key)
-                    while (
-                        len(self._accepted_storage_frame_order)
-                        > _TARGET_FRAME_HISTORY_LIMIT
-                    ):
-                        expired = self._accepted_storage_frame_order.popleft()
-                        self._accepted_storage_frames.discard(expired)
+                self._accepted_storage_frames.add(frame_key)
         if rejected:
             self._emit_diagnostic(
                 code="storage_decoder_incompatible",
@@ -749,33 +758,12 @@ class _EventCollector:
             frame.length,
         )
         with self._diagnostic_lock:
-            if is_activity and key not in self._generic_activity_frames:
+            if is_activity:
                 self._generic_activity_frames.add(key)
-                self._generic_activity_frame_order.append(key)
-                while (
-                    len(self._generic_activity_frame_order)
-                    > _TARGET_FRAME_HISTORY_LIMIT
-                ):
-                    expired = self._generic_activity_frame_order.popleft()
-                    self._generic_activity_frames.discard(expired)
-            if is_storage and key not in self._generic_storage_frames:
+            if is_storage:
                 self._generic_storage_frames.add(key)
-                self._generic_storage_frame_order.append(key)
-                while (
-                    len(self._generic_storage_frame_order)
-                    > _TARGET_FRAME_HISTORY_LIMIT
-                ):
-                    expired = self._generic_storage_frame_order.popleft()
-                    self._generic_storage_frames.discard(expired)
-            if is_inventory and key not in self._generic_inventory_frames:
+            if is_inventory:
                 self._generic_inventory_frames.add(key)
-                self._generic_inventory_frame_order.append(key)
-                while (
-                    len(self._generic_inventory_frame_order)
-                    > _TARGET_FRAME_HISTORY_LIMIT
-                ):
-                    expired = self._generic_inventory_frame_order.popleft()
-                    self._generic_inventory_frames.discard(expired)
 
         if (
             is_storage

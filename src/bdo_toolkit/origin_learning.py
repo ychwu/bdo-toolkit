@@ -5,16 +5,15 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Any, Iterable, Optional
 
+from ._profile_io import atomic_write_text as _atomic_write_text
 from ._protocol import FlowKey, MAX_TARGET_MESSAGE_LENGTH
-from .profiles import ProfileError, load_opcode_profile
+from .profiles import ProfileError, _profile_opcode as _parse_opcode, load_opcode_profile
 
 TOKEN_WIDTH = 8
 # Five-byte diversity was just permissive enough to treat an initial-load
@@ -51,23 +50,6 @@ def _utc_text(timestamp: Optional[float] = None) -> str:
         else dt.datetime.now(tz=dt.UTC)
     )
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _parse_opcode(value: object, location: str) -> int:
-    if isinstance(value, bool):
-        raise ProfileError(f"{location} must be a uint16")
-    if isinstance(value, int):
-        opcode = value
-    elif isinstance(value, str):
-        try:
-            opcode = int(value, 16 if value.lower().startswith("0x") else 10)
-        except ValueError as exc:
-            raise ProfileError(f"{location} must be a uint16") from exc
-    else:
-        raise ProfileError(f"{location} must be a uint16")
-    if not 0 <= opcode <= 0xFFFF:
-        raise ProfileError(f"{location} must be a uint16")
-    return opcode
 
 
 def _find_all(message: bytes, token: bytes) -> tuple[int, ...]:
@@ -754,26 +736,3 @@ def _unique_backup_path(path: Path) -> Path:
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
     return backup_dir / f"{path.name}.bak.{stamp}"
-
-
-def _atomic_write_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()

@@ -13,7 +13,7 @@ from threading import Event, Lock, Thread, current_thread
 from types import TracebackType
 from typing import Any, Optional
 
-from bdo_toolkit._capture_backend import make_packet_handler
+from bdo_toolkit._capture_backend import make_packet_handler, open_packet_writer
 from bdo_toolkit._capture_options import PacketCaptureOptions
 from bdo_toolkit._capture_runtime import (
     CaptureStats,
@@ -937,11 +937,7 @@ class LiveSolareSession:
 
     @staticmethod
     def _open_writer(path: Path) -> Any:
-        from scapy.utils import PcapNgWriter, PcapWriter  # type: ignore
-
-        if path.suffix.lower() == ".pcapng":
-            return PcapNgWriter(str(path))
-        return PcapWriter(str(path), sync=True)
+        return open_packet_writer(path)
 
     def _require_started(self) -> None:
         if not self._started:

@@ -20,6 +20,7 @@ from typing import Any, Iterable, Optional
 from ._capture_backend import (
     iter_pcap_file,
     make_packet_handler,
+    open_packet_writer,
 )
 from ._capture_options import PacketCaptureOptions
 from ._capture_runtime import (
@@ -2982,17 +2983,7 @@ def _open_packet_writer(path: Path) -> Any:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         raise FileExistsError(f"refusing to overwrite existing capture: {path}")
-    if path.suffix.casefold() == ".pcapng":
-        from scapy.utils import PcapNgWriter  # type: ignore
-
-        return PcapNgWriter(str(path))
-
-    from scapy.utils import PcapWriter  # type: ignore
-
-    # sync=True makes a live .pcap useful even if the process exits before a
-    # normal stop. PcapNgWriter has no equivalent constructor option and is
-    # still explicitly closed on every session exit path below.
-    return PcapWriter(str(path), append=False, sync=True)
+    return open_packet_writer(path)
 
 
 class CharacterLoadSession:

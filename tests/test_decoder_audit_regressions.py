@@ -7,7 +7,7 @@ import time
 import pytest
 
 from bdo_toolkit import EventFilter, LiveCaptureSession, OpcodeProfile
-from bdo_toolkit._protocol import FlowKey, LootEvent, PacketContext
+from bdo_toolkit._protocol import BDOFrame, FlowKey, LootEvent, PacketContext
 from bdo_toolkit.capture import _EventCollector
 
 
@@ -285,3 +285,99 @@ def test_inventory_pair_recovery_uses_unwrapped_sequence_numbers(sequence):
     assert [event.event_type for event in _finish(collector)] == [
         "inventory_snapshot", "inventory_snapshot",
     ]
+
+
+def _history_candidate(index, label):
+    opcode = {
+        "LOOT_PREVIEW": 0x1111,
+        "INVENTORY_TRANSFER": 0x2222,
+        "INVENTORY_TO_STORAGE": 0x3333,
+    }[label]
+    message = bytearray(_message(opcode))
+    if label == "INVENTORY_TRANSFER":
+        message[12:16] = b"\x00" * 4
+    context = PacketContext(
+        timestamp=1000.0,
+        flow=FlowKey("192.0.2.1", 8889, "192.0.2.2", 50000),
+        flow_generation=1,
+    )
+    # Leave gaps so adjacent-wrapper recovery cannot supply boundary evidence.
+    frame = BDOFrame(index, bytes(message), context, index * 1000)
+    record = LootEvent(
+        label=label, opcode=opcode, item_id=7003, quantity=1,
+        inventory_slot=None, source_context_candidate=bytes(message[12:16]),
+        item_instance=(1).to_bytes(8, "little"), storage_instance=None,
+        message_length=len(message), default_context=None, context=context,
+        stream_sequence=frame.stream_sequence, record_offset=32,
+    )
+    return frame, record
+
+
+@pytest.mark.parametrize("label", [
+    "LOOT_PREVIEW", "INVENTORY_TRANSFER", "INVENTORY_TO_STORAGE",
+])
+def test_duplicate_boundaries_do_not_extend_record_acceptance(monkeypatch, label):
+    monkeypatch.setattr("bdo_toolkit.capture._TARGET_FRAME_HISTORY_LIMIT", 2)
+    collector = _EventCollector(server_ports=(8889,), opcode_profile=_profile())
+    accepted = []
+    monkeypatch.setattr(
+        collector, "_handle_accepted_record",
+        lambda record, message: accepted.append(record),
+    )
+    candidates = [_history_candidate(index, label) for index in range(3)]
+    for index in (0, 1, 0, 2):
+        frame, _ = candidates[index]
+        collector._remember_generic_target_frame(frame)
+        if label == "INVENTORY_TO_STORAGE":
+            collector._observe_storage_message(
+                frame.opcode, frame.length, "decoded", 1,
+                frame.context, frame.stream_sequence,
+            )
+
+    for frame, record in candidates:
+        collector._handle_record(record, frame.message)
+    assert accepted == [record for _, record in candidates[1:]]
+
+
+def test_loot_traffic_does_not_evict_inventory_snapshot_evidence(monkeypatch):
+    monkeypatch.setattr("bdo_toolkit.capture._TARGET_FRAME_HISTORY_LIMIT", 2)
+    collector = _EventCollector(server_ports=(8889,), opcode_profile=_profile())
+    inventory, record = _history_candidate(0, "INVENTORY_TRANSFER")
+    collector._remember_generic_target_frame(inventory)
+    for index in (1, 2):
+        loot, _ = _history_candidate(index, "LOOT_PREVIEW")
+        collector._remember_generic_target_frame(loot)
+    collector._handle_record(record, inventory.message)
+    assert [event.event_type for event in collector.drain_events()] == [
+        "inventory_snapshot",
+    ]
+
+
+def test_storage_acceptance_history_is_independent_of_boundary_history(monkeypatch):
+    monkeypatch.setattr("bdo_toolkit.capture._TARGET_FRAME_HISTORY_LIMIT", 2)
+    collector = _EventCollector(server_ports=(8889,), opcode_profile=_profile())
+    accepted = []
+    monkeypatch.setattr(
+        collector, "_handle_accepted_record",
+        lambda record, message: accepted.append(record),
+    )
+    first, first_record = _history_candidate(0, "INVENTORY_TO_STORAGE")
+    collector._remember_generic_target_frame(first)
+    collector._observe_storage_message(
+        first.opcode, first.length, "decoded", 1,
+        first.context, first.stream_sequence,
+    )
+    for index in (1, 2):
+        frame, record = _history_candidate(index, "INVENTORY_TO_STORAGE")
+        collector._remember_generic_target_frame(frame)
+        collector._handle_record(record, frame.message)
+    # A boundary alone cannot authorize a storage record, and observing new
+    # boundaries cannot evict an independently validated storage record.
+    collector._handle_record(first_record, first.message)
+    assert accepted == [first_record]
+    # The old boundary has expired even though its validation is still retained.
+    collector._observe_storage_message(
+        first.opcode, first.length, "decoded", 1,
+        first.context, first.stream_sequence,
+    )
+    assert collector.decoder_health.storage_messages_observed == 1

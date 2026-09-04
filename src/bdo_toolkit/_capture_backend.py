@@ -49,6 +49,21 @@ def import_scapy():
     return IP, TCP, get_if_list, sniff, PcapReader
 
 
+def open_packet_writer(path: Path) -> Any:
+    """Construct a capture writer after the caller validates its destination."""
+    if path.suffix.casefold() == ".pcapng":
+        from scapy.utils import PcapNgWriter  # type: ignore
+
+        return PcapNgWriter(str(path))
+
+    from scapy.utils import PcapWriter  # type: ignore
+
+    # sync=True makes a live .pcap useful even if the process exits before a
+    # normal stop. PcapNgWriter has no equivalent constructor option and is
+    # still explicitly closed on every session exit path.
+    return PcapWriter(str(path), append=False, sync=True)
+
+
 def detect_default_capture_target() -> CaptureTarget:
     try:
         from scapy.config import conf  # type: ignore

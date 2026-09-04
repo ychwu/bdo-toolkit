@@ -42,9 +42,7 @@ from collections import deque
 import datetime as dt
 import json
 import math
-import os
 import shutil
-import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Lock, RLock
@@ -60,6 +58,10 @@ from ._capture_runtime import (
     DEFAULT_STARTUP_TIMEOUT_SECONDS,
     LivePacketCapture,
     _attach_cleanup_owner,
+)
+from ._profile_io import (
+    atomic_write_text as _atomic_write_text,
+    next_backup_path as _backup_path,
 )
 from ._framing import FrameCollectorScanner
 from ._protocol import (
@@ -3216,18 +3218,6 @@ def _profile_dedupe_keys(data: dict[str, Any]) -> set[tuple[object, ...]]:
     return keys
 
 
-def _backup_path(path: Path) -> Path:
-    backup_dir = path.parent / "opcodes_backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
-    candidate = backup_dir / f"{path.name}.bak.{stamp}"
-    suffix = 1
-    while candidate.exists():
-        candidate = backup_dir / f"{path.name}.bak.{stamp}.{suffix}"
-        suffix += 1
-    return candidate
-
-
 def _profile_opcode(value: object, event: str) -> int:
     if isinstance(value, bool):
         raise ProfileError(f"invalid opcode for {event}: {value!r}")
@@ -3243,27 +3233,3 @@ def _profile_opcode(value: object, event: str) -> int:
     if not 0 <= opcode <= 0xFFFF:
         raise ProfileError(f"opcode for {event} must be a uint16")
     return opcode
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Atomically replace a UTF-8 text file in its destination directory."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Optional[Path] = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()

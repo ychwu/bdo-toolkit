@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import hmac
 import json
@@ -19,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from ._profile_io import next_backup_path as _next_backup_path
 from ._profile_runtime import validate_runtime_profile
 from .profiles import OpcodeProfile, ProfileError, load_opcode_profile
 
@@ -334,18 +334,6 @@ def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(
         character in "0123456789abcdefABCDEF" for character in value
     )
-
-
-def _next_backup_path(path: Path) -> Path:
-    backup_dir = path.parent / "opcodes_backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%d%H%M%S%f")
-    candidate = backup_dir / f"{path.name}.bak.{stamp}"
-    suffix = 1
-    while candidate.exists():
-        candidate = backup_dir / f"{path.name}.bak.{stamp}.{suffix}"
-        suffix += 1
-    return candidate
 
 
 __all__ = [
