@@ -291,12 +291,12 @@ class LiveSolareDiscoveryTracker:
         prefix rejection—remain authoritative at this boundary.
         """
 
+        last_candidate_activity_at = self._last_candidate_activity_at
         if (
             self.complete
             or self._tail_finalized
-            or self._last_candidate_activity_at is None
-            or now - self._last_candidate_activity_at
-            < LIVE_CANDIDATE_IDLE_SECONDS
+            or last_candidate_activity_at is None
+            or now < last_candidate_activity_at + LIVE_CANDIDATE_IDLE_SECONDS
         ):
             return False
         self.refresh()

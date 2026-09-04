@@ -884,7 +884,10 @@ def test_candidate_idle_closes_overall_tail_amid_unrelated_traffic() -> None:
     # the global packet queue busy.
     assert not tracker.complete
     assert tracker._last_candidate_activity_at is not None
-    last_candidate = tracker._last_candidate_activity_at
+    # This monotonic-clock value reproduces a Linux float boundary where
+    # ``(last_candidate + 1.5) - last_candidate`` rounds just below 1.5.
+    last_candidate = 63.021708486
+    tracker._last_candidate_activity_at = last_candidate
     assert not tracker.service_candidate_idle(
         last_candidate + LIVE_CANDIDATE_IDLE_SECONDS - 0.001
     )
