@@ -18,7 +18,7 @@ not whether player inventory or worker production supplied the item.
 from __future__ import annotations
 
 import dataclasses
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import Callable, Iterable, Optional
@@ -37,6 +37,10 @@ ORIGIN_MANUAL = "manual"
 ORIGIN_UNKNOWN = "unknown"
 SOURCE_WORKER_PRODUCTION = "Worker Production"
 SOURCE_PLAYER_INVENTORY = "Player Inventory"
+
+# Only the delta prefix participates in discovery; its actual length still
+# matters for header validation. Companion messages participate in full.
+type _CompanionDiscoveryKey = tuple[bytes, int, int, bytes, bytes]
 
 
 @dataclass(frozen=True)
@@ -232,6 +236,8 @@ class DepositOriginTracker:
     MAX_MANUAL_CANDIDATE_BYTES_TOTAL = 32 * 1024 * 1024
     OBSERVATION_HISTORY_LIMIT = 4096
     COMPANION_PAIR_HISTORY_LIMIT = 4096
+    COMPANION_DISCOVERY_CACHE_LIMIT = 4096
+    COMPANION_DISCOVERY_CACHE_BYTES = 2 * 1024 * 1024
     RECORD_BOUNDARY_HISTORY_LIMIT = 4096
     RUNTIME_CONFIRMED_FAMILY_LIMIT = 4096
     FAMILY_CONFIRMATION_OBSERVATIONS = 2
@@ -335,6 +341,10 @@ class DepositOriginTracker:
         self._companion_contest_overflow_flows: set[FlowKey] = set()
         self._first_record_boundaries: dict[tuple[FlowKey, int], int] = {}
         self._first_record_boundary_order: deque[tuple[FlowKey, int]] = deque()
+        self._companion_discoveries: OrderedDict[
+            _CompanionDiscoveryKey, tuple[Optional[CompanionObservation], int]
+        ] = OrderedDict()
+        self._companion_discovery_bytes = 0
 
     # --- frame stream ---
 
@@ -916,6 +926,62 @@ class DepositOriginTracker:
 
     # --- anchored structural companion scan ---
 
+    def _discover_companions(
+        self,
+        pending: _PendingDeposit,
+        delta_message: bytes,
+        first_message: bytes,
+        second_message: bytes,
+        delta_prefix_end: int,
+    ) -> Optional[CompanionObservation]:
+        """Reuse byte-level matches, never mutable ownership or confirmation."""
+        key = (
+            delta_message[:delta_prefix_end], len(delta_message),
+            delta_prefix_end, first_message, second_message,
+        )
+        cached = self._companion_discoveries.get(key)
+        if cached is not None:
+            self._companion_discoveries.move_to_end(key)
+            observation, _size = cached
+            if observation is None:
+                return None
+            # Identical bytes can belong to independent operations or flows.
+            # Keep their observation identities and confirmation counts distinct.
+            return dataclasses.replace(
+                observation, timestamp=pending.timestamp, flow=pending.flow,
+                stream_sequence=pending.stream_sequence,
+            )
+
+        observation = discover_companion_observation(
+            delta_message=delta_message,
+            first_message=first_message,
+            second_message=second_message,
+            timestamp=pending.timestamp,
+            flow=pending.flow,
+            stream_sequence=pending.stream_sequence,
+            delta_prefix_end=delta_prefix_end,
+        )
+        size = len(key[0]) + len(first_message) + len(second_message)
+        if (
+            self.COMPANION_DISCOVERY_CACHE_LIMIT > 0
+            and size <= self.COMPANION_DISCOVERY_CACHE_BYTES
+        ):
+            while self._companion_discoveries and (
+                len(self._companion_discoveries)
+                >= self.COMPANION_DISCOVERY_CACHE_LIMIT
+                or self._companion_discovery_bytes + size
+                > self.COMPANION_DISCOVERY_CACHE_BYTES
+            ):
+                _, (_, expired_size) = self._companion_discoveries.popitem(last=False)
+                self._companion_discovery_bytes -= expired_size
+            self._companion_discoveries[key] = (observation, size)
+            self._companion_discovery_bytes += size
+        return observation
+
+    def _clear_companion_discoveries(self) -> None:
+        self._companion_discoveries.clear()
+        self._companion_discovery_bytes = 0
+
     def _read_span(self, flow: FlowKey, start: int, length: int) -> Optional[bytes]:
         """Read stream bytes ``[start, start + length)`` from frame spans."""
         if length <= 0:
@@ -1019,14 +1085,9 @@ class DepositOriginTracker:
                 position += length
                 continue
             for first_index, (first_sequence, first_message) in enumerate(following):
-                observation = discover_companion_observation(
-                    delta_message=delta_message,
-                    first_message=first_message,
-                    second_message=message,
-                    timestamp=pending.timestamp,
-                    flow=pending.flow,
-                    stream_sequence=pending.stream_sequence,
-                    delta_prefix_end=pending.delta_prefix_end,
+                observation = self._discover_companions(
+                    pending, delta_message, first_message, message,
+                    pending.delta_prefix_end,
                 )
                 if observation is None:
                     continue
@@ -1176,8 +1237,8 @@ class DepositOriginTracker:
             return False
         return True
 
-    @staticmethod
     def _message_claims_companion_pair(
+        self,
         message: bytes,
         prefix_end: int,
         pending: _PendingDeposit,
@@ -1187,14 +1248,9 @@ class DepositOriginTracker:
         if prefix_end < 5 + TOKEN_WIDTH:
             return False
         return (
-            discover_companion_observation(
-                delta_message=message,
-                first_message=first_message,
-                second_message=second_message,
-                timestamp=pending.timestamp,
-                flow=pending.flow,
-                stream_sequence=pending.stream_sequence,
-                delta_prefix_end=min(prefix_end, len(message)),
+            self._discover_companions(
+                pending, message, first_message, second_message,
+                min(prefix_end, len(message)),
             )
             is not None
         )
@@ -1735,6 +1791,9 @@ class DepositOriginTracker:
             )
 
     def _purge_flow_history_locked(self, flow: FlowKey) -> None:
+        # Discovery is content-keyed across flows. Dropping this optional cache
+        # releases closed-flow bytes without changing any retained evidence.
+        self._clear_companion_discoveries()
         self._recent.pop(flow, None)
         self._stream_spans.pop(flow, None)
         self._purge_manual_flow_locked(flow)
@@ -1842,6 +1901,7 @@ class DepositOriginTracker:
         pending, self._pending = self._pending, []
         for deposit in pending:
             self._close_pending(deposit)
+        self._clear_companion_discoveries()
         self._recent.clear()
         self._stream_spans.clear()
         self._manual_candidates.clear()

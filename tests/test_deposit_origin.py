@@ -26,6 +26,7 @@ from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
 from bdo_toolkit.events import BDOEvent, Flow
 from bdo_toolkit.profiles import OpcodeProfile, ProfileError
+from bdo_toolkit.origin_learning import discover_companion_observation
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -238,6 +239,149 @@ def _tracker(emitted):
         decrement_specs=(DecrementSpec(0x1A32, 52, 42),),
         emit=emitted.append,
     )
+
+
+def test_discovery_reuses_negative_matches_but_rechecks_overlapping_bytes(monkeypatch):
+    calls = []
+
+    def counted_discovery(**kwargs):
+        calls.append(None)
+        return discover_companion_observation(**kwargs)
+
+    monkeypatch.setattr(
+        "bdo_toolkit._deposit_origin.discover_companion_observation",
+        counted_discovery,
+    )
+    emitted = []
+    tracker = _tracker(emitted)
+    delta, first, second = _worker_chain()
+    tracker.observe_frame(delta)
+    tracker.register(_storage_event(message_length=80))
+    missing_token = bytearray(first.message)
+    missing_token[36:44] = b"\x00" * 8
+    context = PacketContext(1000.0, FLOW, stream_start=1080)
+    payload = bytes(missing_token) + second.message
+    tracker.observe_stream(payload, context)
+    assert len(calls) == 1
+    for _ in range(10):
+        tracker.observe_stream(payload, context)
+    assert len(calls) == 1
+    assert emitted == []
+
+    # The newest overlapping bytes now supply a real chain. A sequence-only
+    # cache would incorrectly keep the earlier negative result.
+    tracker.observe_stream(first.message, context)
+    assert len(calls) == 2
+    assert [event.source for event in emitted] == ["Worker Production"]
+
+
+@pytest.mark.parametrize("reused_token", [False, True])
+@pytest.mark.parametrize("entry_limit, byte_limit", [
+    (0, 0), (4096, 64), (1, 2 * 1024 * 1024), (4096, 180),
+    (4096, 2 * 1024 * 1024),
+])
+def test_discovery_cache_pressure_preserves_late_storage_ownership(
+    reused_token, entry_limit, byte_limit,
+):
+    emitted = []
+    tracker = _tracker(emitted)
+    tracker.COMPANION_DISCOVERY_CACHE_LIMIT = entry_limit
+    tracker.COMPANION_DISCOVERY_CACHE_BYTES = byte_limit
+    delta_a, first, second = _worker_chain()
+    token_b = (
+        delta_a.message[18:26] if reused_token
+        else bytes.fromhex("3141592653589793")
+    )
+    delta_b, _, _ = _worker_chain(delta_seq=1080, token=token_b)
+    # Raw bytes arrive before target registration supplies the crossed
+    # wrapper's first-record boundary. Positive discovery must remain provisional.
+    tracker.observe_stream(
+        delta_a.message + delta_b.message + first.message + second.message,
+        PacketContext(1000.0, FLOW, stream_start=1000),
+    )
+    tracker.register(_storage_event(message_length=80), raw_message=delta_a.message)
+    assert tracker._pending[0].awaiting_storage_boundaries == frozenset({1080})
+    assert emitted == []
+    tracker.register(
+        _storage_event(item_id=7003, seq=1080, message_length=80),
+        raw_message=delta_b.message,
+    )
+    assert len(tracker._companion_discoveries) <= entry_limit
+    assert tracker._companion_discovery_bytes <= byte_limit
+    assert tracker._companion_discovery_bytes == sum(
+        size for _observation, size in tracker._companion_discoveries.values()
+    )
+    tracker.finalize_all()
+    assert {event.item_id: event.source for event in emitted} == {
+        7002: None if reused_token else "Worker Production",
+        7003: None,
+    }
+    assert tracker._companion_discoveries == {}
+    assert tracker._companion_discovery_bytes == 0
+
+
+def test_cached_discovery_preserves_independent_operation_and_flow_identity(monkeypatch):
+    calls = []
+
+    def counted_discovery(**kwargs):
+        calls.append(None)
+        return discover_companion_observation(**kwargs)
+
+    monkeypatch.setattr(
+        "bdo_toolkit._deposit_origin.discover_companion_observation",
+        counted_discovery,
+    )
+    emitted = []
+    observations = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(), emit=emitted.append, origin_observer=observations.append,
+    )
+    other_flow = FlowKey("10.0.0.3", 8889, "10.0.0.4", 50001)
+    identities = [(FLOW, 1000, 1000.0), (FLOW, 2000, 1000.1), (other_flow, 3000, 1000.2)]
+    for flow, sequence, timestamp in identities:
+        delta, first, second = _worker_chain(delta_seq=sequence)
+        context = PacketContext(timestamp, flow)
+        tracker.observe_frame(replace(delta, context=context))
+        event = replace(
+            _storage_event(seq=sequence, timestamp=timestamp, message_length=80),
+            flow=Flow(
+                flow.source_ip, flow.source_port,
+                flow.destination_ip, flow.destination_port,
+            ),
+        )
+        tracker.register(event, raw_message=delta.message)
+        tracker.observe_frame(replace(first, context=context))
+        tracker.observe_frame(replace(second, context=context))
+    assert len(calls) == 1
+    assert [(o.flow, o.stream_sequence, o.timestamp) for o in observations] == identities
+    assert len({o.observation_id for o in observations}) == 3
+    assert [event.source for event in emitted] == ["Worker Production"] * 3
+    assert tracker._companion_discoveries
+    tracker.close_flow(other_flow)
+    assert tracker._companion_discoveries == {}
+    assert tracker._companion_discovery_bytes == 0
+
+
+def test_discovery_cache_key_preserves_prefix_boundary_and_frame_validation():
+    tracker = _tracker([])
+    delta, first, second = _worker_chain()
+    tracker.register(_storage_event(message_length=80), raw_message=delta.message)
+    pending = tracker._pending[0]
+    for message, boundary in (
+        (delta.message, 37),
+        (delta.message, 20),  # Cuts the token, even with otherwise identical bytes.
+        (delta.message[:-1], 37),  # Same prefix but inconsistent declared length.
+        (delta.message, 37),
+    ):
+        actual = tracker._discover_companions(
+            pending, message, first.message, second.message, boundary,
+        )
+        expected = discover_companion_observation(
+            delta_message=message, first_message=first.message,
+            second_message=second.message, timestamp=1000.0, flow=FLOW,
+            stream_sequence=1000, delta_prefix_end=boundary,
+        )
+        assert actual == expected
 
 
 def _instance_manual_tracker(emitted):
