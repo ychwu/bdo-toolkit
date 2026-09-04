@@ -1,6 +1,7 @@
 # bdo-toolkit
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ychwu/bdo-toolkit/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/ychwu/bdo-toolkit/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/bdo-toolkit?style=flat-square&label=version)](https://pypi.org/project/bdo-toolkit/)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://github.com/ychwu/bdo-toolkit/blob/main/pyproject.toml)
 ![Tested on NA/EU](https://img.shields.io/badge/tested-NA%2FEU-5b61a8?style=flat-square)
 [![Package: Stable](https://img.shields.io/badge/package-stable-2f855a?style=flat-square)](https://ychwu.github.io/bdo-toolkit/#stability)
