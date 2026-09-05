@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bdo_toolkit._calibration import capture as calibration_capture
 from threading import Event, Thread
 
 import pytest
@@ -471,7 +472,7 @@ def test_incomplete_startup_cleanup_keeps_calibration_owner_until_stop_retry(
             raise startup_failure
 
     monkeypatch.setattr(
-        calibration_module,
+        calibration_capture,
         "LivePacketCapture",
         IncompleteStartupCapture,
     )
@@ -569,7 +570,7 @@ def test_calibrate_live_polls_and_propagates_background_failure(
                 retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
             )
 
-    monkeypatch.setattr(calibration_module, "CalibrationSession", FakeSession)
+    monkeypatch.setattr(calibration_capture, "CalibrationSession", FakeSession)
     monkeypatch.setattr(
         "time.sleep",
         lambda seconds: pytest.fail("failure polling must precede waiting"),

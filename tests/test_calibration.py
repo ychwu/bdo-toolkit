@@ -299,11 +299,9 @@ def test_auto_calibration_refuses_a_single_storage_count_shape():
 
 def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
-    from bdo_toolkit.calibration import (
-        _CalibratedItemRecord,
-        _Options,
-        _discover_source_stack_decrement,
-    )
+    from bdo_toolkit._calibration._records import _CalibratedItemRecord
+    from bdo_toolkit._calibration._records import _Options
+    from bdo_toolkit._calibration.companions import _discover_source_stack_decrement
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
@@ -367,11 +365,9 @@ def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
 
 def test_multi_stack_decrement_calibration_normalizes_base_and_stride():
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
-    from bdo_toolkit.calibration import (
-        _CalibratedItemRecord,
-        _Options,
-        _discover_source_stack_decrement,
-    )
+    from bdo_toolkit._calibration._records import _CalibratedItemRecord
+    from bdo_toolkit._calibration._records import _Options
+    from bdo_toolkit._calibration.companions import _discover_source_stack_decrement
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
@@ -438,11 +434,9 @@ def test_current_decrement_phase_does_not_learn_every_other_record():
     """A cross-record ±8 coincidence must not double the true stride."""
 
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
-    from bdo_toolkit.calibration import (
-        _CalibratedItemRecord,
-        _Options,
-        _discover_source_stack_decrement,
-    )
+    from bdo_toolkit._calibration._records import _CalibratedItemRecord
+    from bdo_toolkit._calibration._records import _Options
+    from bdo_toolkit._calibration.companions import _discover_source_stack_decrement
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
@@ -512,7 +506,7 @@ def test_current_decrement_phase_does_not_learn_every_other_record():
 
 def test_decrement_repeat_shape_rejects_incomplete_storage_cardinality():
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
-    from bdo_toolkit.calibration import _source_stack_repeated_shape
+    from bdo_toolkit._calibration.companions import _source_stack_repeated_shape
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
     message = bytearray(110)
@@ -657,11 +651,9 @@ def test_container_companion_handles_known_field_orders_safely(
     expected_offsets,
 ):
     from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
-    from bdo_toolkit.calibration import (
-        _CalibratedItemRecord,
-        _Options,
-        _discover_source_container_decrement,
-    )
+    from bdo_toolkit._calibration._records import _CalibratedItemRecord
+    from bdo_toolkit._calibration._records import _Options
+    from bdo_toolkit._calibration.companions import _discover_source_container_decrement
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 

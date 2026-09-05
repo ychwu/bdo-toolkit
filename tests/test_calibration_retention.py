@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bdo_toolkit._calibration import capture as calibration_capture
+from bdo_toolkit._calibration import workflow as calibration_workflow
 from typing import Iterator
 
 import pytest
@@ -161,7 +163,7 @@ def test_offline_calibration_collector_tracks_connection_generations(
     def fake_replay(path, manager) -> None:
         seen["manager"] = manager
 
-    monkeypatch.setattr(calibration_module, "replay_pcap_file", fake_replay)
+    monkeypatch.setattr(calibration_capture, "replay_pcap_file", fake_replay)
 
     assert collect_frames_pcap("unused.pcapng") == []
     manager = seen["manager"]
@@ -188,7 +190,7 @@ def test_live_retention_keeps_newest_tail_and_reports_truncation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        calibration_module,
+        calibration_capture,
         "LivePacketCapture",
         _FakeLivePacketCapture,
     )
@@ -246,7 +248,7 @@ def test_live_calibration_bounds_reassembly_flows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        calibration_module,
+        calibration_capture,
         "LivePacketCapture",
         _FakeLivePacketCapture,
     )
@@ -363,7 +365,7 @@ def test_bounded_live_result_reports_retention_without_eviction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        calibration_module,
+        calibration_capture,
         "LivePacketCapture",
         _FakeLivePacketCapture,
     )
@@ -402,7 +404,7 @@ def test_calibrate_and_update_forwards_live_retention_options(
             retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
         )
 
-    monkeypatch.setattr(calibration_module, "calibrate_live", fake_calibrate_live)
+    monkeypatch.setattr(calibration_workflow, "calibrate_live", fake_calibrate_live)
 
     result, update = calibrate_and_update(
         tmp_path / "opcodes.json",
@@ -444,7 +446,7 @@ def test_calibrate_live_forwards_retention_options(
         def stop(self) -> CalibrationResult:
             return canned
 
-    monkeypatch.setattr(calibration_module, "CalibrationSession", FakeSession)
+    monkeypatch.setattr(calibration_capture, "CalibrationSession", FakeSession)
 
     result = calibrate_live(
         item_id=7003,

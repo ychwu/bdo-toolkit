@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bdo_toolkit._calibration import capture as calibration_capture
 import json
 from pathlib import Path
 
@@ -1543,7 +1544,7 @@ def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
     def fail_sleep(seconds):
         raise RuntimeError("wait failed")
 
-    monkeypatch.setattr(calibration_module, "CalibrationSession", FakeSession)
+    monkeypatch.setattr(calibration_capture, "CalibrationSession", FakeSession)
     monkeypatch.setattr("time.sleep", fail_sleep)
 
     with pytest.raises(RuntimeError, match="wait failed"):

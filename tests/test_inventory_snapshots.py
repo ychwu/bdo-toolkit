@@ -4,7 +4,7 @@ from dataclasses import replace
 
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
-from bdo_toolkit.calibration import _discover_storage_context_offset
+from bdo_toolkit._calibration._records import _discover_storage_context_offset
 
 
 def _segment(engine: PacketEngine, payload: bytes) -> None:
