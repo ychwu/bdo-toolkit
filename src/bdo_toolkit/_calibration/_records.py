@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Optional
+from .._record_geometry import uniform_stride
 from .._protocol import (
     BDOFrame,
     CHARACTER_LOAD_CONTEXT,
@@ -295,10 +296,9 @@ def _record_frame_shape(
         offsets = _plausible_record_offsets(frame, item_id.to_bytes(4, "little"))
     if len(offsets) < 2:
         return frame.length, None
-    deltas = {b - a for a, b in zip(offsets, offsets[1:])}
-    if len(deltas) != 1:
+    stride = uniform_stride(offsets)
+    if stride is None:
         return frame.length, None
-    stride = deltas.pop()
     return frame.length - (len(offsets) - 1) * stride, stride
 
 
@@ -651,10 +651,9 @@ def _discover_storage_record_count_offset(
             if frame.length != single_record_length:
                 continue
         else:
-            strides = {later - earlier for earlier, later in zip(offsets, offsets[1:])}
-            if len(strides) != 1:
+            stride = uniform_stride(offsets)
+            if stride is None:
                 continue
-            stride = next(iter(strides))
             if frame.length - (count - 1) * stride != single_record_length:
                 continue
 

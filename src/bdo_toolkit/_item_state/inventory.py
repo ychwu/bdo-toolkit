@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
+from .._record_geometry import infer_repeat_stride
 from .._protocol import (
     BDOFrame,
     CHARACTER_LOAD_CONTEXT,
@@ -46,10 +47,9 @@ def _inventory_frame_stride(
     base_length = spec.single_record_message_length
     if count < 2 or base_length is None:
         return None
-    extra_length = frame.length - base_length
-    if extra_length <= 0 or extra_length % (count - 1):
+    stride = infer_repeat_stride(frame.length, base_length, count)
+    if stride is None:
         return None
-    stride = extra_length // (count - 1)
     if stride <= _INVENTORY_TRAILING_DISCOVERY_BYTES:
         return None
     if frame.length != base_length + (count - 1) * stride:

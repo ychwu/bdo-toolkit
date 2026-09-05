@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional
 
+from ._record_geometry import fields_fit_record, infer_repeat_stride, uniform_stride
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
     MAX_PLAUSIBLE_ITEM_ID,
@@ -139,30 +140,24 @@ def _declared_inventory_snapshot_record_deltas(
             stride: Optional[int] = None
             deltas = [0]
         else:
-            extra_length = len(message) - base_length
-            divisor = declared_count - 1
-            if extra_length <= 0 or extra_length % divisor:
+            stride = infer_repeat_stride(len(message), base_length, declared_count)
+            if stride is None:
                 continue
-            stride = extra_length // divisor
             prefix_length = base_length - stride
             if prefix_length < 5 or count_offset + 2 > prefix_length:
                 continue
             if len(message) - prefix_length != declared_count * stride:
                 continue
 
-            relative_offsets = (
-                spec.item_offset - prefix_length,
-                spec.quantity_offset - prefix_length,
-                instance_offset - prefix_length,
-            )
-            if min(relative_offsets) < 0:
-                continue
-            required_record_end = max(
-                relative_offsets[0] + 4,
-                relative_offsets[1] + _INVENTORY_SNAPSHOT_QUANTITY_BYTES,
-                relative_offsets[2] + 8,
-            )
-            if required_record_end > stride:
+            if not fields_fit_record(
+                prefix_length,
+                stride,
+                (
+                    (spec.item_offset, 4),
+                    (spec.quantity_offset, _INVENTORY_SNAPSHOT_QUANTITY_BYTES),
+                    (instance_offset, 8),
+                ),
+            ):
                 continue
             deltas = [stride * index for index in range(declared_count)]
 
@@ -218,11 +213,9 @@ def _declared_storage_record_deltas(
             return []
         deltas = [0]
     else:
-        extra_length = len(message) - base_length
-        divisor = declared_count - 1
-        if extra_length <= 0 or extra_length % divisor:
+        stride = infer_repeat_stride(len(message), base_length, declared_count)
+        if stride is None:
             return []
-        stride = extra_length // divisor
         prefix_length = base_length - stride
         if (
             prefix_length < 5
@@ -231,19 +224,15 @@ def _declared_storage_record_deltas(
         ):
             return []
 
-        relative_offsets = (
-            spec.item_offset - prefix_length,
-            spec.quantity_offset - prefix_length,
-            instance_offset - prefix_length,
-        )
-        if min(relative_offsets) < 0:
-            return []
-        required_record_end = max(
-            relative_offsets[0] + 4,
-            relative_offsets[1] + 4,
-            relative_offsets[2] + 8,
-        )
-        if required_record_end > stride:
+        if not fields_fit_record(
+            prefix_length,
+            stride,
+            (
+                (spec.item_offset, 4),
+                (spec.quantity_offset, _TRANSFER_QUANTITY_BYTES),
+                (instance_offset, 8),
+            ),
+        ):
             return []
         deltas = [stride * index for index in range(declared_count)]
 
@@ -306,13 +295,11 @@ def _structural_record_deltas(
         return []
 
     if len(offsets) > 1:
-        strides = [b - a for a, b in zip(offsets, offsets[1:])]
+        candidate_stride = uniform_stride(offsets)
         minimum_stride = max(20, instance_delta + 8)
-        if any(stride < minimum_stride for stride in strides):
+        if candidate_stride is None or candidate_stride < minimum_stride:
             return []
-        if len(set(strides)) != 1:
-            return []
-        inferred_stride = strides[0]
+        inferred_stride = candidate_stride
     else:
         inferred_stride = 0
 
