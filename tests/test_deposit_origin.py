@@ -62,6 +62,9 @@ def test_closed_flow_histories_are_released_across_long_sessions():
     assert tracker._stream_spans == {}
     assert tracker._first_record_boundaries == {}
     assert tracker._observed_chains == set()
+    assert tracker._manual._manual_candidates == {}
+    assert tracker._manual._manual_candidate_bytes == 0
+    assert tracker._discovery._companion_discoveries == {}
 
 # Worker deposits span BOTH storage-delta context modes (05 and 20).
 WORKER_FIXTURES = [
@@ -249,7 +252,7 @@ def test_discovery_reuses_negative_matches_but_rechecks_overlapping_bytes(monkey
         return discover_companion_observation(**kwargs)
 
     monkeypatch.setattr(
-        "bdo_toolkit._deposit_origin.discover_companion_observation",
+        "bdo_toolkit._origin.discovery.discover_companion_observation",
         counted_discovery,
     )
     emitted = []
@@ -285,8 +288,8 @@ def test_discovery_cache_pressure_preserves_late_storage_ownership(
 ):
     emitted = []
     tracker = _tracker(emitted)
-    tracker.COMPANION_DISCOVERY_CACHE_LIMIT = entry_limit
-    tracker.COMPANION_DISCOVERY_CACHE_BYTES = byte_limit
+    tracker._discovery.COMPANION_DISCOVERY_CACHE_LIMIT = entry_limit
+    tracker._discovery.COMPANION_DISCOVERY_CACHE_BYTES = byte_limit
     delta_a, first, second = _worker_chain()
     token_b = (
         delta_a.message[18:26] if reused_token
@@ -306,18 +309,18 @@ def test_discovery_cache_pressure_preserves_late_storage_ownership(
         _storage_event(item_id=7003, seq=1080, message_length=80),
         raw_message=delta_b.message,
     )
-    assert len(tracker._companion_discoveries) <= entry_limit
-    assert tracker._companion_discovery_bytes <= byte_limit
-    assert tracker._companion_discovery_bytes == sum(
-        size for _observation, size in tracker._companion_discoveries.values()
+    assert len(tracker._discovery._companion_discoveries) <= entry_limit
+    assert tracker._discovery._companion_discovery_bytes <= byte_limit
+    assert tracker._discovery._companion_discovery_bytes == sum(
+        size for _observation, size in tracker._discovery._companion_discoveries.values()
     )
     tracker.finalize_all()
     assert {event.item_id: event.source for event in emitted} == {
         7002: None if reused_token else "Worker Production",
         7003: None,
     }
-    assert tracker._companion_discoveries == {}
-    assert tracker._companion_discovery_bytes == 0
+    assert tracker._discovery._companion_discoveries == {}
+    assert tracker._discovery._companion_discovery_bytes == 0
 
 
 def test_cached_discovery_preserves_independent_operation_and_flow_identity(monkeypatch):
@@ -328,7 +331,7 @@ def test_cached_discovery_preserves_independent_operation_and_flow_identity(monk
         return discover_companion_observation(**kwargs)
 
     monkeypatch.setattr(
-        "bdo_toolkit._deposit_origin.discover_companion_observation",
+        "bdo_toolkit._origin.discovery.discover_companion_observation",
         counted_discovery,
     )
     emitted = []
@@ -356,10 +359,10 @@ def test_cached_discovery_preserves_independent_operation_and_flow_identity(monk
     assert [(o.flow, o.stream_sequence, o.timestamp) for o in observations] == identities
     assert len({o.observation_id for o in observations}) == 3
     assert [event.source for event in emitted] == ["Worker Production"] * 3
-    assert tracker._companion_discoveries
+    assert tracker._discovery._companion_discoveries
     tracker.close_flow(other_flow)
-    assert tracker._companion_discoveries == {}
-    assert tracker._companion_discovery_bytes == 0
+    assert tracker._discovery._companion_discoveries == {}
+    assert tracker._discovery._companion_discovery_bytes == 0
 
 
 def test_discovery_cache_key_preserves_prefix_boundary_and_frame_validation():
@@ -373,7 +376,7 @@ def test_discovery_cache_key_preserves_prefix_boundary_and_frame_validation():
         (delta.message[:-1], 37),  # Same prefix but inconsistent declared length.
         (delta.message, 37),
     ):
-        actual = tracker._discover_companions(
+        actual = tracker._discovery.discover(
             pending, message, first.message, second.message, boundary,
         )
         expected = discover_companion_observation(
@@ -1050,7 +1053,7 @@ def test_manual_candidate_cap_pressure_does_not_manufacture_uniqueness(
 def test_candidate_cap_suppression_survives_decreasing_packet_timestamps():
     emitted = []
     tracker = _instance_manual_tracker(emitted)
-    tracker.MAX_MANUAL_CANDIDATES_PER_FLOW = 1
+    tracker._manual.MAX_MANUAL_CANDIDATES_PER_FLOW = 1
     source_instances = (
         bytes.fromhex("1020304050607080"),
         bytes.fromhex("1122334455667788"),
