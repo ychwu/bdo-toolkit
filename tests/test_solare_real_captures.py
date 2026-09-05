@@ -9,6 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
+from fixture_paths import optional_fixture_path
+
 import bdo_toolkit.solare._result as result_module
 from bdo_toolkit.solare import (
     SolareDetectionStatus,
@@ -57,7 +59,7 @@ _CLASS_CODES = (
 
 @dataclass(frozen=True)
 class _CompleteCapture:
-    relative_path: str
+    capture_id: str
     scanned_messages: int
     candidate_families: tuple[tuple[int, int, int], ...]
     rich_layout: SolareFamilyLayout
@@ -74,9 +76,8 @@ class _CompleteCapture:
 
 _COMPLETE_CAPTURES = (
     _CompleteCapture(
-        relative_path=(
-            "docs/captures/fixtures/solare/"
-            "leaderboard_full_stream_2026-06-24.pcapng"
+        capture_id=(
+            'solare--leaderboard-complete--1065cbd89c'
         ),
         scanned_messages=361,
         candidate_families=(
@@ -114,9 +115,8 @@ _COMPLETE_CAPTURES = (
         max_hidden_match_delta=125,
     ),
     _CompleteCapture(
-        relative_path=(
-            "tools/solare/captures/"
-            "solare_discovery_retry_20260714_3.pcapng"
+        capture_id=(
+            'solare--leaderboard-complete-retry--8bfa6979ab'
         ),
         scanned_messages=385,
         candidate_families=(
@@ -155,8 +155,8 @@ _COMPLETE_CAPTURES = (
         max_hidden_match_delta=108,
     ),
     _CompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_live_20260714_145323.pcapng"
+        capture_id=(
+            'solare--leaderboard-complete-live--2c033e6b01'
         ),
         scanned_messages=384,
         candidate_families=(
@@ -195,8 +195,8 @@ _COMPLETE_CAPTURES = (
         max_hidden_match_delta=108,
     ),
     _CompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_post_patch_20260717_1.pcapng"
+        capture_id=(
+            'solare--leaderboard-complete-post-patch--92d835cbe9'
         ),
         scanned_messages=384,
         candidate_families=(
@@ -240,10 +240,10 @@ _COMPLETE_CAPTURES = (
 @pytest.mark.parametrize(
     "case",
     _COMPLETE_CAPTURES,
-    ids=lambda case: Path(case.relative_path).stem,
+    ids=lambda case: Path(case.capture_id).stem,
 )
 def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
-    path = ROOT / case.relative_path
+    path = optional_fixture_path(case.capture_id)
     if not path.is_file():
         pytest.skip("private Solare capture is not installed")
 
@@ -526,12 +526,12 @@ def test_complete_private_capture_generation(case: _CompleteCapture) -> None:
 @pytest.mark.parametrize(
     "case",
     _COMPLETE_CAPTURES[:1],
-    ids=lambda case: f"raw-retention-{Path(case.relative_path).stem}",
+    ids=lambda case: f"raw-retention-{Path(case.capture_id).stem}",
 )
 def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
     case: _CompleteCapture,
 ) -> None:
-    path = ROOT / case.relative_path
+    path = optional_fixture_path(case.capture_id)
     if not path.is_file():
         pytest.skip("private Solare capture is not installed")
 
@@ -642,7 +642,7 @@ def test_raw_retention_is_opt_in_without_changing_snapshot_semantics(
 
 @dataclass(frozen=True)
 class _NonCompleteCapture:
-    relative_path: str
+    capture_id: str
     status: SolareDetectionStatus
     scanned_messages: int
     candidate_families: tuple[tuple[int, int, int], ...]
@@ -655,17 +655,16 @@ class _NonCompleteCapture:
 
 _NON_COMPLETE_CAPTURES = (
     _NonCompleteCapture(
-        relative_path=(
-            "docs/captures/fixtures/solare/"
-            "leaderboard_truncated_single_packet_2026-06-24.pcapng"
+        capture_id=(
+            'solare--leaderboard-truncated-packet--9769f357f1'
         ),
         status=SolareDetectionStatus.INCONCLUSIVE,
         scanned_messages=0,
         candidate_families=(),
     ),
     _NonCompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_discovery_retry_20260714.pcapng"
+        capture_id=(
+            'solare--leaderboard-gapped--aed4e62b2c'
         ),
         status=SolareDetectionStatus.DETECTED_INCOMPLETE,
         scanned_messages=300,
@@ -689,24 +688,24 @@ _NON_COMPLETE_CAPTURES = (
         ),
     ),
     _NonCompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_discovery_retry_20260714_2.pcapng"
+        capture_id=(
+            'solare--menu-context-retry--0d108f94ee'
         ),
         status=SolareDetectionStatus.MENU_CONTEXT,
         scanned_messages=24,
         candidate_families=((0x19CB, 13921, 24),),
     ),
     _NonCompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_discovery_test_menu_only.pcapng"
+        capture_id=(
+            'solare--menu-context--36d422c6a9'
         ),
         status=SolareDetectionStatus.MENU_CONTEXT,
         scanned_messages=24,
         candidate_families=((0x19CB, 13921, 24),),
     ),
     _NonCompleteCapture(
-        relative_path=(
-            "tools/solare/captures/solare_live_probe_20260714_121723.pcapng"
+        capture_id=(
+            'solare--live-probe--11ff332539'
         ),
         status=SolareDetectionStatus.INCONCLUSIVE,
         scanned_messages=0,
@@ -718,12 +717,12 @@ _NON_COMPLETE_CAPTURES = (
 @pytest.mark.parametrize(
     "case",
     _NON_COMPLETE_CAPTURES,
-    ids=lambda case: Path(case.relative_path).stem,
+    ids=lambda case: Path(case.capture_id).stem,
 )
 def test_private_non_complete_capture_never_exposes_snapshot(
     case: _NonCompleteCapture,
 ) -> None:
-    path = ROOT / case.relative_path
+    path = optional_fixture_path(case.capture_id)
     if not path.is_file():
         pytest.skip("private Solare capture is not installed")
 

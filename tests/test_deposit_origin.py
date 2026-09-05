@@ -70,15 +70,15 @@ def test_closed_flow_histories_are_released_across_long_sessions():
 
 # Worker deposits span BOTH storage-delta context modes (05 and 20).
 WORKER_FIXTURES = [
-    "worker_4607.pcapng",
-    "5960_qty1_and_4015_qty1_multi.pcapng",
-    "7360_hit2_qty10.pcapng",
-    "7002_qty25.pcapng",
+    'storage--worker-deposit--4316ac0095',
+    'storage--worker-two-item-deposit--de2d86c32a',
+    'storage--worker-deposit-followup--28ab3bff2f',
+    'storage--worker-single-item-deposit--ad6b26a29e',
 ]
 MANUAL_FIXTURES = [
-    "1000306_qty5_unstackable_i2s.pcapng",
-    "new_potato_3_tostorage.pcapng",
-    "new_potato_1_1_1.pcapng",
+    'storage--manual-unstackable-batch--46b846b370',
+    'storage--manual-stack-deposit--d765fe48ce',
+    'storage--manual-split-deposit--7efc050fd5',
 ]
 
 
@@ -125,10 +125,10 @@ def test_manual_deposits_classify_as_manual(fixture):
 
 @requires_fixtures
 def test_legacy_manual_fixtures_distinguish_identity_confidence_and_stride():
-    full_stack = _classified_sources("new_potato_3_tostorage.pcapng")
-    partial_stack = _classified_sources("new_potato_1_1_1.pcapng")
+    full_stack = _classified_sources('storage--manual-stack-deposit--d765fe48ce')
+    partial_stack = _classified_sources('storage--manual-split-deposit--7efc050fd5')
     unstackable_batch = _classified_sources(
-        "1000306_qty5_unstackable_i2s.pcapng"
+        'storage--manual-unstackable-batch--46b846b370'
     )
 
     assert len(full_stack) == 1
@@ -2411,7 +2411,7 @@ def test_runtime_confirmed_family_history_is_bounded():
 @requires_fixtures
 def test_july17_single_record_profile_decodes_full_worker_batch(tmp_path):
     try:
-        fixture = fixture_path("multi_worker_deposit_4802_4003.pcapng")
+        fixture = fixture_path('storage--worker-multi-item-post-patch--6b08d80339')
     except FileNotFoundError:
         pytest.skip("July 17 private worker fixture not present")
 
@@ -2672,8 +2672,8 @@ def test_pending_storage_operations_are_hard_bounded():
 def test_classified_storage_sources_filter_through_the_canonical_field():
     # The dev-facing worker-tracker one-liner: filter at the API, applied
     # AFTER classification so the verdict is already on the event.
-    manual = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
-    worker = fixture_path("worker_4607.pcapng")
+    manual = fixture_path('storage--manual-unstackable-batch--46b846b370')
+    worker = fixture_path('storage--worker-deposit--4316ac0095')
 
     assert list(
         replay_pcap(

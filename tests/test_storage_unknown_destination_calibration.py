@@ -20,8 +20,8 @@ def test_known_town_establishes_column_for_same_opcode_unknown_town():
     """An unregistered nonzero town must validate, not veto, the learned field."""
 
     frames = collect_frames_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
-    ) + collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
+        fixture_path('storage--manual-unstackable-batch--46b846b370')
+    ) + collect_frames_pcap(fixture_path('storage--manual-stack-deposit--d765fe48ce'))
     known = next(frame for frame in frames if frame.opcode == 0x0E6A)
 
     unknown_storage_id = 0x12345678

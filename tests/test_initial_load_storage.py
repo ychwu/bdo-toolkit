@@ -17,7 +17,7 @@ requires_fixtures = pytest.mark.skipif(
 def test_initial_game_load_is_separated_from_live_storage_activity(tmp_path):
     """The July 17 startup capture is hydration, not a character switch."""
     try:
-        capture = fixture_path("fullcapture.pcapng")
+        capture = fixture_path('inventory--initial-world-load--63ef198a07')
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
 
@@ -130,7 +130,7 @@ def _august7_profile(tmp_path):
 @requires_fixtures
 def test_august_character_switch_hydration_is_not_live_activity(tmp_path):
     try:
-        capture = fixture_path("character-switch-2026-08-07.pcapng")
+        capture = fixture_path('inventory--character-switch--4016c4bfa8')
     except FileNotFoundError:
         pytest.skip("August 7 private character-switch fixture not present")
     profile = _august7_profile(tmp_path)
@@ -162,7 +162,7 @@ def test_august_controlled_deposit_keeps_destination_and_opcode_free_worker_orig
     tmp_path,
 ):
     try:
-        capture = fixture_path("velia_7003_qty5.pcapng")
+        capture = fixture_path('storage--manual-deposit-with-worker-traffic--34310f3435')
     except FileNotFoundError:
         pytest.skip("August 7 private controlled-deposit fixture not present")
     profile = _august7_profile(tmp_path)

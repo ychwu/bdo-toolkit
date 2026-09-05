@@ -245,8 +245,8 @@ def test_new_patch_family_is_discovered_without_being_known(tmp_path):
     learner = OriginLearner(min_observations=2)
     events = []
     for name in (
-        "5004_qty6_4604_qty25_multi.pcapng",
-        "7003_qty15_single_hit1.pcapng",
+        'storage--worker-multi-item-deposit--5b8dec558b',
+        'storage--worker-deposit-first--44e39f0531',
     ):
         events.extend(
             replay_pcap(

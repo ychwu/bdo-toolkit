@@ -260,7 +260,7 @@ def test_july17_profile_uses_exact_manual_instance_evidence() -> None:
     events = [
         event
         for event in replay_pcap(
-            fixture_path("calibration_5_inven_0_storage.pcapng"),
+            fixture_path('research--calibration-without-storage--3f2f229336'),
             opcode_profile=JULY17_OPCODE_PROFILE,
         )
         if event.event_type == "storage_delta"

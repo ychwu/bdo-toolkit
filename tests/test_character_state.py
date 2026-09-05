@@ -53,7 +53,7 @@ def _storage_diagnostics(state, storage_id: int):
 @requires_fixtures
 def test_july17_character_state_report_recovers_inventory_and_storage():
     try:
-        capture = fixture_path("fullcapture.pcapng")
+        capture = fixture_path('inventory--initial-world-load--63ef198a07')
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
     profile = JULY17_OPCODE_PROFILE
@@ -149,7 +149,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
 @requires_fixtures
 def test_july17_character_switch_classifies_exact_inventory_state():
     try:
-        capture = fixture_path("character-switch-2026-07-17-01.pcapng")
+        capture = fixture_path('inventory--character-switch--148be8bc49')
     except FileNotFoundError:
         pytest.skip("July 17 private character-switch fixture not present")
     profile = JULY17_OPCODE_PROFILE

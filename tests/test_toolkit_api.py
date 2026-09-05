@@ -100,7 +100,7 @@ def test_solare_session_still_requires_no_item_opcode_profile():
 def test_replay_batch_storage_deposit_as_structured_events():
     events = list(
         replay_pcap(
-            fixture_path("5960_qty1_and_4015_qty1_multi.pcapng"),
+            fixture_path('storage--worker-two-item-deposit--de2d86c32a'),
             opcode_profile=JULY6_OPCODE_PROFILE,
         )
     )
@@ -130,7 +130,7 @@ def test_replay_batch_storage_deposit_as_structured_events():
 
 @requires_fixtures
 def test_replay_filters_by_event_type_and_storage_id():
-    fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
+    fixture = fixture_path('storage--worker-two-item-deposit--de2d86c32a')
 
     assert list(
         replay_pcap(
@@ -173,7 +173,7 @@ def test_replay_filters_by_event_type_and_storage_id():
 def test_manual_bulk_deposit_uses_destination_storage_label():
     events = list(
         replay_pcap(
-            fixture_path("1000306_qty5_unstackable_i2s.pcapng"),
+            fixture_path('storage--manual-unstackable-batch--46b846b370'),
             opcode_profile=JULY6_OPCODE_PROFILE,
         )
     )

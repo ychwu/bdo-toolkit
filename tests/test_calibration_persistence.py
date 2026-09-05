@@ -253,7 +253,7 @@ def test_update_profile_explicit_merge_deduplicates_and_backs_up(tmp_path):
     )
 
     result = calibrate_pcap(
-        fixture_path("loot_window_potato_3_new.pcapng"),
+        fixture_path('loot-preview--gathering-potato--4a78a5ac06'),
         item_id=7003,
         quantity=3,
         action="loot-preview",
@@ -315,7 +315,7 @@ def test_update_profile_default_replaces_stale_action_specs(tmp_path):
     )
 
     result = calibrate_pcap(
-        fixture_path("new_potato.pcapng"),
+        fixture_path('inventory--withdraw-potato-stack--f64eee5df0'),
         item_id=7003,
         quantity=10,
         action="storage-to-inventory",

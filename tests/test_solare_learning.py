@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
+from fixture_paths import optional_fixture_path
+
 import bdo_toolkit.solare._details as details_module
 import bdo_toolkit.solare._detail_learning as learning_module
 import bdo_toolkit.solare._result as result_module
@@ -23,48 +25,30 @@ from bdo_toolkit.solare import (
 from bdo_toolkit.solare._discovery import DiscoveredSolareFamily
 
 
-ROOT = Path(__file__).resolve().parents[1]
-
 # These are the complete real captures installed in the repository/workspace.
-# Private exploration captures remain optional so a clean checkout still runs
-# the tracked June and July 21 cases.
+# All real captures are private and optional; synthetic coverage still runs
+# when the catalog is absent from a public checkout.
 _COMPLETE_CAPTURE_PATHS = (
-    ROOT
-    / "docs/captures/fixtures/solare/"
-    "leaderboard_full_stream_2026-06-24.pcapng",
-    ROOT
-    / "tools/solare/captures/"
-    "solare_discovery_retry_20260714_3.pcapng",
-    ROOT
-    / "tools/solare/captures/"
-    "solare_live_20260714_145323.pcapng",
-    ROOT
-    / "tools/solare/captures/"
-    "solare_post_patch_20260717_1.pcapng",
-    ROOT / "tests/fixtures/solare/leaderboard721.pcapng",
+    optional_fixture_path('solare--leaderboard-complete--1065cbd89c'),
+    optional_fixture_path('solare--leaderboard-complete-retry--8bfa6979ab'),
+    optional_fixture_path('solare--leaderboard-complete-live--2c033e6b01'),
+    optional_fixture_path('solare--leaderboard-complete-post-patch--92d835cbe9'),
+    optional_fixture_path('solare--leaderboard-complete-refresh--4a3672bd74'),
 )
 
 _SAME_GEOMETRY_CAPTURE_PAIRS = (
     (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_discovery_retry_20260714_3.pcapng",
-        ROOT
-        / "tools/solare/captures/"
-        "solare_live_20260714_145323.pcapng",
+        optional_fixture_path('solare--leaderboard-complete-retry--8bfa6979ab'),
+        optional_fixture_path('solare--leaderboard-complete-live--2c033e6b01'),
     ),
     (
-        ROOT
-        / "tools/solare/captures/"
-        "solare_post_patch_20260717_1.pcapng",
-        ROOT / "tests/fixtures/solare/leaderboard721.pcapng",
+        optional_fixture_path('solare--leaderboard-complete-post-patch--92d835cbe9'),
+        optional_fixture_path('solare--leaderboard-complete-refresh--4a3672bd74'),
     ),
 )
 
 _JULY_30_UNKNOWN_LAYOUT_CAPTURE = (
-    ROOT
-    / "tools/solare/captures/"
-    "solare_post_patch_20260725.pcapng"
+    optional_fixture_path('solare--leaderboard-complete-unregistered--dfeb623bda')
 )
 
 _LEARNED_CAPABILITIES = frozenset(
@@ -318,7 +302,7 @@ def test_mixed_registered_and_unknown_tables_keep_independent_details(
     unknown_role: str,
     profile_hidden_replays: dict[Path, _ReplayPair],
 ) -> None:
-    path = ROOT / "tests/fixtures/solare/leaderboard721.pcapng"
+    path = optional_fixture_path('solare--leaderboard-complete-refresh--4a3672bd74')
     if path not in profile_hidden_replays:
         pytest.skip("the tracked complete Solare capture is not installed")
     registered_result = profile_hidden_replays[path].registered

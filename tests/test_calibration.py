@@ -54,7 +54,7 @@ def _calibrate_i2s_with_count_authority(
 
     frames = collect_frames_pcap(fixture_path(fixture_name))
     authority = collect_frames_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+        fixture_path('storage--manual-unstackable-batch--46b846b370')
     )
     return calibrate_frames(
         frames + authority,
@@ -67,7 +67,7 @@ def _calibrate_i2s_with_count_authority(
 @requires_fixtures
 def test_calibration_discovers_current_patch_loot_preview():
     result = calibrate_pcap(
-        fixture_path("loot_window_potato_3_new.pcapng"),
+        fixture_path('loot-preview--gathering-potato--4a78a5ac06'),
         item_id=7003,
         quantity=3,
         action="loot-preview",
@@ -84,7 +84,7 @@ def test_calibration_discovers_current_patch_loot_preview():
 @requires_fixtures
 def test_calibration_discovers_current_storage_to_inventory():
     result = calibrate_pcap(
-        fixture_path("new_potato.pcapng"),
+        fixture_path('inventory--withdraw-potato-stack--f64eee5df0'),
         item_id=7003,
         quantity=10,
         action="storage-to-inventory",
@@ -107,7 +107,7 @@ def test_calibration_discovers_current_storage_to_inventory():
 @requires_fixtures
 def test_calibration_storage_to_inventory_with_changed_source_instance():
     result = calibrate_pcap(
-        fixture_path("potato_qty6.pcapng"),
+        fixture_path('inventory--withdraw-potato-stack--0ff7869895'),
         item_id=7003,
         quantity=6,
         action="storage-to-inventory",
@@ -129,7 +129,7 @@ def test_calibration_storage_to_inventory_with_changed_source_instance():
 def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path):
     """End-to-end guard for the multi-record length-poisoning bug."""
     result = calibrate_pcap(
-        fixture_path("hit_1_5_unstackable.pcapng"),
+        fixture_path('inventory--withdraw-unstackable-batch--3efc952c1e'),
         item_id=1000306,
         quantity=5,
         action="storage-to-inventory",
@@ -147,9 +147,9 @@ def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path)
     update_profile(result, profile_path, action="storage-to-inventory", backup=False)
 
     multi = list(
-        replay_pcap(fixture_path("hit_1_5_unstackable.pcapng"), opcode_profile=profile_path)
+        replay_pcap(fixture_path('inventory--withdraw-unstackable-batch--3efc952c1e'), opcode_profile=profile_path)
     )
-    single = list(replay_pcap(fixture_path("new_potato.pcapng"), opcode_profile=profile_path))
+    single = list(replay_pcap(fixture_path('inventory--withdraw-potato-stack--f64eee5df0'), opcode_profile=profile_path))
     assert len(multi) == 5
     assert [(e.item_id, e.quantity) for e in single] == [(7003, 10)]
 
@@ -157,7 +157,7 @@ def test_profile_from_unstackable_calibration_decodes_single_transfers(tmp_path)
 @requires_fixtures
 def test_calibration_discovers_current_inventory_to_storage(tmp_path):
     result = _calibrate_i2s_with_count_authority(
-        "new_potato_3_tostorage.pcapng",
+        'storage--manual-stack-deposit--d765fe48ce',
         item_id=7003,
         quantity=3,
     )
@@ -181,7 +181,7 @@ def test_calibration_discovers_current_inventory_to_storage(tmp_path):
     update_profile(result, profile_path, action="inventory-to-storage")
     events = list(
         replay_pcap(
-            fixture_path("new_potato_3_tostorage.pcapng"),
+            fixture_path('storage--manual-stack-deposit--d765fe48ce'),
             opcode_profile=profile_path,
         )
     )
@@ -202,7 +202,7 @@ def test_calibration_discovers_current_inventory_to_storage(tmp_path):
         "expected_quantity_offset",
     ),
     [
-        ("new_potato_1_1_1.pcapng", 7003, 1, 0x1A32, 52, 34, 42),
+        ('storage--manual-split-deposit--7efc050fd5', 7003, 1, 0x1A32, 52, 34, 42),
     ],
 )
 def test_calibration_preserves_stack_layout_when_instances_differ(
@@ -230,7 +230,7 @@ def test_calibration_preserves_stack_layout_when_instances_differ(
 @pytest.mark.parametrize(
     ("fixture_name", "item_id", "quantity"),
     [
-        ("new_item_to_storage_13_42.pcapng", 44195, 42),
+        ('storage--manual-item-deposit--954fe86978', 44195, 42),
     ],
 )
 def test_legacy_single_shape_captures_refuse_partial_storage_authority(
@@ -250,7 +250,7 @@ def test_legacy_single_shape_captures_refuse_partial_storage_authority(
 @requires_fixtures
 @pytest.mark.parametrize(
     "fixture_name",
-    ["calibration_5_inven_0_storage.pcapng"],
+    ['research--calibration-without-storage--3f2f229336'],
 )
 def test_calibration_discovers_all_current_patch_transfer_specs(fixture_name):
     result = calibrate_pcap(
@@ -299,7 +299,7 @@ def test_calibration_discovers_all_current_patch_transfer_specs(fixture_name):
 def test_auto_calibration_refuses_a_single_storage_count_shape():
     with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
         calibrate_pcap(
-            fixture_path("calibration_to_different_inventory_through_remote.pcapng"),
+            fixture_path('research--remote-inventory-transfer--587edd9b43'),
             item_id=7003,
             quantity=5,
         )
@@ -524,9 +524,9 @@ def test_unstackable_calibration_with_count_authority_discovers_decrement_geomet
 ):
     from bdo_toolkit import replay_pcap
 
-    capture = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+    capture = fixture_path('storage--manual-unstackable-batch--46b846b370')
     frames = collect_frames_pcap(capture) + collect_frames_pcap(
-        fixture_path("new_potato_3_tostorage.pcapng")
+        fixture_path('storage--manual-stack-deposit--d765fe48ce')
     )
     result = calibrate_frames(
         frames,
@@ -563,7 +563,7 @@ def test_one_session_1_4_deposits_and_5_withdrawal_keep_all_strides():
     """The guided single-target workflow retains every repeated geometry."""
 
     deposit_frames = collect_frames_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+        fixture_path('storage--manual-unstackable-batch--46b846b370')
     )
     decrement = deposit_frames[0]
     storage = deposit_frames[1]
@@ -599,7 +599,7 @@ def test_one_session_1_4_deposits_and_5_withdrawal_keep_all_strides():
         stream_sequence += storage_length
 
     frames.extend(
-        collect_frames_pcap(fixture_path("hit_1_5_unstackable.pcapng"))
+        collect_frames_pcap(fixture_path('inventory--withdraw-unstackable-batch--3efc952c1e'))
     )
     result = calibrate_frames(
         frames,

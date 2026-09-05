@@ -52,12 +52,12 @@ _CASES = (
         name="july-2-0e6a",
         opcode=0x0E6A,
         evidence_fixtures=(
-            "1000306_qty5_unstackable_i2s.pcapng",
-            "new_potato_3_tostorage.pcapng",
+            'storage--manual-unstackable-batch--46b846b370',
+            'storage--manual-stack-deposit--d765fe48ce',
         ),
         item_id=1000306,
         quantity=1,
-        replay_fixture="1000306_qty5_unstackable_i2s.pcapng",
+        replay_fixture='storage--manual-unstackable-batch--46b846b370',
         base_length=261,
         item_offset=37,
         context_offset=8,
@@ -68,13 +68,13 @@ _CASES = (
     _StorageLayoutCase(
         name="legacy-1b6a",
         opcode=0x1B6A,
-        evidence_fixtures=("potato_leaving_inventory_qty20.pcapng",),
+        evidence_fixtures=('storage--manual-whole-stack-deposit--6fd7609ce9',),
         item_id=7003,
         # The synthetic two-record witness duplicates the captured quantity-20
         # record. Using the known total makes it outrank the single wrapper as
         # the calibration layout witness without supplying any offsets.
         quantity=40,
-        replay_fixture="potato_leaving_inventory_qty20.pcapng",
+        replay_fixture='storage--manual-whole-stack-deposit--6fd7609ce9',
         base_length=264,
         item_offset=43,
         context_offset=35,
@@ -87,12 +87,12 @@ _CASES = (
         name="july-9-0d7e",
         opcode=0x0D7E,
         evidence_fixtures=(
-            "5004_qty6_4604_qty25_multi.pcapng",
-            "7003_qty15_single_hit1.pcapng",
+            'storage--worker-multi-item-deposit--5b8dec558b',
+            'storage--worker-deposit-first--44e39f0531',
         ),
         item_id=5004,
         quantity=6,
-        replay_fixture="5004_qty6_4604_qty25_multi.pcapng",
+        replay_fixture='storage--worker-multi-item-deposit--5b8dec558b',
         base_length=258,
         item_offset=37,
         context_offset=25,
@@ -104,12 +104,12 @@ _CASES = (
         name="july-17-126d",
         opcode=0x126D,
         evidence_fixtures=(
-            "multi_worker_deposit_4802_4003.pcapng",
-            "character-switch-2026-07-17-01.pcapng",
+            'storage--worker-multi-item-post-patch--6b08d80339',
+            'inventory--character-switch--148be8bc49',
         ),
         item_id=4802,
         quantity=1,
-        replay_fixture="multi_worker_deposit_4802_4003.pcapng",
+        replay_fixture='storage--worker-multi-item-post-patch--6b08d80339',
         base_length=257,
         item_offset=36,
         context_offset=27,
@@ -121,12 +121,12 @@ _CASES = (
         name="august-7-1c51",
         opcode=0x1C51,
         evidence_fixtures=(
-            "character-switch-2026-08-07.pcapng",
-            "velia_7003_qty5.pcapng",
+            'inventory--character-switch--4016c4bfa8',
+            'storage--manual-deposit-with-worker-traffic--34310f3435',
         ),
         item_id=9580,
         quantity=6,
-        replay_fixture="velia_7003_qty5.pcapng",
+        replay_fixture='storage--manual-deposit-with-worker-traffic--34310f3435',
         base_length=270,
         item_offset=44,
         context_offset=8,
@@ -195,7 +195,7 @@ def test_lone_legacy_1b6a_fixture_has_insufficient_count_authority():
 
     with pytest.raises(CalibrationAuthorityError, match="record-count-field"):
         calibrate_frames(
-            list(_fixture_frames("potato_leaving_inventory_qty20.pcapng")),
+            list(_fixture_frames('storage--manual-whole-stack-deposit--6fd7609ce9')),
             item_id=7003,
             quantity=20,
             action="inventory-to-storage",
