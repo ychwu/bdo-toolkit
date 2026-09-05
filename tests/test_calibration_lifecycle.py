@@ -6,13 +6,18 @@ from threading import Event, Thread
 
 import pytest
 
-from bdo_toolkit import PacketCaptureOptions
-from bdo_toolkit import _capture_backend as capture_backend
-from bdo_toolkit import _capture_runtime as capture_runtime
-from bdo_toolkit import calibration as calibration_module
+from _support.capture import ControlledThread as _ControlledThread
+
+from bdo_toolkit import (
+    PacketCaptureOptions,
+    _capture_backend as capture_backend,
+    _capture_runtime as capture_runtime,
+    calibration as calibration_module,
+)
+from bdo_toolkit._calibration import capture as calibration_capture
 from bdo_toolkit.calibration import (
-    CalibrationRetention,
     CalibrationResult,
+    CalibrationRetention,
     CalibrationSession,
 )
 
@@ -94,19 +99,6 @@ class _RaisingStopSniffer(_ReadySniffer):
         # or completing shutdown. The session must still finish flow cleanup.
         self.running = False
         raise self.failure
-
-
-class _ControlledThread:
-    def __init__(self) -> None:
-        self.ident = 1234
-        self.alive = True
-        self.join_calls: list[float | None] = []
-
-    def is_alive(self) -> bool:
-        return self.alive
-
-    def join(self, timeout: float | None = None) -> None:
-        self.join_calls.append(timeout)
 
 
 class _UncooperativeStopSniffer(_ReadySniffer):
@@ -471,7 +463,7 @@ def test_incomplete_startup_cleanup_keeps_calibration_owner_until_stop_retry(
             raise startup_failure
 
     monkeypatch.setattr(
-        calibration_module,
+        calibration_capture,
         "LivePacketCapture",
         IncompleteStartupCapture,
     )
@@ -569,7 +561,7 @@ def test_calibrate_live_polls_and_propagates_background_failure(
                 retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
             )
 
-    monkeypatch.setattr(calibration_module, "CalibrationSession", FakeSession)
+    monkeypatch.setattr(calibration_capture, "CalibrationSession", FakeSession)
     monkeypatch.setattr(
         "time.sleep",
         lambda seconds: pytest.fail("failure polling must precede waiting"),
@@ -579,4 +571,42 @@ def test_calibrate_live_polls_and_propagates_background_failure(
         calibration_module.calibrate_live(item_id=7003, capture_seconds=30)
 
     assert caught.value is failure
+    assert state == {"entered": True, "exited": True, "stopped": False}
+
+
+def test_calibrate_live_cleans_up_when_waiting_raises(monkeypatch):
+    state = {"entered": False, "exited": False, "stopped": False}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            state["entered"] = True
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            state["exited"] = True
+
+        def raise_if_failed(self):
+            return None
+
+        def stop(self):
+            state["stopped"] = True
+            return CalibrationResult(
+                (),
+                (),
+                0,
+                retention=CalibrationRetention(0, 0, 0, 0, 0, 0),
+            )
+
+    def fail_sleep(seconds):
+        raise RuntimeError("wait failed")
+
+    monkeypatch.setattr(calibration_capture, "CalibrationSession", FakeSession)
+    monkeypatch.setattr("time.sleep", fail_sleep)
+
+    with pytest.raises(RuntimeError, match="wait failed"):
+        calibration_module.calibrate_live(item_id=1, capture_seconds=1)
+
     assert state == {"entered": True, "exited": True, "stopped": False}

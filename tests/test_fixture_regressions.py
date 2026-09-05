@@ -83,8 +83,8 @@ def test_fixture_matches_baseline(pcap: Path):
         for line in baseline_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    # Historical fixtures default to the July 6 authority. Newer patches can
-    # pin an adjacent ``.profile.json`` sidecar without combining generations.
+    # Every reviewed baseline uses its catalog-pinned profile; missing authority
+    # is an error rather than a fallback to another generation.
     actual = [
         _semantic_event(event.to_dict())
         for event in replay_pcap(

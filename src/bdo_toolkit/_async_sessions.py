@@ -16,6 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import AsyncIterator, Callable, Optional
 
+from ._async_utils import _await_preserving_future, _wait_ignoring_cancellation
 from ._capture_runtime import CaptureEndpoint, _attach_cleanup_owner
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from .calibration import (
@@ -31,28 +32,6 @@ from .events import BDOEvent
 from .filters import EventFilter
 from .origin_learning import CompanionObservation
 from .profiles import OpcodeProfile
-
-
-async def _wait_ignoring_cancellation[T](future: asyncio.Future[T]) -> T:
-    """Wait for an already-started operation, even after caller cancellation."""
-
-    while not future.done():
-        try:
-            # asyncio.wait() never propagates cancellation into ``future`` and
-            # does not create a cancelled shield wrapper that may later log an
-            # otherwise-retrieved worker exception on Python 3.14.
-            await asyncio.wait((future,))
-        except asyncio.CancelledError:
-            # Cleanup must settle before the original cancellation escapes.
-            continue
-    return future.result()
-
-
-async def _await_preserving_future[T](future: asyncio.Future[T]) -> T:
-    """Await without cancelling or wrapping the submitted worker future."""
-
-    await asyncio.wait((future,))
-    return future.result()
 
 
 def _thread_task[T](function: Callable[[], T]) -> asyncio.Task[T]:

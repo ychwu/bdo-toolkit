@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+from _support.capture import ControlledThread as _ControlledThread
+
 from bdo_toolkit import _capture_runtime as runtime
 from bdo_toolkit._capture_backend import CaptureTarget
 from bdo_toolkit._capture_options import PacketCaptureOptions
@@ -62,19 +64,6 @@ class _FakeSniffer:
         callback = self.kwargs["prn"]
         assert callable(callback)
         callback(packet)
-
-
-class _ControlledThread:
-    def __init__(self, *, alive: bool = True) -> None:
-        self.ident = 1234
-        self.alive = alive
-        self.join_calls: list[float | None] = []
-
-    def is_alive(self) -> bool:
-        return self.alive
-
-    def join(self, timeout: float | None = None) -> None:
-        self.join_calls.append(timeout)
 
 
 class _UncooperativeSniffer(_FakeSniffer):

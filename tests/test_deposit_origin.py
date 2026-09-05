@@ -6,26 +6,29 @@ synthetic tests pin the fail-closed rules that no capture currently
 exercises.
 """
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 from pathlib import Path
 from threading import Event as ThreadEvent, RLock, Thread
 
 import pytest
 
 from fixture_paths import (
-    JULY6_OPCODE_PROFILE,
     JULY17_OPCODE_PROFILE,
+    JULY6_OPCODE_PROFILE,
     fixture_path,
     has_fixture_pcaps,
 )
+
 from bdo_toolkit import EventFilter, replay_pcap
-from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
+from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit.events import BDOEvent, Flow
+from bdo_toolkit.origin_learning import discover_companion_observation
 from bdo_toolkit.profiles import OpcodeProfile, ProfileError
+
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -61,18 +64,21 @@ def test_closed_flow_histories_are_released_across_long_sessions():
     assert tracker._stream_spans == {}
     assert tracker._first_record_boundaries == {}
     assert tracker._observed_chains == set()
+    assert tracker._manual._manual_candidates == {}
+    assert tracker._manual._manual_candidate_bytes == 0
+    assert tracker._discovery._companion_discoveries == {}
 
 # Worker deposits span BOTH storage-delta context modes (05 and 20).
 WORKER_FIXTURES = [
-    "worker_4607.pcapng",
-    "5960_qty1_and_4015_qty1_multi.pcapng",
-    "7360_hit2_qty10.pcapng",
-    "7002_qty25.pcapng",
+    'storage--worker-deposit--4316ac0095',
+    'storage--worker-two-item-deposit--de2d86c32a',
+    'storage--worker-deposit-followup--28ab3bff2f',
+    'storage--worker-single-item-deposit--ad6b26a29e',
 ]
 MANUAL_FIXTURES = [
-    "1000306_qty5_unstackable_i2s.pcapng",
-    "new_potato_3_tostorage.pcapng",
-    "new_potato_1_1_1.pcapng",
+    'storage--manual-unstackable-batch--46b846b370',
+    'storage--manual-stack-deposit--d765fe48ce',
+    'storage--manual-split-deposit--7efc050fd5',
 ]
 
 
@@ -119,10 +125,10 @@ def test_manual_deposits_classify_as_manual(fixture):
 
 @requires_fixtures
 def test_legacy_manual_fixtures_distinguish_identity_confidence_and_stride():
-    full_stack = _classified_sources("new_potato_3_tostorage.pcapng")
-    partial_stack = _classified_sources("new_potato_1_1_1.pcapng")
+    full_stack = _classified_sources('storage--manual-stack-deposit--d765fe48ce')
+    partial_stack = _classified_sources('storage--manual-split-deposit--7efc050fd5')
     unstackable_batch = _classified_sources(
-        "1000306_qty5_unstackable_i2s.pcapng"
+        'storage--manual-unstackable-batch--46b846b370'
     )
 
     assert len(full_stack) == 1
@@ -238,6 +244,149 @@ def _tracker(emitted):
         decrement_specs=(DecrementSpec(0x1A32, 52, 42),),
         emit=emitted.append,
     )
+
+
+def test_discovery_reuses_negative_matches_but_rechecks_overlapping_bytes(monkeypatch):
+    calls = []
+
+    def counted_discovery(**kwargs):
+        calls.append(None)
+        return discover_companion_observation(**kwargs)
+
+    monkeypatch.setattr(
+        "bdo_toolkit._origin.discovery.discover_companion_observation",
+        counted_discovery,
+    )
+    emitted = []
+    tracker = _tracker(emitted)
+    delta, first, second = _worker_chain()
+    tracker.observe_frame(delta)
+    tracker.register(_storage_event(message_length=80))
+    missing_token = bytearray(first.message)
+    missing_token[36:44] = b"\x00" * 8
+    context = PacketContext(1000.0, FLOW, stream_start=1080)
+    payload = bytes(missing_token) + second.message
+    tracker.observe_stream(payload, context)
+    assert len(calls) == 1
+    for _ in range(10):
+        tracker.observe_stream(payload, context)
+    assert len(calls) == 1
+    assert emitted == []
+
+    # The newest overlapping bytes now supply a real chain. A sequence-only
+    # cache would incorrectly keep the earlier negative result.
+    tracker.observe_stream(first.message, context)
+    assert len(calls) == 2
+    assert [event.source for event in emitted] == ["Worker Production"]
+
+
+@pytest.mark.parametrize("reused_token", [False, True])
+@pytest.mark.parametrize("entry_limit, byte_limit", [
+    (0, 0), (4096, 64), (1, 2 * 1024 * 1024), (4096, 180),
+    (4096, 2 * 1024 * 1024),
+])
+def test_discovery_cache_pressure_preserves_late_storage_ownership(
+    reused_token, entry_limit, byte_limit,
+):
+    emitted = []
+    tracker = _tracker(emitted)
+    tracker._discovery.COMPANION_DISCOVERY_CACHE_LIMIT = entry_limit
+    tracker._discovery.COMPANION_DISCOVERY_CACHE_BYTES = byte_limit
+    delta_a, first, second = _worker_chain()
+    token_b = (
+        delta_a.message[18:26] if reused_token
+        else bytes.fromhex("3141592653589793")
+    )
+    delta_b, _, _ = _worker_chain(delta_seq=1080, token=token_b)
+    # Raw bytes arrive before target registration supplies the crossed
+    # wrapper's first-record boundary. Positive discovery must remain provisional.
+    tracker.observe_stream(
+        delta_a.message + delta_b.message + first.message + second.message,
+        PacketContext(1000.0, FLOW, stream_start=1000),
+    )
+    tracker.register(_storage_event(message_length=80), raw_message=delta_a.message)
+    assert tracker._pending[0].awaiting_storage_boundaries == frozenset({1080})
+    assert emitted == []
+    tracker.register(
+        _storage_event(item_id=7003, seq=1080, message_length=80),
+        raw_message=delta_b.message,
+    )
+    assert len(tracker._discovery._companion_discoveries) <= entry_limit
+    assert tracker._discovery._companion_discovery_bytes <= byte_limit
+    assert tracker._discovery._companion_discovery_bytes == sum(
+        size for _observation, size in tracker._discovery._companion_discoveries.values()
+    )
+    tracker.finalize_all()
+    assert {event.item_id: event.source for event in emitted} == {
+        7002: None if reused_token else "Worker Production",
+        7003: None,
+    }
+    assert tracker._discovery._companion_discoveries == {}
+    assert tracker._discovery._companion_discovery_bytes == 0
+
+
+def test_cached_discovery_preserves_independent_operation_and_flow_identity(monkeypatch):
+    calls = []
+
+    def counted_discovery(**kwargs):
+        calls.append(None)
+        return discover_companion_observation(**kwargs)
+
+    monkeypatch.setattr(
+        "bdo_toolkit._origin.discovery.discover_companion_observation",
+        counted_discovery,
+    )
+    emitted = []
+    observations = []
+    tracker = DepositOriginTracker(
+        decrement_specs=(), emit=emitted.append, origin_observer=observations.append,
+    )
+    other_flow = FlowKey("10.0.0.3", 8889, "10.0.0.4", 50001)
+    identities = [(FLOW, 1000, 1000.0), (FLOW, 2000, 1000.1), (other_flow, 3000, 1000.2)]
+    for flow, sequence, timestamp in identities:
+        delta, first, second = _worker_chain(delta_seq=sequence)
+        context = PacketContext(timestamp, flow)
+        tracker.observe_frame(replace(delta, context=context))
+        event = replace(
+            _storage_event(seq=sequence, timestamp=timestamp, message_length=80),
+            flow=Flow(
+                flow.source_ip, flow.source_port,
+                flow.destination_ip, flow.destination_port,
+            ),
+        )
+        tracker.register(event, raw_message=delta.message)
+        tracker.observe_frame(replace(first, context=context))
+        tracker.observe_frame(replace(second, context=context))
+    assert len(calls) == 1
+    assert [(o.flow, o.stream_sequence, o.timestamp) for o in observations] == identities
+    assert len({o.observation_id for o in observations}) == 3
+    assert [event.source for event in emitted] == ["Worker Production"] * 3
+    assert tracker._discovery._companion_discoveries
+    tracker.close_flow(other_flow)
+    assert tracker._discovery._companion_discoveries == {}
+    assert tracker._discovery._companion_discovery_bytes == 0
+
+
+def test_discovery_cache_key_preserves_prefix_boundary_and_frame_validation():
+    tracker = _tracker([])
+    delta, first, second = _worker_chain()
+    tracker.register(_storage_event(message_length=80), raw_message=delta.message)
+    pending = tracker._pending[0]
+    for message, boundary in (
+        (delta.message, 37),
+        (delta.message, 20),  # Cuts the token, even with otherwise identical bytes.
+        (delta.message[:-1], 37),  # Same prefix but inconsistent declared length.
+        (delta.message, 37),
+    ):
+        actual = tracker._discovery.discover(
+            pending, message, first.message, second.message, boundary,
+        )
+        expected = discover_companion_observation(
+            delta_message=message, first_message=first.message,
+            second_message=second.message, timestamp=1000.0, flow=FLOW,
+            stream_sequence=1000, delta_prefix_end=boundary,
+        )
+        assert actual == expected
 
 
 def _instance_manual_tracker(emitted):
@@ -906,7 +1055,7 @@ def test_manual_candidate_cap_pressure_does_not_manufacture_uniqueness(
 def test_candidate_cap_suppression_survives_decreasing_packet_timestamps():
     emitted = []
     tracker = _instance_manual_tracker(emitted)
-    tracker.MAX_MANUAL_CANDIDATES_PER_FLOW = 1
+    tracker._manual.MAX_MANUAL_CANDIDATES_PER_FLOW = 1
     source_instances = (
         bytes.fromhex("1020304050607080"),
         bytes.fromhex("1122334455667788"),
@@ -1449,6 +1598,7 @@ def _july17_inventory_receipt(item_id, quantity, item_instance):
     message[27:31] = bytes.fromhex("d0f205a3")  # Storage
     message[31:35] = item_id.to_bytes(4, "little")
     message[35:39] = quantity.to_bytes(4, "little")
+    message[43:51] = b"\xff" * 8
     message[66:74] = item_instance
     return bytes(message)
 
@@ -1473,11 +1623,14 @@ def _collect_synthetic_current_storage(profile, payload, event_filter=None):
     )
 
 
-def _collect_synthetic_current_segments(profile, payloads, event_filter=None):
+def _collect_synthetic_current_segments(
+    profile, payloads, event_filter=None, *, origin_observer=None,
+):
     collector = _EventCollector(
         server_ports=(8889,),
         event_filter=event_filter,
         opcode_profile=profile,
+        origin_observer=origin_observer,
     )
     sequence = 1000
     for index, payload in enumerate(payloads):
@@ -2258,7 +2411,7 @@ def test_runtime_confirmed_family_history_is_bounded():
 @requires_fixtures
 def test_july17_single_record_profile_decodes_full_worker_batch(tmp_path):
     try:
-        fixture = fixture_path("multi_worker_deposit_4802_4003.pcapng")
+        fixture = fixture_path('storage--worker-multi-item-post-patch--6b08d80339')
     except FileNotFoundError:
         pytest.skip("July 17 private worker fixture not present")
 
@@ -2519,8 +2672,8 @@ def test_pending_storage_operations_are_hard_bounded():
 def test_classified_storage_sources_filter_through_the_canonical_field():
     # The dev-facing worker-tracker one-liner: filter at the API, applied
     # AFTER classification so the verdict is already on the event.
-    manual = fixture_path("1000306_qty5_unstackable_i2s.pcapng")
-    worker = fixture_path("worker_4607.pcapng")
+    manual = fixture_path('storage--manual-unstackable-batch--46b846b370')
+    worker = fixture_path('storage--worker-deposit--4316ac0095')
 
     assert list(
         replay_pcap(
@@ -2549,3 +2702,34 @@ def test_classified_storage_sources_filter_through_the_canonical_field():
     assert [(event.item_id, event.source) for event in events] == [
         (4607, "Worker Production")
     ]
+
+
+@pytest.mark.parametrize(
+    "event_filter", [None, EventFilter(event_types={"item_received"})],
+    ids=["all-events", "nonstorage-events"],
+)
+def test_origin_observer_receives_worker_evidence_independently_of_event_filter(
+    event_filter,
+):
+    token = bytes.fromhex("3141592653589793")
+    instance = (1).to_bytes(8, "little")
+    payload = b"".join((
+        _july17_unknown_operation_storage(((7003, 1),), token=token),
+        *_current_companions(token),
+        _july17_inventory_receipt(7003, 1, instance),
+    ))
+    observations = []
+    events = _collect_synthetic_current_segments(
+        JULY17_OPCODE_PROFILE, (payload,), event_filter,
+        origin_observer=observations.append,
+    )
+    assert [(event.event_type, event.item_id) for event in events] == (
+        [("storage_delta", 7003), ("item_received", 7003)]
+        if event_filter is None else [("item_received", 7003)]
+    )
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation.delta_opcode == 0x126D
+    assert observation.companion_opcodes == (0x1A59, 0x155E)
+    assert observation.companion_lengths == (64, 30)
+    assert observation.stream_sequence == 1000

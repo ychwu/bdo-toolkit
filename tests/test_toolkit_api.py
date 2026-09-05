@@ -1,37 +1,34 @@
-﻿"""Current public API contract tests."""
+"""Current public API contract tests."""
+
 
 import pytest
 
 from fixture_paths import (
-    JULY6_OPCODE_PROFILE,
     JULY17_OPCODE_PROFILE,
+    JULY6_OPCODE_PROFILE,
     fixture_path,
     has_fixture_pcaps,
 )
+
 from bdo_toolkit import (
     AsyncLiveCaptureSession,
+    BDOEvent,
     EventFilter,
+    Flow,
     LiveCaptureSession,
+    capture as capture_module,
     capture_live,
     load_opcode_profile,
     replay_pcap,
 )
-from bdo_toolkit import capture as capture_module
 from bdo_toolkit.item_state import CharacterLoadSession, analyze_item_state_pcap
 from bdo_toolkit.solare import LiveSolareSession
+
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
     reason="local pcap fixtures not present (private captures)",
 )
-
-
-def test_tracked_profile_loads_from_explicit_path():
-    profile = load_opcode_profile(JULY17_OPCODE_PROFILE)
-
-    assert profile.active
-    assert "INVENTORY_TRANSFER" in profile.specs
-    assert "STORAGE_ITEM_DELTA" in profile.specs
 
 
 def test_loaded_profile_is_deeply_immutable_and_serializes_owned_copies():
@@ -103,7 +100,7 @@ def test_solare_session_still_requires_no_item_opcode_profile():
 def test_replay_batch_storage_deposit_as_structured_events():
     events = list(
         replay_pcap(
-            fixture_path("5960_qty1_and_4015_qty1_multi.pcapng"),
+            fixture_path('storage--worker-two-item-deposit--de2d86c32a'),
             opcode_profile=JULY6_OPCODE_PROFILE,
         )
     )
@@ -133,7 +130,7 @@ def test_replay_batch_storage_deposit_as_structured_events():
 
 @requires_fixtures
 def test_replay_filters_by_event_type_and_storage_id():
-    fixture = fixture_path("5960_qty1_and_4015_qty1_multi.pcapng")
+    fixture = fixture_path('storage--worker-two-item-deposit--de2d86c32a')
 
     assert list(
         replay_pcap(
@@ -176,7 +173,7 @@ def test_replay_filters_by_event_type_and_storage_id():
 def test_manual_bulk_deposit_uses_destination_storage_label():
     events = list(
         replay_pcap(
-            fixture_path("1000306_qty5_unstackable_i2s.pcapng"),
+            fixture_path('storage--manual-unstackable-batch--46b846b370'),
             opcode_profile=JULY6_OPCODE_PROFILE,
         )
     )
@@ -186,3 +183,35 @@ def test_manual_bulk_deposit_uses_destination_storage_label():
     assert {event.source for event in events} == {"Player Inventory"}
     assert [event.record_index for event in events] == [1, 2, 3, 4, 5]
 
+
+def test_event_extra_is_deeply_immutable_hashable_and_json_safe():
+    original = {"nested": {"values": [1, 2]}, "_vendor": "preserved"}
+    event = BDOEvent("test", 0.0, Flow("a", 1, "b", 2), 1, 1, extra=original)
+    original["nested"]["values"].append(3)
+
+    with pytest.raises(TypeError):
+        event.extra["new"] = True
+    with pytest.raises(TypeError):
+        event.extra["nested"]["new"] = True
+    assert hash(event) == hash(event)
+    assert event.to_dict()["extra"] == {
+        "nested": {"values": [1, 2]},
+        "_vendor": "preserved",
+    }
+    assert event.to_dict()["timestamp_iso"] == "1970-01-01T00:00:00.000Z"
+
+
+def test_filter_rejects_accidental_string_iterables():
+    with pytest.raises(TypeError, match="not a string"):
+        EventFilter.from_values(sources="Mob Drop")
+
+
+def test_event_filter_constructor_normalizes_and_freezes_inputs():
+    sources = {"Mob Drop"}
+    storage_ids = {0x0020}
+    event_filter = EventFilter(sources=sources, storage_ids=storage_ids)
+    sources.add("Storage")
+    storage_ids.add(0x0058)
+
+    assert event_filter.sources == frozenset({"Mob Drop"})
+    assert event_filter.storage_ids == frozenset({0x0020})

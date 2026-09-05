@@ -1,19 +1,19 @@
 """Focused regressions for TCP stream ordering and gap recovery."""
 
+
 import pytest
+
+from _support.packets import feed_engine, loot_preview_frame, make_item_engine
 
 from bdo_toolkit._engine import PacketEngine
 from bdo_toolkit._framing import TargetMessageScanner
 from bdo_toolkit._protocol import (
-    GAP_RESET_SECONDS,
-    MAX_PENDING_SEGMENTS,
     EventSpec,
     FlowKey,
+    GAP_RESET_SECONDS,
+    MAX_PENDING_SEGMENTS,
 )
-from bdo_toolkit._reassembly import (
-    _INITIAL_REORDER_GRACE_SECONDS,
-    FlowManager,
-)
+from bdo_toolkit._reassembly import FlowManager, _INITIAL_REORDER_GRACE_SECONDS
 
 
 _SPEC = EventSpec(
@@ -886,3 +886,35 @@ def test_idle_and_capacity_removal_notify_flow_owner_without_false_loss_count():
     )
     assert closed[-1] == FlowKey("10.0.0.1", 8889, "10.0.0.2", 50001)
     assert evictions == [True]
+
+
+def test_fin_drains_a_complete_segment_pending_after_a_gap():
+    events: list = []
+    engine = make_item_engine(events)
+    feed_engine(engine, 1000, b"prefix")
+    feed_engine(engine, 2000, loot_preview_frame(), fin=True)
+    engine.finish()
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7003, 3)]
+
+
+def test_fragmented_frame_reassembles_across_tcp_sequence_wrap():
+    events: list = []
+    engine = make_item_engine(events)
+    message = loot_preview_frame()
+    feed_engine(engine, 0xFFFFFFF0, message[:16])
+    feed_engine(engine, 0, message[16:])
+    engine.finish()
+
+    assert [(event.item_id, event.quantity) for event in events] == [(7003, 3)]
+
+
+def test_syn_sequence_number_is_consumed_before_payload():
+    events: list = []
+    engine = make_item_engine(events)
+    message = loot_preview_frame()
+    feed_engine(engine, 1000, message[:10], syn=True)
+    feed_engine(engine, 1011, message[10:])
+    engine.finish()
+
+    assert len(events) == 1

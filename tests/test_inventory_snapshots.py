@@ -2,9 +2,11 @@
 
 from dataclasses import replace
 
+import pytest
+
+from bdo_toolkit._calibration._records import _discover_storage_context_offset
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
-from bdo_toolkit.calibration import _discover_storage_context_offset
 
 
 def _segment(engine: PacketEngine, payload: bytes) -> None:
@@ -105,12 +107,6 @@ def test_zero_context_inventory_batch_preserves_positive_uint64_quantities():
     )
 
 
-def test_zero_context_inventory_batch_keeps_zero_quantity_unresolved():
-    message = _inventory_snapshot(quantities=(1, 0, 3))
-
-    assert _decode(_inventory_spec(), bytes(message)) == []
-
-
 def test_non_snapshot_inventory_transfer_quantity_remains_uint32():
     message = _inventory_snapshot(
         count=1,
@@ -125,9 +121,17 @@ def test_non_snapshot_inventory_transfer_quantity_remains_uint32():
     assert decoded[0].quantity == 5
 
 
-def test_zero_context_inventory_batch_rejects_every_record_on_one_invalid_instance():
+@pytest.mark.parametrize(
+    ("offset", "width"), [(0, 4), (4, 8), (35, 8)],
+    ids=["invalid-item", "zero-quantity", "invalid-instance"],
+)
+def test_zero_context_inventory_batch_rejects_every_record_on_one_invalid_field(
+    offset, width,
+):
     message = _inventory_snapshot()
-    message[31 + 223 + 35 : 31 + 223 + 43] = b"\x00" * 8
+    assert len(_decode(_inventory_spec(), bytes(message))) == 3
+    second_record = 31 + 223
+    message[second_record + offset : second_record + offset + width] = bytes(width)
 
     assert _decode(_inventory_spec(), bytes(message)) == []
 

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import fixture_path, has_fixture_pcaps, opcode_profile_for_fixture
 from bdo_toolkit import EventFilter, replay_pcap
 from bdo_toolkit._protocol import FlowKey
 from bdo_toolkit._storage_destination_validation import (
@@ -84,7 +84,7 @@ def test_stale_plus_one_context_offset_is_proven_across_hydration():
     validator = StorageDestinationValidator()
     mismatches = []
     saw_suffix_collision = False
-    for frame in _storage_frames("character-switch-2026-08-07.pcapng"):
+    for frame in _storage_frames('inventory--character-switch--4016c4bfa8'):
         saw_suffix_collision |= (
             int.from_bytes(frame.message[8:12], "little") != 5
             and int.from_bytes(frame.message[9:13], "little") == 5
@@ -285,8 +285,8 @@ def test_collector_marks_incompatible_when_known_suffix_collision_is_disproved(
 @pytest.mark.parametrize(
     "fixture_name",
     (
-        "character-switch-2026-08-07.pcapng",
-        "velia_7003_qty5.pcapng",
+        'inventory--character-switch--4016c4bfa8',
+        'storage--manual-deposit-with-worker-traffic--34310f3435',
     ),
 )
 def test_correct_profile_replay_emits_no_schema_mismatch(fixture_name):
@@ -295,9 +295,7 @@ def test_correct_profile_replay_emits_no_schema_mismatch(fixture_name):
     events = list(
         replay_pcap(
             fixture_path(fixture_name),
-            opcode_profile=fixture_path(
-                "character-switch-2026-08-07.profile.json"
-            ),
+            opcode_profile=opcode_profile_for_fixture(fixture_path(fixture_name)),
             event_filter=EventFilter.all(),
             on_diagnostic=diagnostics.append,
         )

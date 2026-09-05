@@ -3,6 +3,7 @@
 Everything here is synthetic — no private captures required.
 """
 
+from bdo_toolkit._calibration import workflow as calibration_workflow
 import json
 
 import pytest
@@ -170,7 +171,7 @@ class TestCalibrateAndUpdate:
     ):
         canned = _result(_spec("STORAGE_ITEM_DELTA", 0x0E6A))
         monkeypatch.setattr(
-            calibration, "calibrate_pcap", lambda *args, **kwargs: canned
+            calibration_workflow, "calibrate_pcap", lambda *args, **kwargs: canned
         )
         profile = tmp_path / "opcodes.json"
         update_profile([_spec("STORAGE_ITEM_DELTA", 0x9999)], profile)
@@ -193,7 +194,7 @@ class TestCalibrateAndUpdate:
 
     def test_empty_result_leaves_profile_untouched(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            calibration, "calibrate_pcap", lambda *args, **kwargs: _result()
+            calibration_workflow, "calibrate_pcap", lambda *args, **kwargs: _result()
         )
         profile = tmp_path / "opcodes.json"
 
@@ -237,7 +238,7 @@ class TestCalibrateAndUpdate:
             seen.update(kwargs)
             return _result()
 
-        monkeypatch.setattr(calibration, "calibrate_pcap", fake_calibrate_pcap)
+        monkeypatch.setattr(calibration_workflow, "calibrate_pcap", fake_calibrate_pcap)
         calibrate_and_update(
             tmp_path / "opcodes.json",
             item_id=7003,
@@ -257,7 +258,7 @@ class TestCalibrateAndUpdate:
             seen.update(kwargs)
             return _result()
 
-        monkeypatch.setattr(calibration, "calibrate_live", fake_calibrate_live)
+        monkeypatch.setattr(calibration_workflow, "calibrate_live", fake_calibrate_live)
         calibrate_and_update(
             tmp_path / "opcodes.json",
             item_id=7003,

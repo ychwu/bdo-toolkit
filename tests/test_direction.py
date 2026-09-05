@@ -25,24 +25,24 @@ requires_fixtures = pytest.mark.skipif(
 
 # (fixture, item_id, expected family) — labeled by the repo owner.
 STORAGE_TO_INVENTORY = [  # item entering inventory -> receipt family
-    ("1000707_inven_transfer_from_storage.pcapng", 1000707, "into_inventory"),
-    ("new_potato.pcapng", 7003, "into_inventory"),
-    ("hit_1_5_unstackable.pcapng", 1000306, "into_inventory"),
-    ("tet_item_storage_to_inven.pcapng", 318780390, "into_inventory"),
+    ('inventory--withdraw-unstackable--ecf93b91d3', 1000707, "into_inventory"),
+    ('inventory--withdraw-potato-stack--f64eee5df0', 7003, "into_inventory"),
+    ('inventory--withdraw-unstackable-batch--3efc952c1e', 1000306, "into_inventory"),
+    ('inventory--withdraw-tet-item--9514c0c1e1', 318780390, "into_inventory"),
 ]
 INVENTORY_TO_STORAGE = [  # item entering storage -> storage-delta family
-    ("new_potato_1_1_1.pcapng", 7003, "into_storage"),
-    ("potato_leaving_inventory_qty20.pcapng", 7003, "into_storage"),
+    ('storage--manual-split-deposit--7efc050fd5', 7003, "into_storage"),
+    ('storage--manual-whole-stack-deposit--6fd7609ce9', 7003, "into_storage"),
     # Multi-record unstackable deposit: NO reference frame at all — classified
     # by the intrinsic offset-8 storage-delta context, not the windowed
     # reference. This is the case that motivated the intrinsic feature.
-    ("1000306_qty5_unstackable_i2s.pcapng", 1000306, "into_storage"),
+    ('storage--manual-unstackable-batch--46b846b370', 1000306, "into_storage"),
 ]
 # Worker deposits are structurally storage deltas (item enters storage) and
 # must classify as into_storage, not as a separate direction.
 WORKER_DEPOSITS = [
-    ("5960_qty1_and_4015_qty1_multi.pcapng", 5960, "into_storage"),
-    ("5960_qty1_and_4015_qty1_multi.pcapng", 4015, "into_storage"),
+    ('storage--worker-two-item-deposit--de2d86c32a', 5960, "into_storage"),
+    ('storage--worker-two-item-deposit--de2d86c32a', 4015, "into_storage"),
 ]
 
 
@@ -84,7 +84,7 @@ def test_direction_classifier_matches_labels(fixture, item_id, expected):
 def test_auto_calibration_on_single_direction_capture_is_clean():
     # A storage->inventory capture must yield ONLY receipt-family specs, never
     # a wrong-direction STORAGE_ITEM_DELTA promoted from the receipt frame.
-    result = calibrate_pcap(fixture_path("new_potato.pcapng"), item_id=7003, quantity=10)
+    result = calibrate_pcap(fixture_path('inventory--withdraw-potato-stack--f64eee5df0'), item_id=7003, quantity=10)
     events = {spec.event for spec in result.specs}
     assert "INVENTORY_TRANSFER" in events
     assert "STORAGE_ITEM_DELTA" not in events
@@ -95,8 +95,8 @@ def test_auto_calibration_on_inventory_to_storage_capture_is_clean():
     from bdo_toolkit.calibration import calibrate_frames
 
     frames = collect_frames_pcap(
-        fixture_path("new_potato_3_tostorage.pcapng")
-    ) + collect_frames_pcap(fixture_path("1000306_qty5_unstackable_i2s.pcapng"))
+        fixture_path('storage--manual-stack-deposit--d765fe48ce')
+    ) + collect_frames_pcap(fixture_path('storage--manual-unstackable-batch--46b846b370'))
     result = calibrate_frames(
         frames,
         item_id=7003,
@@ -116,8 +116,8 @@ def test_auto_calibration_multi_record_deposit_without_reference_frame():
     from bdo_toolkit.calibration import calibrate_frames
 
     frames = collect_frames_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
-    ) + collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
+        fixture_path('storage--manual-unstackable-batch--46b846b370')
+    ) + collect_frames_pcap(fixture_path('storage--manual-stack-deposit--d765fe48ce'))
     result = calibrate_frames(
         frames,
         item_id=1000306,
@@ -135,7 +135,7 @@ def test_explicit_wrong_direction_raises_mismatch():
     # capture is storage-to-inventory. Must refuse, not write garbage.
     with pytest.raises(DirectionMismatchError):
         calibrate_pcap(
-            fixture_path("new_potato.pcapng"),
+            fixture_path('inventory--withdraw-potato-stack--f64eee5df0'),
             item_id=7003,
             quantity=10,
             action="inventory-to-storage",
@@ -148,7 +148,7 @@ def test_explicit_wrong_direction_raises_mismatch_symmetrically():
     # an inventory-to-storage capture refuses instead of returning empty.
     with pytest.raises(DirectionMismatchError):
         calibrate_pcap(
-            fixture_path("new_potato_3_tostorage.pcapng"),
+            fixture_path('storage--manual-stack-deposit--d765fe48ce'),
             item_id=7003,
             quantity=3,
             action="storage-to-inventory",
@@ -336,7 +336,7 @@ def test_multi_record_reference_frame_up_to_mid_gap_length():
 
 @requires_fixtures
 def test_evidence_records_classification():
-    result = calibrate_pcap(fixture_path("new_potato.pcapng"), item_id=7003, quantity=10)
+    result = calibrate_pcap(fixture_path('inventory--withdraw-potato-stack--f64eee5df0'), item_id=7003, quantity=10)
     families = {e.detected_family for e in result.evidence}
     assert "into_inventory" in families
     # The receipt frame carries a context label and no reference frame.
@@ -349,10 +349,10 @@ def test_auto_calibration_combined_legs_builds_full_profile(tmp_path):
     """Stitch a storage->inventory and an inventory->storage capture into one
     frame stream (what the guided two-move flow produces) and confirm auto
     calibration recovers both families' opcodes."""
-    s2i = collect_frames_pcap(fixture_path("new_potato.pcapng"))
-    i2s = collect_frames_pcap(fixture_path("new_potato_3_tostorage.pcapng"))
+    s2i = collect_frames_pcap(fixture_path('inventory--withdraw-potato-stack--f64eee5df0'))
+    i2s = collect_frames_pcap(fixture_path('storage--manual-stack-deposit--d765fe48ce'))
     count_authority = collect_frames_pcap(
-        fixture_path("1000306_qty5_unstackable_i2s.pcapng")
+        fixture_path('storage--manual-unstackable-batch--46b846b370')
     )
 
     from bdo_toolkit.calibration import calibrate_frames

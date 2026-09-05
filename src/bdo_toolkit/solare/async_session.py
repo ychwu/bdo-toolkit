@@ -10,6 +10,10 @@ from pathlib import Path
 from types import TracebackType
 from typing import AsyncIterator, Callable, Optional
 
+from bdo_toolkit._async_utils import (
+    _await_preserving_future,
+    _wait_ignoring_cancellation as _settle,
+)
 from bdo_toolkit._capture_options import PacketCaptureOptions
 from bdo_toolkit._capture_runtime import _attach_cleanup_owner
 from ._constants import LIVE_CAPTURE_BUFFER_BYTES
@@ -20,22 +24,6 @@ from .models import (
     SolareUpdateKind,
 )
 from .session import LiveSolareSession, _validate_timeout
-
-
-async def _settle[T](future: asyncio.Future[T]) -> T:
-    while not future.done():
-        try:
-            await asyncio.wait((future,))
-        except asyncio.CancelledError:
-            continue
-    return future.result()
-
-
-async def _await_preserving_future[T](future: asyncio.Future[T]) -> T:
-    """Await a worker future without cancelling it or creating a shield."""
-
-    await asyncio.wait((future,))
-    return future.result()
 
 
 class AsyncLiveSolareSession:

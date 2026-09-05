@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import pickle
+from typing import get_type_hints
+
+from bdo_toolkit import character_state
 
 from bdo_toolkit.character_state import (
     CharacterStateSnapshot,
@@ -242,3 +246,15 @@ def test_item_state_facade_exposes_canonical_aliases():
     assert analyze_item_state_pcap is analyze_character_load_pcap
     assert format_item_state is format_character_state
     assert issubclass(ItemStateCaptureLimitError, RuntimeError)
+
+
+def test_item_state_public_objects_keep_import_and_pickle_locations():
+    for name in character_state.__all__:
+        public_object = getattr(character_state, name)
+        assert public_object.__module__ == "bdo_toolkit.character_state"
+        assert pickle.loads(pickle.dumps(public_object)) is public_object
+        # Postponed annotations on moved public classes must still resolve
+        # through their preserved module identity.
+        get_type_hints(public_object)
+    item = _item(7003, 5, "synthetic-instance")
+    assert pickle.loads(pickle.dumps(item)) == item

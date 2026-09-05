@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional
 
+from ._record_geometry import fields_fit_record, infer_repeat_stride, uniform_stride
 from ._protocol import (
     CHARACTER_LOAD_CONTEXT,
     MAX_PLAUSIBLE_ITEM_ID,
@@ -139,30 +140,24 @@ def _declared_inventory_snapshot_record_deltas(
             stride: Optional[int] = None
             deltas = [0]
         else:
-            extra_length = len(message) - base_length
-            divisor = declared_count - 1
-            if extra_length <= 0 or extra_length % divisor:
+            stride = infer_repeat_stride(len(message), base_length, declared_count)
+            if stride is None:
                 continue
-            stride = extra_length // divisor
             prefix_length = base_length - stride
             if prefix_length < 5 or count_offset + 2 > prefix_length:
                 continue
             if len(message) - prefix_length != declared_count * stride:
                 continue
 
-            relative_offsets = (
-                spec.item_offset - prefix_length,
-                spec.quantity_offset - prefix_length,
-                instance_offset - prefix_length,
-            )
-            if min(relative_offsets) < 0:
-                continue
-            required_record_end = max(
-                relative_offsets[0] + 4,
-                relative_offsets[1] + _INVENTORY_SNAPSHOT_QUANTITY_BYTES,
-                relative_offsets[2] + 8,
-            )
-            if required_record_end > stride:
+            if not fields_fit_record(
+                prefix_length,
+                stride,
+                (
+                    (spec.item_offset, 4),
+                    (spec.quantity_offset, _INVENTORY_SNAPSHOT_QUANTITY_BYTES),
+                    (instance_offset, 8),
+                ),
+            ):
                 continue
             deltas = [stride * index for index in range(declared_count)]
 
@@ -218,11 +213,9 @@ def _declared_storage_record_deltas(
             return []
         deltas = [0]
     else:
-        extra_length = len(message) - base_length
-        divisor = declared_count - 1
-        if extra_length <= 0 or extra_length % divisor:
+        stride = infer_repeat_stride(len(message), base_length, declared_count)
+        if stride is None:
             return []
-        stride = extra_length // divisor
         prefix_length = base_length - stride
         if (
             prefix_length < 5
@@ -231,19 +224,15 @@ def _declared_storage_record_deltas(
         ):
             return []
 
-        relative_offsets = (
-            spec.item_offset - prefix_length,
-            spec.quantity_offset - prefix_length,
-            instance_offset - prefix_length,
-        )
-        if min(relative_offsets) < 0:
-            return []
-        required_record_end = max(
-            relative_offsets[0] + 4,
-            relative_offsets[1] + 4,
-            relative_offsets[2] + 8,
-        )
-        if required_record_end > stride:
+        if not fields_fit_record(
+            prefix_length,
+            stride,
+            (
+                (spec.item_offset, 4),
+                (spec.quantity_offset, _TRANSFER_QUANTITY_BYTES),
+                (instance_offset, 8),
+            ),
+        ):
             return []
         deltas = [stride * index for index in range(declared_count)]
 
@@ -274,6 +263,10 @@ def _structural_record_deltas(
     other transfer families may use their item-record marker and relative
     instance offset. The base-length equation guards against marker-like bytes
     elsewhere in the same message.
+
+    None means structural validation is unsupported for this spec. An empty
+    list means it was attempted and rejected; configured-stride fallback must
+    not turn that rejection into a partial or unvalidated event.
     """
     if declared_storage_deltas is not None:
         return declared_storage_deltas
@@ -299,16 +292,14 @@ def _structural_record_deltas(
     # The calibrated first record is the anchor. Refuse a partial or shifted
     # match instead of turning an embedded item structure into an event.
     if not offsets or offsets[0] != spec.item_offset:
-        return None
+        return []
 
     if len(offsets) > 1:
-        strides = [b - a for a, b in zip(offsets, offsets[1:])]
+        candidate_stride = uniform_stride(offsets)
         minimum_stride = max(20, instance_delta + 8)
-        if any(stride < minimum_stride for stride in strides):
-            return None
-        if len(set(strides)) != 1:
-            return None
-        inferred_stride = strides[0]
+        if candidate_stride is None or candidate_stride < minimum_stride:
+            return []
+        inferred_stride = candidate_stride
     else:
         inferred_stride = 0
 
@@ -316,7 +307,7 @@ def _structural_record_deltas(
     if base_length is not None:
         expected_length = base_length + (len(offsets) - 1) * inferred_stride
         if len(message) != expected_length:
-            return None
+            return []
 
     return [offset - spec.item_offset for offset in offsets]
 
@@ -357,11 +348,13 @@ class FrameCollectorScanner:
         self._buffer_start_sequence: Optional[int] = None
         self._frame_index = 0
         self._synchronized = False
+        self._framed_stream_start: Optional[int] = None
 
     def reset(self) -> None:
         self._buffer.clear()
         self._buffer_start_sequence = None
         self._synchronized = False
+        self._framed_stream_start = None
 
     def can_anchor_at_start(self, data: bytes) -> bool:
         """Return whether byte zero is an evidence-backed frame boundary."""
@@ -396,9 +389,22 @@ class FrameCollectorScanner:
     def scan_standalone(self, data: bytes, context: PacketContext) -> None:
         if not data:
             return
+        if (
+            self._framed_stream_start is not None
+            and context.stream_start is not None
+        ):
+            # Reassembly calls this only for already-delivered overlap bytes.
+            # They must not acquire new boundaries when a retransmission cuts
+            # into an outer frame. Only an earlier, previously unframed prefix
+            # is eligible for independent recovery.
+            prefix_length = self._framed_stream_start - context.stream_start
+            if prefix_length <= 0:
+                return
+            data = data[:prefix_length]
         saved_buffer = self._buffer
         saved_buffer_start_sequence = self._buffer_start_sequence
         saved_synchronized = self._synchronized
+        saved_framed_stream_start = self._framed_stream_start
         self._buffer = bytearray(data)
         self._buffer_start_sequence = context.stream_start
         self._synchronized = False
@@ -408,6 +414,7 @@ class FrameCollectorScanner:
             self._buffer = saved_buffer
             self._buffer_start_sequence = saved_buffer_start_sequence
             self._synchronized = saved_synchronized
+            self._framed_stream_start = saved_framed_stream_start
 
     def _discard_prefix(self, byte_count: int) -> None:
         if byte_count <= 0:
@@ -428,6 +435,8 @@ class FrameCollectorScanner:
                 if candidate_start:
                     self._discard_prefix(candidate_start)
                 self._synchronized = True
+                if self._framed_stream_start is None:
+                    self._framed_stream_start = self._buffer_start_sequence
 
             message_length = int.from_bytes(self._buffer[0:2], "little")
             if not 5 <= message_length <= MAX_TARGET_MESSAGE_LENGTH:
@@ -779,9 +788,9 @@ class TargetMessageScanner:
             if structural_deltas is not None:
                 candidate_deltas = structural_deltas
             else:
-                # Structural discovery is deliberately strict. Preserve support
-                # for older/synthetic layouts through the calibrated stride, but
-                # never accept an off-stride message merely because record 1 fits.
+                # None means this layout cannot use structural validation.
+                # A supported layout that fails it returns [] and must never
+                # reach this weaker configured-length/stride decoder.
                 if not _configured_message_length_matches_spec(spec, message_length):
                     return None
                 candidate_deltas = []

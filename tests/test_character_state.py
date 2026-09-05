@@ -8,18 +8,22 @@ import pytest
 from bdo_toolkit import PacketCaptureOptions
 from bdo_toolkit import _capture_runtime as capture_runtime
 from bdo_toolkit import capture as capture_module
-from bdo_toolkit import character_state as character_state_module
+from bdo_toolkit._item_state import inventory as inventory_module
+from bdo_toolkit._item_state import _records as records_module
+from bdo_toolkit._item_state import session as session_module
+from bdo_toolkit._item_state.assembly import _CharacterStateAccumulator
+from bdo_toolkit.profiles import ProfileError
 from bdo_toolkit.character_state import (
     CharacterLoadSession,
     ItemStateCaptureLimitError,
     ItemStateCaptureLimits,
-    _CharacterStateAccumulator,
     analyze_character_load_pcap,
     format_character_state,
 )
 from bdo_toolkit._protocol import (
     BDOFrame,
     CHARACTER_LOAD_CONTEXT,
+    STORAGE_LOCATIONS,
     EventSpec,
     FlowKey,
     LootEvent,
@@ -49,7 +53,7 @@ def _storage_diagnostics(state, storage_id: int):
 @requires_fixtures
 def test_july17_character_state_report_recovers_inventory_and_storage():
     try:
-        capture = fixture_path("fullcapture.pcapng")
+        capture = fixture_path('inventory--initial-world-load--63ef198a07')
     except FileNotFoundError:
         pytest.skip("July 17 private initial-load fixture not present")
     profile = JULY17_OPCODE_PROFILE
@@ -145,7 +149,7 @@ def test_july17_character_state_report_recovers_inventory_and_storage():
 @requires_fixtures
 def test_july17_character_switch_classifies_exact_inventory_state():
     try:
-        capture = fixture_path("character-switch-2026-07-17-01.pcapng")
+        capture = fixture_path('inventory--character-switch--148be8bc49')
     except FileNotFoundError:
         pytest.skip("July 17 private character-switch fixture not present")
     profile = JULY17_OPCODE_PROFILE
@@ -334,11 +338,11 @@ def test_inventory_tail_layout_is_discovered_for_prior_observed_geometry():
         for code in (0x00, 0x0B)
     ]
 
-    layout = character_state_module._discover_inventory_tail_layout(groups)
+    layout = inventory_module._discover_inventory_tail_layout(groups)
 
     assert layout == (221, 224)
     frame, records, spec, stride = groups[1]
-    metadata = character_state_module._inventory_record_metadata(
+    metadata = inventory_module._inventory_record_metadata(
         frame,
         records,
         spec,
@@ -362,11 +366,11 @@ def test_inventory_tail_layout_is_discovered_when_container_precedes_slot():
         for code in (0x00, 0x0B)
     ]
 
-    layout = character_state_module._discover_inventory_tail_layout(groups)
+    layout = inventory_module._discover_inventory_tail_layout(groups)
 
     assert layout == (225, 224)
     frame, records, spec, stride = groups[1]
-    metadata = character_state_module._inventory_record_metadata(
+    metadata = inventory_module._inventory_record_metadata(
         frame,
         records,
         spec,
@@ -406,7 +410,8 @@ def test_reversed_inventory_tail_layout_is_reused_for_single_currency_record():
         specs=(groups[0][2],),
     )
 
-    assembly = accumulator._inventory_summary(
+    assembly = inventory_module._assemble_inventory(
+        accumulator.inventory_specs,
         tuple(frame for frame, _, _, _ in groups),
         tuple(event for _, records, _, _ in groups for event in records),
         generations_observed=1,
@@ -435,7 +440,7 @@ def test_inventory_tail_layout_fails_closed_when_slot_column_is_ambiguous():
         for code in (0x00, 0x10)
     ]
 
-    assert character_state_module._discover_inventory_tail_layout(groups) is None
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
 
 
 def test_inventory_tail_layout_fails_closed_when_container_side_is_ambiguous():
@@ -451,7 +456,7 @@ def test_inventory_tail_layout_fails_closed_when_container_side_is_ambiguous():
         for code in (0x00, 0x10)
     ]
 
-    assert character_state_module._discover_inventory_tail_layout(groups) is None
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
 
 
 def test_inventory_tail_layout_fails_closed_for_an_unknown_container_code():
@@ -466,7 +471,7 @@ def test_inventory_tail_layout_fails_closed_for_an_unknown_container_code():
         for code in (0x00, 0x42)
     ]
 
-    assert character_state_module._discover_inventory_tail_layout(groups) is None
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
 
 
 def test_reversed_inventory_tail_layout_fails_closed_for_unknown_container_code():
@@ -481,7 +486,7 @@ def test_reversed_inventory_tail_layout_fails_closed_for_unknown_container_code(
         for code in (0x00, 0x42)
     ]
 
-    assert character_state_module._discover_inventory_tail_layout(groups) is None
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
 
 
 def _synthetic_inventory_header_group(
@@ -552,8 +557,8 @@ def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
         for code in (0x00, 0x0B)
     ]
 
-    assert character_state_module._discover_inventory_tail_layout(groups) is None
-    offset = character_state_module._discover_inventory_header_container_offset(
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
+    offset = inventory_module._discover_inventory_header_container_offset(
         groups
     )
     assert offset == 33
@@ -562,7 +567,8 @@ def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
         profile_source="test",
         specs=(groups[0][2],),
     )
-    assembly = accumulator._inventory_summary(
+    assembly = inventory_module._assemble_inventory(
+        accumulator.inventory_specs,
         tuple(frame for frame, _, _, _ in groups),
         tuple(event for _, records, _, _ in groups for event in records),
         generations_observed=1,
@@ -603,7 +609,8 @@ def test_inventory_summary_selects_unique_geometry_from_same_opcode_layouts():
         specs=(valid_spec, invalid_last_wins_decoy),
     )
 
-    assembly = accumulator._inventory_summary(
+    assembly = inventory_module._assemble_inventory(
+        accumulator.inventory_specs,
         tuple(frame for frame, _, _, _ in groups),
         tuple(event for _, records, _, _ in groups for event in records),
         generations_observed=1,
@@ -624,12 +631,12 @@ def test_known_currency_id_requires_its_observed_container_pairing():
         item_id=6,
         quantity=1,
     )
-    metadata = character_state_module._InventoryRecordMetadata(
+    metadata = records_module._InventoryRecordMetadata(
         slot=5,
         container_code=0x00,
     )
 
-    item = character_state_module._snapshot_item(event, "instance", metadata)
+    item = records_module._snapshot_item(event, "instance", metadata)
 
     assert item.currency_name is None
     assert not item.is_currency_balance
@@ -855,7 +862,7 @@ def _state_storage_event(
     flow: Flow = _CHARACTER_STATE_FLOW,
     flow_generation: int = 0,
 ) -> BDOEvent:
-    location = character_state_module.STORAGE_LOCATIONS.get(storage_id)
+    location = STORAGE_LOCATIONS.get(storage_id)
     event = BDOEvent(
         event_type=event_type,
         timestamp=timestamp,
@@ -897,7 +904,7 @@ def test_character_state_reconciles_one_hydration_sweep_split_across_bursts(
         specs=(_storage_snapshot_spec(),),
     )
     accumulator.observe_event(_state_inventory_anchor())
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:12]
 
     offset = 0
     for event_type, count, start_time in (
@@ -930,7 +937,7 @@ def test_split_hydration_reconciliation_stops_at_a_live_mutation_boundary() -> N
         specs=(_storage_snapshot_spec(),),
     )
     accumulator.observe_event(_state_inventory_anchor())
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:13]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:13]
     for index, storage_id in enumerate(storage_ids[:4]):
         accumulator.observe_event(
             _state_storage_event(
@@ -974,7 +981,7 @@ def test_split_hydration_reconciliation_does_not_cross_opcode_families() -> None
         specs=(_storage_snapshot_spec(),),
     )
     accumulator.observe_event(_state_inventory_anchor())
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:12]
     for index, storage_id in enumerate(storage_ids[:4]):
         accumulator.observe_event(
             _state_storage_event(
@@ -1015,7 +1022,7 @@ def test_split_hydration_reconciliation_isolates_connection_identity(
     accumulator.observe_event(
         _state_inventory_anchor(flow_generation=selected_generation)
     )
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:12]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:12]
     neutral_flow = (
         Flow("10.0.0.3", 8889, "10.0.0.4", 50001)
         if isolation == "flow"
@@ -1057,7 +1064,7 @@ def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() 
         specs=(_storage_snapshot_spec(),),
     )
     accumulator.observe_event(_state_inventory_anchor())
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:4]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:4]
     for index, storage_id in enumerate(storage_ids):
         accumulator.observe_event(
             _state_storage_event(
@@ -1098,7 +1105,7 @@ def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
         b"",
     )
 
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:8]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:8]
     flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
     for index, storage_id in enumerate(storage_ids[:3]):
         accumulator.observe_event(
@@ -1112,7 +1119,7 @@ def test_character_load_uses_empty_envelopes_for_sparse_storage_hydration(
                 message_length=spec.single_record_message_length,
                 storage_instance=f"sparse-{index}",
                 storage_id=storage_id,
-                storage_name=character_state_module.STORAGE_LOCATIONS[storage_id].name,
+                storage_name=STORAGE_LOCATIONS[storage_id].name,
                 storage_name_confidence="observed",
                 record_index=1,
                 record_count=1,
@@ -1165,7 +1172,7 @@ def test_classified_nonempty_snapshot_keeps_leading_empty_envelopes_without_stri
         b"",
     )
 
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:10]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:10]
     for index, storage_id in enumerate(storage_ids[:2]):
         accumulator.observe_frame(
             _empty_storage_frame(
@@ -1189,7 +1196,7 @@ def test_classified_nonempty_snapshot_keeps_leading_empty_envelopes_without_stri
                 storage_instance=f"classified-{index}",
                 storage_id=storage_id,
                 storage_name=(
-                    character_state_module.STORAGE_LOCATIONS[storage_id].name
+                    STORAGE_LOCATIONS[storage_id].name
                 ),
                 storage_name_confidence="observed",
                 record_index=1,
@@ -1229,7 +1236,7 @@ def test_empty_cohort_cannot_override_observed_multi_record_geometry():
         b"",
     )
 
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:10]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:10]
     flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
     proven_stride = 222
     multi_length = spec.single_record_message_length + proven_stride
@@ -1246,7 +1253,7 @@ def test_empty_cohort_cannot_override_observed_multi_record_geometry():
                 storage_instance=f"multi-{index}",
                 storage_id=storage_ids[0],
                 storage_name=(
-                    character_state_module.STORAGE_LOCATIONS[storage_ids[0]].name
+                    STORAGE_LOCATIONS[storage_ids[0]].name
                 ),
                 storage_name_confidence="observed",
                 record_index=index + 1,
@@ -1357,7 +1364,7 @@ def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
         b"",
     )
 
-    storage_ids = tuple(character_state_module.STORAGE_LOCATIONS)[:8]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:8]
     flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
     for index, storage_id in enumerate(storage_ids[:3]):
         accumulator.observe_event(
@@ -1412,7 +1419,7 @@ def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
     )
     unknown_storage_id = 0x12345678
     storage_ids = (
-        *tuple(character_state_module.STORAGE_LOCATIONS)[:7],
+        *tuple(STORAGE_LOCATIONS)[:7],
         unknown_storage_id,
     )
     for index, storage_id in enumerate(storage_ids):
@@ -1475,7 +1482,7 @@ def test_unknown_empty_envelope_adds_to_decoded_destination_failure_count():
         )
     )
     empty_ids = (
-        *tuple(character_state_module.STORAGE_LOCATIONS)[:6],
+        *tuple(STORAGE_LOCATIONS)[:6],
         empty_unknown_id,
     )
     for index, storage_id in enumerate(empty_ids):
@@ -1654,14 +1661,14 @@ def test_item_state_profile_geometry_requires_identity_and_wrapper_authority():
     )
 
     with pytest.raises(
-        character_state_module.ProfileError,
+        ProfileError,
         match="require calibrated identity and wrapper authority",
     ):
-        character_state_module._validate_item_state_identity_specs(
+        session_module._validate_item_state_identity_specs(
             (missing_inventory_identity, missing_storage_identity)
         )
 
-    character_state_module._validate_item_state_identity_specs(
+    session_module._validate_item_state_identity_specs(
         (
             EventSpec(
                 label="INVENTORY_TRANSFER",
@@ -2082,7 +2089,7 @@ def character_load_live_fakes(monkeypatch):
     )
     monkeypatch.setattr(capture_runtime, "_is_windows", lambda: False)
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "make_packet_handler",
         lambda engine: parser_packets.append,
     )
@@ -2099,7 +2106,7 @@ def test_offline_character_state_loads_one_profile_revision(monkeypatch):
         return real_load(path)
 
     monkeypatch.setattr(capture_module, "load_opcode_profile", counted_load)
-    monkeypatch.setattr(character_state_module, "iter_pcap_file", lambda *args: ())
+    monkeypatch.setattr(session_module, "iter_pcap_file", lambda *args: ())
 
     profile = JULY17_OPCODE_PROFILE
     state = analyze_character_load_pcap(
@@ -2158,7 +2165,7 @@ def test_offline_character_load_retains_a_large_out_of_order_storage_frame(
         resets.append(engine.tcp_gap_resets)
 
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "iter_pcap_file",
         replay_delayed_prefix,
     )
@@ -2300,7 +2307,7 @@ def test_live_character_load_saves_packet_before_parser_failure(
 
     writer = FakeWriter()
     monkeypatch.setattr(
-        character_state_module, "_open_packet_writer", lambda path: writer
+        session_module, "_open_packet_writer", lambda path: writer
     )
 
     def failing_handler(engine):
@@ -2309,7 +2316,7 @@ def test_live_character_load_saves_packet_before_parser_failure(
 
         return fail
 
-    monkeypatch.setattr(character_state_module, "make_packet_handler", failing_handler)
+    monkeypatch.setattr(session_module, "make_packet_handler", failing_handler)
     session = CharacterLoadSession(
         opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
@@ -2354,7 +2361,7 @@ def test_live_character_load_surfaces_accumulation_limit_without_partial_result(
 
         return emit
 
-    monkeypatch.setattr(character_state_module, "make_packet_handler", record_emitter)
+    monkeypatch.setattr(session_module, "make_packet_handler", record_emitter)
     session = CharacterLoadSession(
         opcode_profile=JULY17_OPCODE_PROFILE,
         capture_options=PacketCaptureOptions(interface="test-interface"),
@@ -2398,7 +2405,7 @@ def test_live_character_load_closes_writer_when_sniffer_start_fails(
 
     writer = FakeWriter()
     monkeypatch.setattr(
-        character_state_module, "_open_packet_writer", lambda path: writer
+        session_module, "_open_packet_writer", lambda path: writer
     )
     monkeypatch.setattr("scapy.sendrecv.AsyncSniffer", FailingSniffer)
     session = CharacterLoadSession(
@@ -2463,7 +2470,7 @@ def test_live_character_load_times_out_and_cleans_every_startup_resource(
     writer = FakeWriter()
     capture_socket = FakeSocket()
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "_open_packet_writer",
         lambda path: writer,
     )
@@ -2479,7 +2486,7 @@ def test_live_character_load_times_out_and_cleans_every_startup_resource(
         NeverReadySniffer,
     )
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "_CHARACTER_LOAD_STARTUP_TIMEOUT_SECONDS",
         0.01,
     )
@@ -2563,7 +2570,7 @@ def test_live_character_load_retains_dependencies_until_capture_thread_stops(
         UncooperativeSniffer,
     )
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "_open_packet_writer",
         lambda path: writer,
     )
@@ -2647,12 +2654,12 @@ def test_character_load_retains_startup_dependencies_when_cleanup_is_incomplete(
 
     writer = FakeWriter()
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "LivePacketCapture",
         IncompleteStartupCapture,
     )
     monkeypatch.setattr(
-        character_state_module,
+        session_module,
         "_open_packet_writer",
         lambda path: writer,
     )
