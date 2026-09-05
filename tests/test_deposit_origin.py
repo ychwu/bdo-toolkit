@@ -6,27 +6,29 @@ synthetic tests pin the fail-closed rules that no capture currently
 exercises.
 """
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 from pathlib import Path
 from threading import Event as ThreadEvent, RLock, Thread
 
 import pytest
 
 from fixture_paths import (
-    JULY6_OPCODE_PROFILE,
     JULY17_OPCODE_PROFILE,
+    JULY6_OPCODE_PROFILE,
     fixture_path,
     has_fixture_pcaps,
 )
+
 from bdo_toolkit import EventFilter, replay_pcap
-from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit._deposit_origin import DecrementSpec, DepositOriginTracker
 from bdo_toolkit._engine import PacketEngine, toolkit_event_from_record
 from bdo_toolkit._protocol import BDOFrame, EventSpec, FlowKey, PacketContext
+from bdo_toolkit.capture import _EventCollector, _decrement_specs
 from bdo_toolkit.events import BDOEvent, Flow
-from bdo_toolkit.profiles import OpcodeProfile, ProfileError
 from bdo_toolkit.origin_learning import discover_companion_observation
+from bdo_toolkit.profiles import OpcodeProfile, ProfileError
+
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -1621,11 +1623,14 @@ def _collect_synthetic_current_storage(profile, payload, event_filter=None):
     )
 
 
-def _collect_synthetic_current_segments(profile, payloads, event_filter=None):
+def _collect_synthetic_current_segments(
+    profile, payloads, event_filter=None, *, origin_observer=None,
+):
     collector = _EventCollector(
         server_ports=(8889,),
         event_filter=event_filter,
         opcode_profile=profile,
+        origin_observer=origin_observer,
     )
     sequence = 1000
     for index, payload in enumerate(payloads):
@@ -2697,3 +2702,34 @@ def test_classified_storage_sources_filter_through_the_canonical_field():
     assert [(event.item_id, event.source) for event in events] == [
         (4607, "Worker Production")
     ]
+
+
+@pytest.mark.parametrize(
+    "event_filter", [None, EventFilter(event_types={"item_received"})],
+    ids=["all-events", "nonstorage-events"],
+)
+def test_origin_observer_receives_worker_evidence_independently_of_event_filter(
+    event_filter,
+):
+    token = bytes.fromhex("3141592653589793")
+    instance = (1).to_bytes(8, "little")
+    payload = b"".join((
+        _july17_unknown_operation_storage(((7003, 1),), token=token),
+        *_current_companions(token),
+        _july17_inventory_receipt(7003, 1, instance),
+    ))
+    observations = []
+    events = _collect_synthetic_current_segments(
+        JULY17_OPCODE_PROFILE, (payload,), event_filter,
+        origin_observer=observations.append,
+    )
+    assert [(event.event_type, event.item_id) for event in events] == (
+        [("storage_delta", 7003), ("item_received", 7003)]
+        if event_filter is None else [("item_received", 7003)]
+    )
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation.delta_opcode == 0x126D
+    assert observation.companion_opcodes == (0x1A59, 0x155E)
+    assert observation.companion_lengths == (64, 30)
+    assert observation.stream_sequence == 1000

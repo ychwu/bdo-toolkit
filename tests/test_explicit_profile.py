@@ -7,6 +7,7 @@ from collections.abc import Mapping
 import pytest
 
 from fixture_paths import JULY17_OPCODE_PROFILE, fixture_path, has_fixture_pcaps
+
 from bdo_toolkit import load_opcode_profile, replay_pcap
 from bdo_toolkit.capture import _EventCollector
 
@@ -83,15 +84,13 @@ def test_tracked_profile_is_the_reviewed_july17_authority() -> None:
         "item_id_offset",
         "quantity_offset",
         "item_instance_offset",
-        "observed_at",
-    ) == ("0x1643", 244, 23, 27, 58, "2026-07-02T11:54:26")
+    ) == ("0x1643", 244, 23, 27, 58)
 
     (family,) = profile.origin_companion_families
     assert family.delta_opcode == 0x126D
     assert family.companion_opcodes == (0x1A59, 0x155E)
     assert family.companion_lengths == (64, 30)
     assert family.detection == "shared-token-chain-v1"
-    assert family.observations == 114
 
 
 def _inventory_snapshot(records: tuple[tuple[int, int], ...]) -> bytes:

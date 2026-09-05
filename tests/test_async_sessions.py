@@ -9,27 +9,17 @@ from threading import Event
 
 import pytest
 
+from _support.capture import item_event as _event
+
 from bdo_toolkit import (
     AsyncCalibrationSession,
     AsyncLiveCaptureSession,
-    BDOEvent,
     EventFilter,
-    Flow,
+    _async_sessions as async_module,
 )
-from bdo_toolkit import _async_sessions as async_module
 
 
 _END = object()
-
-
-def _event(item_id: int) -> BDOEvent:
-    return BDOEvent(
-        event_type="item_received",
-        timestamp=float(item_id),
-        flow=Flow("203.0.113.1", 8889, "198.51.100.2", 50000),
-        item_id=item_id,
-        quantity=1,
-    )
 
 
 class FakeLiveCaptureSession:

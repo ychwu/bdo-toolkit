@@ -9,29 +9,26 @@ from types import SimpleNamespace
 
 import pytest
 
+from _support.capture import item_event as _event
+from _support.framing import (
+    feed_collector,
+    finish_collector,
+    framing_message,
+    framing_profile,
+)
+
 from bdo_toolkit import (
     AsyncLiveCaptureSession,
-    BDOEvent,
     CaptureIntegrityError,
     EventFilter,
-    Flow,
     LiveCaptureOptions,
     LiveCaptureSession,
     PacketCaptureOptions,
+    _capture_runtime as capture_runtime,
+    capture as capture_module,
 )
-from bdo_toolkit import _capture_runtime as capture_runtime
-from bdo_toolkit import capture as capture_module
 from bdo_toolkit._reassembly import FlowManager
-
-
-def _event(item_id: int) -> BDOEvent:
-    return BDOEvent(
-        event_type="item_received",
-        timestamp=float(item_id),
-        flow=Flow("203.0.113.1", 8889, "198.51.100.2", 50000),
-        item_id=item_id,
-        quantity=1,
-    )
+from bdo_toolkit.capture import _EventCollector
 
 
 class _HealthFlowRace:
@@ -1670,3 +1667,40 @@ def test_live_options_use_positive_backend_controls(live_fakes):
     assert callable(sniffer.kwargs["lfilter"])
     session.stop()
 
+
+def test_idle_gap_service_preserves_already_queued_missing_bytes():
+    profile = framing_profile()
+    collector = _EventCollector(server_ports=(8889,), opcode_profile=profile)
+    session = LiveCaptureSession(opcode_profile=profile)
+    session._collector = collector
+    message = framing_message(0x1111)
+    old_timestamp = time.time() - 10
+    feed_collector(collector, b"", sequence=99, timestamp=old_timestamp, syn=True)
+    feed_collector(collector, message[:20], timestamp=old_timestamp)
+    feed_collector(collector, message[60:], sequence=160, timestamp=old_timestamp)
+    session._packet_queue.put(message[20:60])
+
+    session._service_engine_clock()
+    assert collector.engine.tcp_gap_resets == 0
+    feed_collector(
+        collector, session._packet_queue.get_nowait(),
+        sequence=120, timestamp=old_timestamp,
+    )
+    session._service_engine_clock()
+    assert collector.engine.tcp_gap_resets == 0
+    assert [(event.event_type, event.item_id) for event in finish_collector(collector)] == [
+        ("loot_preview", 7003)
+    ]
+
+
+def test_idle_gap_service_still_expires_a_truly_missing_segment():
+    profile = framing_profile()
+    collector = _EventCollector(server_ports=(8889,), opcode_profile=profile)
+    session = LiveCaptureSession(opcode_profile=profile)
+    session._collector = collector
+    old_timestamp = time.time() - 10
+    feed_collector(collector, b"", sequence=99, timestamp=old_timestamp, syn=True)
+    feed_collector(collector, framing_message(0x1111), sequence=120, timestamp=old_timestamp)
+    session._service_engine_clock()
+    assert collector.engine.tcp_gap_resets == 1
+    assert len(finish_collector(collector)) == 1

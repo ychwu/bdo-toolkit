@@ -1,27 +1,35 @@
-"""Calibration tests mirroring the legacy prototype's expected discoveries."""
+"""Calibration discovery, evidence validation, and session configuration."""
 
 from dataclasses import replace
-import json
+from functools import partial
 
 import pytest
 
+from _support.packets import feed_engine
 from fixture_paths import fixture_path, has_fixture_pcaps
-from bdo_toolkit import PacketCaptureOptions, load_opcode_profile, replay_pcap
-from bdo_toolkit import _capture_backend as capture_backend
-from bdo_toolkit import _capture_runtime as capture_runtime
+
+from bdo_toolkit import (
+    PacketCaptureOptions,
+    _capture_backend as capture_backend,
+    _capture_runtime as capture_runtime,
+    calibration as calibration_module,
+    load_opcode_profile,
+    replay_pcap,
+)
+from bdo_toolkit._engine import PacketEngine
+from bdo_toolkit._protocol import BDOFrame, FlowKey, PacketContext
+from bdo_toolkit._specs import event_specs_from_profile
 from bdo_toolkit.calibration import (
     CalibrationAuthorityError,
-    CalibrationRetention,
-    CalibrationResult,
     CalibrationSession,
+    DirectionMismatchError,
     MessageSpec,
     calibrate_frames,
     calibrate_pcap,
     collect_frames_pcap,
-    reset_profile,
     update_profile,
 )
-from bdo_toolkit._specs import event_specs_from_profile
+
 
 requires_fixtures = pytest.mark.skipif(
     not has_fixture_pcaps(),
@@ -305,15 +313,7 @@ def test_stack_companion_fallback_rejects_incidental_pre_quantity_bytes():
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
-    def frame(index, opcode, message):
-        message[0:2] = len(message).to_bytes(2, "little")
-        message[3:5] = opcode.to_bytes(2, "little")
-        return BDOFrame(
-            index=index,
-            message=bytes(message),
-            context=PacketContext(1000.0 + index, flow),
-            stream_sequence=index,
-        )
+    frame = partial(_companion_frame, flow=flow)
 
     quantity = 5
     item_id = 7003
@@ -371,15 +371,7 @@ def test_multi_stack_decrement_calibration_normalizes_base_and_stride():
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
-    def frame(index, opcode, message):
-        message[0:2] = len(message).to_bytes(2, "little")
-        message[3:5] = opcode.to_bytes(2, "little")
-        return BDOFrame(
-            index=index,
-            message=bytes(message),
-            context=PacketContext(1000.0 + index, flow),
-            stream_sequence=index,
-        )
+    frame = partial(_companion_frame, flow=flow)
 
     quantity = 1
     item_id = 1000306
@@ -440,15 +432,7 @@ def test_current_decrement_phase_does_not_learn_every_other_record():
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
-    def frame(index, opcode, message):
-        message[0:2] = len(message).to_bytes(2, "little")
-        message[3:5] = opcode.to_bytes(2, "little")
-        return BDOFrame(
-            index=index,
-            message=bytes(message),
-            context=PacketContext(1000.0 + index, flow),
-            stream_sequence=index,
-        )
+    frame = partial(_companion_frame, flow=flow)
 
     quantity = 1
     item_id = 15156
@@ -657,15 +641,7 @@ def test_container_companion_handles_known_field_orders_safely(
 
     flow = FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000)
 
-    def frame(index, opcode, message):
-        message[0:2] = len(message).to_bytes(2, "little")
-        message[3:5] = opcode.to_bytes(2, "little")
-        return BDOFrame(
-            index=index,
-            message=bytes(message),
-            context=PacketContext(1000.0 + index, flow),
-            stream_sequence=index,
-        )
+    frame = partial(_companion_frame, flow=flow)
 
     quantity = 5
     item_id = 7003
@@ -727,268 +703,12 @@ def test_container_companion_handles_known_field_orders_safely(
     assert spec.quantity_removed_offset == expected_quantity
 
 
-@requires_fixtures
-def test_update_profile_explicit_merge_deduplicates_and_backs_up(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-    profile_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "updated_at": "2026-01-01T00:00:00",
-                "calibration_item_id": 7003,
-                "specs": {"LOOT_PREVIEW": []},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = calibrate_pcap(
-        fixture_path("loot_window_potato_3_new.pcapng"),
-        item_id=7003,
-        quantity=3,
-        action="loot-preview",
-    )
-    update = update_profile(
-        result, profile_path, action="loot-preview", replace=False
-    )
-
-    assert len(update.added) == 1
-    assert update.backup_path is not None and update.backup_path.exists()
-
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert data["profile_active"] is True
-    entry = data["specs"]["LOOT_PREVIEW"][0]
-    assert entry["opcode"] == "0x1643"
-    assert entry["item_id_offset"] == 23
-    assert entry["quantity_offset"] == 27
-
-    # Re-applying the same specs is a no-op thanks to dedupe keys.
-    second = update_profile(
-        result, profile_path, action="loot-preview", replace=False
-    )
-    assert second.added == ()
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert len(data["specs"]["LOOT_PREVIEW"]) == 1
-
-
-@requires_fixtures
-def test_update_profile_default_replaces_stale_action_specs(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-    profile_path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "profile_active": True,
-                "specs": {
-                    "LOOT_PREVIEW": [
-                        {
-                            "event": "LOOT_PREVIEW",
-                            "opcode": "0x1643",
-                            "length": 244,
-                            "item_id_offset": 23,
-                            "quantity_offset": 27,
-                        }
-                    ],
-                    "INVENTORY_TRANSFER": [
-                        {
-                            "event": "INVENTORY_TRANSFER",
-                            "opcode": "0xDEAD",
-                            "length": 99,
-                            "item_id_offset": 10,
-                            "quantity_offset": 14,
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    result = calibrate_pcap(
-        fixture_path("new_potato.pcapng"),
-        item_id=7003,
-        quantity=10,
-        action="storage-to-inventory",
-    )
-    update = update_profile(result, profile_path, action="storage-to-inventory")
-
-    # Reporting names only families that actually contained entries. The
-    # newly created container-decrement family was not replaced.
-    assert update.replaced_events == ("INVENTORY_TRANSFER",)
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert [entry["opcode"] for entry in data["specs"]["INVENTORY_TRANSFER"]] == [
-        "0x0F16"
-    ]
-    assert [
-        entry["opcode"] for entry in data["specs"]["SOURCE_CONTAINER_DECREMENT"]
-    ] == ["0x13A5"]
-    # Untouched action keeps its entries.
-    assert [entry["opcode"] for entry in data["specs"]["LOOT_PREVIEW"]] == ["0x1643"]
-
-
-def _write_inventory_to_storage_profile(path):
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "profile_active": True,
-                "specs": {
-                    "LOOT_PREVIEW": [
-                        {
-                            "event": "LOOT_PREVIEW",
-                            "opcode": "0x1643",
-                            "length": 244,
-                            "item_id_offset": 23,
-                            "quantity_offset": 27,
-                        }
-                    ],
-                    "SOURCE_STACK_DECREMENT": [
-                        {
-                            "event": "SOURCE_STACK_DECREMENT",
-                            "opcode": "0x11AD",
-                            "length": 47,
-                            "quantity_removed_offset": 27,
-                        }
-                    ],
-                    "SOURCE_ITEM_REFERENCE": [
-                        {
-                            "event": "SOURCE_ITEM_REFERENCE",
-                            "opcode": "0x0F63",
-                            "length": 23,
-                            "item_id_offset": 9,
-                        }
-                    ],
-                    "STORAGE_ITEM_DELTA": [
-                        {
-                            "event": "STORAGE_ITEM_DELTA",
-                            "opcode": "0x126D",
-                            "length": 257,
-                            "item_id_offset": 36,
-                            "quantity_added_offset": 40,
-                            "destination_instance_offset": 71,
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-
-def _partial_storage_delta_result():
-    return CalibrationResult(
-        (
-            MessageSpec(
-                "STORAGE_ITEM_DELTA",
-                0x2222,
-                258,
-                item_id_offset=37,
-                quantity_added_offset=41,
-                destination_instance_offset=72,
-            ),
-        ),
-        (),
-        1,
-        retention=CalibrationRetention(1, 1, 0, 0, 0, 0),
-    )
-
-
-def test_partial_explicit_action_replaces_only_observed_event_family(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-    _write_inventory_to_storage_profile(profile_path)
-
-    update = update_profile(
-        _partial_storage_delta_result(),
-        profile_path,
-        action="inventory-to-storage",
-        backup=False,
-    )
-
-    assert update.replaced_events == ("STORAGE_ITEM_DELTA",)
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert [
-        entry["opcode"] for entry in data["specs"]["SOURCE_STACK_DECREMENT"]
-    ] == ["0x11AD"]
-    assert [
-        entry["opcode"] for entry in data["specs"]["SOURCE_ITEM_REFERENCE"]
-    ] == ["0x0F63"]
-    assert [
-        entry["opcode"] for entry in data["specs"]["STORAGE_ITEM_DELTA"]
-    ] == ["0x2222"]
-
-
-def test_explicit_entire_action_replacement_clears_missing_families(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-    _write_inventory_to_storage_profile(profile_path)
-
-    update = update_profile(
-        _partial_storage_delta_result(),
-        profile_path,
-        action="inventory-to-storage",
-        replace_entire_action=True,
-        backup=False,
-    )
-
-    assert update.replaced_events == (
-        "SOURCE_STACK_DECREMENT",
-        "SOURCE_ITEM_REFERENCE",
-        "STORAGE_ITEM_DELTA",
-    )
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert data["specs"]["SOURCE_STACK_DECREMENT"] == []
-    assert data["specs"]["SOURCE_ITEM_REFERENCE"] == []
-    assert [
-        entry["opcode"] for entry in data["specs"]["STORAGE_ITEM_DELTA"]
-    ] == ["0x2222"]
-    assert [entry["opcode"] for entry in data["specs"]["LOOT_PREVIEW"]] == [
-        "0x1643"
-    ]
-
-
-def test_entire_action_replacement_cannot_be_combined_with_merge(tmp_path):
-    with pytest.raises(ValueError, match="replace_entire_action"):
-        update_profile(
-            _partial_storage_delta_result(),
-            tmp_path / "opcodes.json",
-            action="inventory-to-storage",
-            replace=False,
-            replace_entire_action=True,
-        )
-
-
-def test_reset_profile_writes_empty_active_profile(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-    profile_path.write_text("{}", encoding="utf-8")
-
-    backup = reset_profile(profile_path)
-    assert backup is not None and backup.exists()
-
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert data["profile_active"] is True
-    assert data["calibration_item_id"] == 15156
-    assert all(not entries for entries in data["specs"].values())
-
-    profile = event_specs_from_profile(load_opcode_profile(profile_path))
-    assert profile.active
-    assert profile.specs == ()
-
-
-def test_reset_profile_accepts_explicit_metadata_item_override(tmp_path):
-    profile_path = tmp_path / "opcodes.json"
-
-    assert reset_profile(profile_path, 7003, backup=False) is None
-
-    data = json.loads(profile_path.read_text(encoding="utf-8"))
-    assert data["calibration_item_id"] == 7003
-
-
 def test_calibration_session_guards_lifecycle():
     session = CalibrationSession(item_id=7003)
     assert not session.running
     assert session.frames_collected == 0
 
     # stop() before start() is a usage error, not a silent empty result
-    import pytest
 
     with pytest.raises(RuntimeError, match="not started"):
         session.stop()
@@ -1084,3 +804,350 @@ def test_calibration_session_can_disable_automatic_local_ip(monkeypatch):
     assert sniffer.kwargs["iface"] == "default-interface"
     assert "dst host" not in sniffer.kwargs["filter"]
     session.stop()
+
+
+def _storage_frame(
+    *,
+    opcode: int = 0x9999,
+    item_id: int = 99123,
+    quantity: int = 3,
+    count: int = 1,
+    index: int = 0,
+    contradictory: bool = False,
+) -> BDOFrame:
+    stride = 226
+    length = 261 + (count - 1) * stride
+    message = bytearray(length)
+    message[0:2] = length.to_bytes(2, "little")
+    message[3:5] = opcode.to_bytes(2, "little")
+    message[6:8] = count.to_bytes(2, "little")
+    message[8:12] = bytes.fromhex("20000000")
+    if contradictory:
+        message[20:24] = bytes.fromhex("d0f205a3")
+    for record_index in range(count):
+        offset = 37 + record_index * stride
+        message[offset : offset + 4] = (item_id + record_index).to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = (
+            quantity if record_index == 0 else 1
+        ).to_bytes(4, "little")
+        message[offset + 12 : offset + 20] = b"\xff" * 8
+        message[offset + 35 : offset + 43] = (record_index + 1).to_bytes(8, "little")
+    return BDOFrame(
+        index=index,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=1000.0 + index / 100,
+            flow=FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000),
+        ),
+        stream_sequence=100 + index,
+    )
+
+
+def test_explicit_calibration_refuses_contradictory_intrinsics():
+    frame = _storage_frame(contradictory=True)
+
+    with pytest.raises(DirectionMismatchError, match="contradictory"):
+        calibrate_frames(
+            [frame],
+            item_id=99123,
+            quantity=3,
+            action="inventory-to-storage",
+        )
+
+
+def test_storage_count_authority_requires_two_distinct_validated_shapes():
+    single = _storage_frame()
+    multi = _storage_frame(count=2, index=1)
+
+    assert "CalibrationAuthorityError" in calibration_module.__all__
+    for frames in ([single], [multi]):
+        with pytest.raises(
+            CalibrationAuthorityError,
+            match="record-count-field",
+        ):
+            calibrate_frames(
+                frames,
+                item_id=99123,
+                quantity=3,
+                action="inventory-to-storage",
+            )
+
+    result = calibrate_frames(
+        [single, multi],
+        item_id=99123,
+        quantity=3,
+        action="inventory-to-storage",
+    )
+    delta = next(spec for spec in result.specs if spec.event == "STORAGE_ITEM_DELTA")
+    assert delta.record_count_offset == 6
+
+
+def test_post_patch_storage_profile_keeps_context_and_stride(tmp_path):
+    frame = _storage_frame(opcode=0x9999)
+    count_authority = _storage_frame(
+        opcode=0x9999,
+        item_id=88123,
+        count=2,
+        index=1,
+    )
+    result = calibrate_frames(
+        [frame, count_authority],
+        item_id=99123,
+        quantity=3,
+        action="inventory-to-storage",
+    )
+    delta = next(spec for spec in result.specs if spec.event == "STORAGE_ITEM_DELTA")
+
+    assert delta.context_offset == 8
+    assert delta.record_count_offset == 6
+    assert delta.repeat_stride == 226
+
+    profile_path = tmp_path / "nested" / "opcodes.json"
+    update_profile(result, profile_path, action="inventory-to-storage")
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+    decode_spec = next(spec for spec in loaded.specs if spec.opcode == 0x9999)
+    assert decode_spec.source_context_offset == 8
+    assert decode_spec.record_count_offset == 6
+    assert decode_spec.repeat_stride == 226
+
+    message = bytearray(487)
+    message[0:2] = (487).to_bytes(2, "little")
+    message[3:5] = (0x9999).to_bytes(2, "little")
+    message[6:8] = (2).to_bytes(2, "little")
+    message[8:12] = bytes.fromhex("20000000")
+    for index, item_id in enumerate((99123, 99124)):
+        offset = 37 + 226 * index
+        message[offset : offset + 4] = item_id.to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = (1).to_bytes(4, "little")
+        message[offset + 35 : offset + 43] = (index + 1).to_bytes(8, "little")
+    decoded: list = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=loaded.specs,
+        on_event=lambda event, raw: decoded.append(event),
+    )
+    feed_engine(engine, 1, bytes(message))
+    engine.finish()
+    assert [event.item_id for event in decoded] == [99123, 99124]
+
+
+def test_post_patch_profile_uses_its_own_single_record_lengths(tmp_path):
+    """A patch may change wrapper bytes without changing record offsets/stride."""
+    profile_path = tmp_path / "opcodes.local"
+    update_profile(
+        [
+            MessageSpec(
+                event="INVENTORY_TRANSFER",
+                opcode=0x1AAE,
+                length=254,
+                item_id_offset=33,
+                quantity_offset=37,
+                item_instance_offset=68,
+                context_offset=24,
+                repeat_stride=228,
+            ),
+            MessageSpec(
+                event="STORAGE_ITEM_DELTA",
+                opcode=0x0D7E,
+                length=258,
+                item_id_offset=37,
+                quantity_added_offset=41,
+                destination_instance_offset=72,
+                context_offset=8,
+                record_count_offset=6,
+            ),
+        ],
+        profile_path,
+        backup=False,
+    )
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+    by_label = {spec.label: spec for spec in loaded.specs}
+
+    assert by_label["INVENTORY_TRANSFER"].single_record_message_length == 254
+    assert by_label["INVENTORY_TO_STORAGE"].repeat_stride is None
+    assert by_label["INVENTORY_TO_STORAGE"].single_record_message_length == 258
+
+    inventory = bytearray(254)
+    inventory[0:2] = (254).to_bytes(2, "little")
+    inventory[3:5] = (0x1AAE).to_bytes(2, "little")
+    inventory[24:28] = bytes.fromhex("d0f205a3")
+    inventory[33:37] = (7003).to_bytes(4, "little")
+    inventory[37:41] = (5).to_bytes(4, "little")
+    inventory[45:53] = b"\xff" * 8
+    inventory[68:76] = b"\x11" * 8
+
+    storage = bytearray(258)
+    storage[0:2] = (258).to_bytes(2, "little")
+    storage[3:5] = (0x0D7E).to_bytes(2, "little")
+    storage[6:8] = (1).to_bytes(2, "little")
+    storage[8:12] = bytes.fromhex("05000000")
+    storage[37:41] = (7003).to_bytes(4, "little")
+    storage[41:45] = (5).to_bytes(4, "little")
+    storage[72:80] = b"\x22" * 8
+
+    decoded: list = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=loaded.specs,
+        on_event=lambda event, raw: decoded.append(event),
+    )
+    feed_engine(engine, 1, bytes(inventory) + bytes(storage))
+    engine.finish()
+
+    assert [(event.label, event.item_id, event.quantity) for event in decoded] == [
+        ("INVENTORY_TRANSFER", 7003, 5),
+        ("INVENTORY_TO_STORAGE", 7003, 5),
+    ]
+
+
+def test_calibration_discovers_changed_context_and_mixed_batch_stride(tmp_path):
+    message = bytearray(479)
+    message[0:2] = (479).to_bytes(2, "little")
+    message[3:5] = (0x0D7E).to_bytes(2, "little")
+    message[25:29] = bytes.fromhex("20000000")
+    message[35:37] = (2).to_bytes(2, "little")
+    for offset, item_id, quantity, instance_byte in (
+        (37, 5004, 6, b"\x11"),
+        (258, 4604, 25, b"\x22"),
+    ):
+        message[offset : offset + 4] = item_id.to_bytes(4, "little")
+        message[offset + 4 : offset + 8] = quantity.to_bytes(4, "little")
+        message[offset + 12 : offset + 20] = b"\xff" * 8
+        message[offset + 35 : offset + 43] = instance_byte * 8
+    frame = BDOFrame(
+        index=0,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=1000.0,
+            flow=FlowKey("203.0.113.1", 8889, "198.51.100.2", 50000),
+        ),
+        stream_sequence=100,
+    )
+
+    single_message = bytearray(258)
+    single_message[0:2] = (258).to_bytes(2, "little")
+    single_message[3:5] = (0x0D7E).to_bytes(2, "little")
+    single_message[25:29] = bytes.fromhex("20000000")
+    single_message[35:37] = (1).to_bytes(2, "little")
+    single_message[37:41] = (5004).to_bytes(4, "little")
+    single_message[41:45] = (6).to_bytes(4, "little")
+    single_message[49:57] = b"\xff" * 8
+    single_message[72:80] = b"\x33" * 8
+    single_frame = BDOFrame(
+        index=1,
+        message=bytes(single_message),
+        context=PacketContext(
+            timestamp=1000.1,
+            flow=frame.context.flow,
+        ),
+        stream_sequence=101,
+    )
+
+    result = calibrate_frames(
+        [frame, single_frame],
+        item_id=5004,
+        quantity=6,
+        action="inventory-to-storage",
+    )
+    delta = next(spec for spec in result.specs if spec.event == "STORAGE_ITEM_DELTA")
+
+    assert delta.length == 258
+    assert delta.context_offset == 25
+    assert delta.record_count_offset == 35
+    assert delta.repeat_stride == 221
+
+    # Watching the SECOND item in the same mixed batch must still write a
+    # first-record profile rather than pinning offsets to record 2.
+    second_result = calibrate_frames(
+        [frame, single_frame],
+        item_id=4604,
+        quantity=25,
+        action="inventory-to-storage",
+    )
+    second_delta = next(
+        spec for spec in second_result.specs if spec.event == "STORAGE_ITEM_DELTA"
+    )
+    assert (
+        second_delta.length,
+        second_delta.item_id_offset,
+        second_delta.quantity_added_offset,
+        second_delta.destination_instance_offset,
+        second_delta.repeat_stride,
+    ) == (258, 37, 41, 72, 221)
+
+    profile_path = tmp_path / "opcodes.local"
+    update_profile(
+        result,
+        profile_path,
+        action="inventory-to-storage",
+        backup=False,
+    )
+    loaded = event_specs_from_profile(load_opcode_profile(profile_path))
+    decoded: list = []
+    engine = PacketEngine(
+        server_ports=(8889,),
+        event_specs=loaded.specs,
+        on_event=lambda event, raw: decoded.append(event),
+    )
+    feed_engine(engine, 1, bytes(message))
+    engine.finish()
+
+    assert [(event.item_id, event.quantity) for event in decoded] == [
+        (5004, 6),
+        (4604, 25),
+    ]
+
+
+def test_growing_reference_frame_is_persisted():
+    record = _storage_frame()
+    count_authority = _storage_frame(item_id=88123, count=2, index=2)
+    reference_message = bytearray(54)
+    reference_message[0:2] = (54).to_bytes(2, "little")
+    reference_message[3:5] = (0x1234).to_bytes(2, "little")
+    reference_message[10:14] = (99123).to_bytes(4, "little")
+    reference = BDOFrame(
+        index=1,
+        message=bytes(reference_message),
+        context=PacketContext(999.0, record.context.flow),
+        stream_sequence=1,
+    )
+
+    result = calibrate_frames(
+        [reference, record, count_authority],
+        item_id=99123,
+        quantity=3,
+        action="inventory-to-storage",
+    )
+
+    source_ref = next(
+        spec for spec in result.specs if spec.event == "SOURCE_ITEM_REFERENCE"
+    )
+    assert source_ref.length == 54
+    assert source_ref.item_id_offset == 10
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"item_id": 0},
+        {"item_id": -1},
+        {"item_id": 1, "quantity": 0},
+        {"item_id": 1, "context_frames": 0},
+        {"item_id": 1, "min_confidence": float("nan")},
+        {"item_id": 1, "min_confidence": 1.1},
+    ],
+)
+def test_calibration_rejects_invalid_options(kwargs):
+    with pytest.raises(ValueError):
+        calibrate_frames([], **kwargs)
+
+
+def _companion_frame(index, opcode, message, *, flow):
+    message[0:2] = len(message).to_bytes(2, "little")
+    message[3:5] = opcode.to_bytes(2, "little")
+    return BDOFrame(
+        index=index,
+        message=bytes(message),
+        context=PacketContext(1000.0 + index, flow),
+        stream_sequence=index,
+    )
