@@ -9,6 +9,7 @@ thread and make cancellation deterministic.
 from __future__ import annotations
 
 import asyncio
+import math
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -23,6 +24,7 @@ from .calibration import (
     DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
     DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
     CalibrationResult,
+    CalibrationProgress,
     CalibrationRetention,
     CalibrationSession,
 )
@@ -369,6 +371,13 @@ class AsyncCalibrationSession:
     session.  Exiting the async context before ``stop()`` calls ``abort()`` and
     discards the unfinished calibration, matching the synchronous context
     manager's safety behavior.
+
+    ``stop_on_complete=True`` enables automatic finalization. ``await wait()``
+    observes completion without stopping on timeout or cancellation. ``progress``,
+    ``result``, ``stopped``, and ``stop_reason`` expose the synchronous owner's
+    state. ``on_update`` is synchronous on that owner's worker or finalizing
+    thread; use ``loop.call_soon_threadsafe`` for async/UI state.
+    ``request_stop()`` is synchronous and callback-safe.
     """
 
     def __init__(
@@ -382,6 +391,8 @@ class AsyncCalibrationSession:
         min_confidence: float = 0.80,
         max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
         max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+        stop_on_complete: bool = False,
+        on_update: Callable[[CalibrationProgress], object] | None = None,
     ) -> None:
         self._session = CalibrationSession(
             item_id=item_id,
@@ -392,6 +403,8 @@ class AsyncCalibrationSession:
             min_confidence=min_confidence,
             max_retained_frames=max_retained_frames,
             max_retained_bytes=max_retained_bytes,
+            stop_on_complete=stop_on_complete,
+            on_update=on_update,
         )
         self._active = False
         self._terminal_action: str | None = None
@@ -449,7 +462,58 @@ class AsyncCalibrationSession:
     def result(self) -> CalibrationResult | None:
         """Completed result, including one preserved across cancellation."""
 
-        return self._result
+        if self._result is not None:
+            return self._result
+        if self._active and getattr(self._session, "stopped", False):
+            return self._session.result
+        return None
+
+    @property
+    def progress(self) -> CalibrationProgress | None:
+        return self._session.progress
+
+    @property
+    def stopped(self) -> bool:
+        return self._session.stopped
+
+    @property
+    def stop_reason(self) -> str | None:
+        return self._session.stop_reason
+
+    def request_stop(self) -> None:
+        """Callback-safe request; callbacks run on the synchronous worker."""
+        self._session.request_stop()
+
+    async def wait(self, timeout: float | None = None) -> CalibrationResult | None:
+        """Await completion; timeout/cancellation leaves capture running.
+
+        Cancellation settles the one bounded pending wait before escaping.
+        An enclosing async context still performs its usual cleanup on exit.
+        """
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout < 0
+        ):
+            raise ValueError("timeout must be finite and non-negative")
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            remaining = None if deadline is None else max(0.0, deadline - loop.time())
+            wait_seconds = 0.2 if remaining is None else min(0.2, remaining)
+            task = _thread_task(partial(self._session.wait, wait_seconds))
+            try:
+                result = await _await_preserving_future(task)
+            except asyncio.CancelledError:
+                try:
+                    await _wait_ignoring_cancellation(task)
+                except BaseException:
+                    pass
+                raise
+            if result is not None:
+                self._result = result
+                return result
+            if self.stopped or (deadline is not None and loop.time() >= deadline):
+                return None
 
     async def start(self) -> None:
         """Begin calibration capture without blocking the event loop."""
@@ -560,6 +624,10 @@ class AsyncCalibrationSession:
             self._active = self._session.cleanup_incomplete
             raise
         else:
+            # Automatic finalization may have won the race with context exit.
+            # Preserve that completed result even when nobody awaited wait().
+            if getattr(self._session, "stopped", False):
+                self._result = self._session.result
             self._active = False
 
     async def abort(self) -> None:

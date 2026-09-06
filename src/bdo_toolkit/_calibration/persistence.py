@@ -27,6 +27,7 @@ from .models import (
     ProfileUpdate,
 )
 from .validation import _validate_profile_replacement_options
+from .progress import TRANSFER_REQUIRED
 
 
 def update_profile(
@@ -76,11 +77,7 @@ def update_profile(
         }
         observed_events = {spec.event for spec in specs}
         if observed_events & transfer_events:
-            required = {
-                "INVENTORY_TRANSFER",
-                "SOURCE_STACK_DECREMENT",
-                "STORAGE_ITEM_DELTA",
-            }
+            required = TRANSFER_REQUIRED
             missing = sorted(required - observed_events)
             if missing:
                 raise CalibrationAuthorityError(

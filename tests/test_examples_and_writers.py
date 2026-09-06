@@ -17,6 +17,8 @@ EXAMPLES = ROOT / "examples"
 GUARDED_EXAMPLES = frozenset(
     {
         "async_calibrate_profile.py",
+        "async_calibration_progress.py",
+        "live_calibration_progress.py",
         "async_live_capture.py",
         "live_calibrate_loot_preview.py",
         "live_calibrate_profile.py",

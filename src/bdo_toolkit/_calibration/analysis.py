@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 from .._protocol import BDOFrame, LOOT_PREVIEW_SENTINEL_INSTANCE
 from ._constants import (
@@ -56,6 +57,33 @@ def calibrate_frames(
     min_confidence: float = 0.80,
 ) -> CalibrationResult:
     """Score collected frames and promote plausible message specs."""
+    assessment = assess_frames(
+        frames, item_id=item_id, quantity=quantity, action=action,
+        context_frames=context_frames, min_confidence=min_confidence,
+    )
+    if assessment.error is not None:
+        raise assessment.error
+    return assessment.result
+
+
+@dataclass(frozen=True)
+class FrameAssessment:
+    """Internal partial analysis; only the batch facade applies terminal errors."""
+
+    result: CalibrationResult
+    error: CalibrationAuthorityError | DirectionMismatchError | None = None
+
+
+def assess_frames(
+    frames: list[BDOFrame],
+    *,
+    item_id: int,
+    quantity: Optional[int] = None,
+    action: str = "auto",
+    context_frames: int = 5,
+    min_confidence: float = 0.80,
+) -> FrameAssessment:
+    """Use the batch rules while preserving progress from incomplete evidence."""
     _validate_calibration_options(
         item_id=item_id,
         quantity=quantity,
@@ -93,24 +121,29 @@ def calibrate_frames(
         actions = (action,)
         strict = True
 
+    error = None
     for current_action in actions:
-        if current_action == "loot-preview":
-            specs.extend(_calibrate_loot_preview(frames, options, ignored))
-        elif current_action == "storage-to-inventory":
-            specs.extend(
-                _calibrate_storage_to_inventory(
-                    frames, options, ignored, evidence, strict
+        try:
+            if current_action == "loot-preview":
+                specs.extend(_calibrate_loot_preview(frames, options, ignored))
+            elif current_action == "storage-to-inventory":
+                specs.extend(
+                    _calibrate_storage_to_inventory(
+                        frames, options, ignored, evidence, strict
+                    )
                 )
-            )
-        elif current_action == "inventory-to-storage":
-            specs.extend(
-                _calibrate_inventory_to_storage(
-                    frames, options, ignored, evidence, strict
+            elif current_action == "inventory-to-storage":
+                specs.extend(
+                    _calibrate_inventory_to_storage(
+                        frames, options, ignored, evidence, strict
+                    )
                 )
-            )
+        except (CalibrationAuthorityError, DirectionMismatchError) as exc:
+            error = exc
+            break
 
     retained_bytes = sum(len(frame.message) for frame in frames)
-    return CalibrationResult(
+    return FrameAssessment(CalibrationResult(
         specs=tuple(_dedupe_message_specs(specs)),
         ignored=tuple(ignored),
         frames_scanned=len(frames),
@@ -124,7 +157,7 @@ def calibrate_frames(
             bytes_retained=retained_bytes,
             bytes_discarded=0,
         ),
-    )
+    ), error)
 
 
 def _has_context_label_before(frame: BDOFrame, before_offset: int) -> bool:

@@ -37,7 +37,7 @@ the known item ID and leave ``quantity=None``.
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from .profiles import ProfileError
 from ._calibration.models import (
     CalibrationAuthorityError,
@@ -49,6 +49,7 @@ from ._calibration.models import (
     ProfileUpdate,
 )
 from ._calibration.analysis import calibrate_frames, detect_transfer_family
+from ._calibration.progress import CalibrationProgress
 from ._calibration.capture import (
     CalibrationSession,
     calibrate_live,
@@ -72,6 +73,7 @@ __all__ = [
     'CalibrationResult',
     'CalibrationRetention',
     'CalibrationSession',
+    'CalibrationProgress',
     'DirectionEvidence',
     'DirectionMismatchError',
     'MessageSpec',

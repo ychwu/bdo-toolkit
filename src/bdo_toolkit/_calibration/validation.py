@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import replace
 from typing import Optional
 from .._protocol import MAX_PLAUSIBLE_ITEM_ID
 from ._constants import CALIBRATION_ACTIONS
+
+
+def _validate_live_options(stop_on_complete: object, on_update: object) -> None:
+    if not isinstance(stop_on_complete, bool):
+        raise TypeError("stop_on_complete must be a boolean")
+    if on_update is not None and not callable(on_update):
+        raise TypeError("on_update must be callable or None")
+    if inspect.iscoroutinefunction(on_update) or inspect.iscoroutinefunction(
+        getattr(on_update, "__call__", None)
+    ):
+        raise TypeError("on_update must be synchronous")
 
 
 def _validate_calibration_options(
