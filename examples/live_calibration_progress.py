@@ -15,6 +15,16 @@ ITEM_ID = 15156
 
 
 def show_progress(update: CalibrationProgress) -> None:
+    # Replace the previous UI observation list; this is not an event queue.
+    # These records guide the user, but never authorize stopping or saving.
+    for observation in update.observations:
+        print(
+            f"Provisional {observation.direction}: "
+            f"{observation.item_record_count}/{observation.record_count} watched records, "
+            f"total quantity {observation.item_quantity} "
+            f"(frame {observation.frame_number})",
+            flush=True,
+        )
     if update.kind == "finished":
         print("Calibration finished." if update.result is not None else "Calibration failed.", flush=True)
         return

@@ -49,7 +49,7 @@ from ._calibration.models import (
     ProfileUpdate,
 )
 from ._calibration.analysis import calibrate_frames, detect_transfer_family
-from ._calibration.progress import CalibrationProgress
+from ._calibration.progress import CalibrationObservation, CalibrationProgress
 from ._calibration.capture import (
     CalibrationSession,
     calibrate_live,
@@ -74,6 +74,7 @@ __all__ = [
     'CalibrationRetention',
     'CalibrationSession',
     'CalibrationProgress',
+    'CalibrationObservation',
     'DirectionEvidence',
     'DirectionMismatchError',
     'MessageSpec',

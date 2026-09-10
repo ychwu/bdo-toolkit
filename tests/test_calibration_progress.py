@@ -57,6 +57,177 @@ def transfer_frames():
             record(5, storage=False, index=2)]
 
 
+def observations(frames, **overrides):
+    from bdo_toolkit._calibration.observations import observe_transfers
+    options = dict(item_id=99123, quantity=1, action="auto", context_frames=5,
+                   min_confidence=0.8, run_id="test-run", frames_discarded=0)
+    options.update(overrides)
+    return observe_transfers(frames, **options)
+
+
+def test_observation_prefix_counts_and_stable_identity():
+    frames = transfer_frames()
+    previous = ()
+    for end, expected in [(0, []), (1, []), (2, [1]), (3, [1]),
+                          (4, [1, 4]), (5, [1, 4, 5])]:
+        current = observations(frames[:end])
+        assert [o.record_count for o in current] == expected
+        assert [o.item_record_count for o in current] == expected
+        assert [o.item_quantity for o in current] == expected
+        assert current[:len(previous)] == previous
+        previous = current
+    assert [o.direction for o in current] == ["inventory-to-storage"] * 2 + ["storage-to-inventory"]
+    assert [o.frame_number for o in current] == [2, 4, 5]
+    assert observations(frames[2:], frames_discarded=2) == current[1:]
+    # If the first retained frame loses its source context, retract it too.
+    assert observations(frames[3:], frames_discarded=3) == current[2:]
+    restarted = observations(frames, run_id="new-run")
+    assert set(o.observation_id for o in current).isdisjoint(o.observation_id for o in restarted)
+
+
+def test_first_deposit_observation_does_not_promote_layout():
+    session = CalibrationSession(item_id=99123, quantity=1)
+    for value in transfer_frames()[:2]:
+        session._retain_frame(value)
+    controller = LiveCalibration(session, stop_on_complete=False, on_update=None)
+    update = controller._assess()
+    assert not update.ready and not update.specs
+    assert update.observations[0].record_count == 1
+    assert update.observations[0].direction == "inventory-to-storage"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "instance", "quantity", "flow", "generation", "stale", "header"])
+def test_deposit_observation_requires_fresh_linked_decrement(mutation):
+    source, target = decrement(), record()
+    if mutation == "missing":
+        frames = [target]
+    elif mutation == "stale":
+        frames = [source, record(), target]
+    elif mutation in ("flow", "generation"):
+        context = replace(source.context, flow_generation=1) if mutation == "generation" else replace(
+            source.context, flow=replace(source.context.flow, destination_port=50001))
+        frames = [replace(source, context=context), target]
+    else:
+        data = bytearray(source.message)
+        at = {"instance": 34, "quantity": 42, "header": 0}[mutation]
+        data[at] ^= 8
+        frames = [replace(source, message=bytes(data)), target]
+    found = observations(frames)
+    assert not found or (mutation == "stale" and [o.frame_number for o in found] == [2])
+
+
+@pytest.mark.parametrize("mutation", ["header", "marker", "instance", "quantity", "tail", "ambiguous-town"])
+def test_malformed_or_ambiguous_deposit_is_not_guidance(mutation):
+    target = record(4)
+    data = bytearray(target.message)
+    at = {"header": 0, "marker": 37 + 3 * 226 + 12,
+          "instance": 37 + 3 * 226 + 35, "quantity": 41,
+          "tail": len(data) - 1, "ambiguous-town": 8}[mutation]
+    if mutation == "instance":
+        data[at:at + 8] = bytes(8)
+    elif mutation == "tail":
+        data = data[:37 + 3 * 226 + 15]
+        data[:2] = len(data).to_bytes(2, "little")
+    elif mutation == "ambiguous-town":
+        data[at:at + 4] = (0x058C).to_bytes(4, "little")
+    else:
+        data[at] ^= 8
+    assert not observations([decrement(4), replace(target, message=bytes(data))])
+
+
+@pytest.mark.parametrize("source", ["85fa5745", "0471ee0e", "00000000"])
+def test_other_inventory_receipts_are_not_withdrawals(source):
+    target = record(storage=False)
+    data = bytearray(target.message)
+    data[27:31] = bytes.fromhex(source)
+    assert not observations([replace(target, message=bytes(data))])
+
+
+def test_conflicting_or_duplicate_receipt_sources_are_not_guidance():
+    for raw in (bytes.fromhex("85fa5745"), bytes.fromhex("d0f205a3")):
+        target = record(storage=False)
+        data = bytearray(target.message)
+        data[10:14] = raw
+        assert not observations([replace(target, message=bytes(data))])
+
+
+def test_skipped_middle_record_cannot_look_like_a_two_record_batch():
+    for storage in (False, True):
+        target = record(3, storage=storage)
+        data = bytearray(target.message)
+        at = 37 + 226 if storage else 31 + 228
+        data[at:at + 4] = (99124).to_bytes(4, "little")
+        data[at + 12:at + 20] = bytes(8)
+        assert not observations([decrement(3), replace(target, message=bytes(data))])
+
+
+def test_record_counts_are_not_quantities_or_watched_item_counts():
+    target = record(4, storage=False)
+    data = bytearray(target.message)
+    data[31 + 228:35 + 228] = (99124).to_bytes(4, "little")
+    value, = observations([replace(target, message=bytes(data))])
+    assert (value.record_count, value.item_record_count, value.item_quantity) == (4, 3, 3)
+    target = record(storage=False)
+    data = bytearray(target.message)
+    data[35:39] = (5).to_bytes(4, "little")
+    assert not observations([replace(target, message=bytes(data))])
+    value, = observations([replace(target, message=bytes(data))], quantity=None)
+    assert (value.record_count, value.item_record_count, value.item_quantity) == (1, 1, 5)
+
+
+def test_observation_action_filter_and_preview_exclusion():
+    frames = transfer_frames()
+    assert len(observations(frames, action="inventory-to-storage")) == 2
+    assert len(observations(frames, action="storage-to-inventory")) == 1
+    assert not observations(frames, action="loot-preview")
+    assert not observations([record(storage=False, preview=True)])
+    assert not observations(frames, min_confidence=1.0)
+
+
+def test_new_observation_emits_even_without_new_opcode_or_layout():
+    session = CalibrationSession(item_id=99123, quantity=1)
+    updates = []
+    controller = LiveCalibration(session, stop_on_complete=False, on_update=updates.append)
+    for _ in range(2):
+        for value in (decrement(), record()):
+            session._retain_frame(value)
+        controller._emit(controller._assess())
+        controller._emit(controller._assess())
+    assert len(updates) == 2
+    assert updates[0].specs == updates[1].specs == ()
+    assert [len(u.observations) for u in updates] == [1, 2]
+    assert len({o.observation_id for o in updates[-1].observations}) == 2
+
+
+def test_observation_model_is_additive_frozen_and_serializable():
+    import pickle
+    from dataclasses import FrozenInstanceError
+    from bdo_toolkit.calibration import CalibrationObservation
+    value, = observations(transfer_frames()[:2])
+    assert isinstance(value, CalibrationObservation)
+    assert pickle.loads(pickle.dumps(value)) == value
+    with pytest.raises(FrozenInstanceError):
+        value.record_count = 5
+    update = CalibrationProgress("progress", (), (), frozenset(), (), False,
+                                 CalibrationSession(item_id=99123).retention, None)
+    assert update.observations == ()
+    assert update.to_json_dict()["observations"] == []
+    exported = replace(update, observations=(value,)).to_json_dict()["observations"][0]
+    assert exported == dict(observation_id="test-run:2", frame_number=2,
+                           direction="inventory-to-storage", opcode="0xAB01", item_id=99123,
+                           record_count=1, item_record_count=1, item_quantity=1)
+
+
+def test_observations_are_not_required_for_auto_completion(monkeypatch):
+    from bdo_toolkit._calibration import live
+    monkeypatch.setattr(live, "observe_transfers", lambda *args, **kwargs: ())
+    with CalibrationSession(item_id=99123, quantity=1, stop_on_complete=True) as session:
+        for value in transfer_frames():
+            session._retain_frame(value)
+        assert session.wait(2) is not None
+        assert session.progress.ready and session.progress.observations == ()
+
+
 class FakeCapture:
     def __init__(self, **kwargs):
         self.running = False
@@ -118,6 +289,8 @@ def test_live_auto_stop_final_result_equals_batch():
     assert replace(result, retention=batch.retention) == batch
     assert [u.kind for u in updates][-2:] == ["finalizing", "finished"]
     assert updates[-1].result is result
+    assert [o.record_count for o in updates[-1].observations] == [1, 4, 5]
+    assert updates[-2].observations == updates[-1].observations
     assert updates[-1].to_json_dict()["ready"] is True
 
 
@@ -177,6 +350,7 @@ def test_progress_retracts_after_retention_eviction():
         assert retracted.wait(2)
         assert not session.progress.ready
         assert not session.progress.specs
+        assert not session.progress.observations
         assert session.progress.retention.truncated
         result = session.stop()
         assert not result.specs

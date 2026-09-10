@@ -5,7 +5,7 @@ Progress is a view of one retained evidence window, never profile authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -49,6 +49,34 @@ def readiness_issues(result: CalibrationResult, action: str) -> tuple[str, ...]:
 
 
 @dataclass(frozen=True)
+class CalibrationObservation:
+    """Provisional transfer-shaped frame, not a validated layout or user action.
+
+    IDs are stable within a session run. Counts describe serialized records,
+    not clicks; ``item_quantity`` sums only the watched item's quantities.
+    """
+
+    observation_id: str
+    frame_number: int
+    direction: Literal["inventory-to-storage", "storage-to-inventory"]
+    opcode: int
+    item_id: int
+    record_count: int
+    item_record_count: int
+    item_quantity: int
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "observation_id": self.observation_id,
+            "frame_number": self.frame_number, "direction": self.direction,
+            "opcode": f"0x{self.opcode:04X}", "item_id": self.item_id,
+            "record_count": self.record_count,
+            "item_record_count": self.item_record_count,
+            "item_quantity": self.item_quantity,
+        }
+
+
+@dataclass(frozen=True)
 class CalibrationProgress:
     """One replaceable live assessment, or the terminal session update.
 
@@ -56,6 +84,9 @@ class CalibrationProgress:
     non-None ``result`` is the authoritative final batch result. A manual or
     timed stop may return a partial result with ``ready=False``. Consumers
     replace their previous assessment; they must not union candidate layouts.
+    ``observations`` is a replaceable snapshot of provisional transfer-shaped
+    frames for UI guidance, independent of ``specs`` and ``ready``. It can be
+    empty even when calibration succeeds; it is not a transaction stream.
     No raw frames, instances, or flow identifiers are included.
     """
 
@@ -67,6 +98,7 @@ class CalibrationProgress:
     ready: bool
     retention: CalibrationRetention
     result: CalibrationResult | None = None
+    observations: tuple[CalibrationObservation, ...] = field(default=(), kw_only=True)
 
     def to_json_dict(self) -> dict[str, object]:
         return {
@@ -77,4 +109,5 @@ class CalibrationProgress:
             "issues": list(self.issues), "ready": self.ready,
             "retention": self.retention.to_json_dict(),
             "result": self.result.to_json_dict() if self.result is not None else None,
+            "observations": [observation.to_json_dict() for observation in self.observations],
         }

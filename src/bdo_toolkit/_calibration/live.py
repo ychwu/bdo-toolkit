@@ -11,11 +11,13 @@ from contextvars import ContextVar
 from dataclasses import replace
 from threading import Event, Lock, Thread, current_thread
 from typing import TYPE_CHECKING, Callable
+from uuid import uuid4
 
 from .._capture_runtime import _attach_cleanup_owner
 from .analysis import assess_frames
 from .models import CalibrationAuthorityError, CalibrationResult
-from .progress import CalibrationProgress, readiness_issues, required_events
+from .observations import observe_transfers
+from .progress import CalibrationObservation, CalibrationProgress, readiness_issues, required_events
 
 if TYPE_CHECKING:
     from .capture import CalibrationSession
@@ -46,6 +48,7 @@ class LiveCalibration:
         self.stop_reason: str | None = None
         self.cleanup_incomplete = False
         self._callback_failed = False
+        self._run_id = uuid4().hex
         self._finish_lock = Lock()
         self.thread = Thread(target=self._run, name="calibration-assessment", daemon=True)
 
@@ -77,7 +80,7 @@ class LiveCalibration:
             return (
                 value.kind, tuple(spec.dedupe_key() for spec in value.specs),
                 value.detected_opcodes, value.missing_events, value.issues,
-                value.ready, value.retention.truncated,
+                value.ready, value.retention.truncated, value.observations,
             )
         if previous is not None and key(previous) == key(update):
             return
@@ -122,6 +125,12 @@ class LiveCalibration:
                                          | {s.opcode for s in result.specs})),
             missing_events=required_events(session._action) - result.events_found,
             issues=issues, ready=not issues, retention=retention,
+            observations=observe_transfers(
+                frames, item_id=session._item_id, quantity=session._quantity,
+                action=session._action, context_frames=session._context_frames,
+                min_confidence=session._min_confidence, run_id=self._run_id,
+                frames_discarded=retention.frames_discarded,
+            ),
         )
 
     def _run(self) -> None:
@@ -202,6 +211,16 @@ class LiveCalibration:
                 raise CalibrationAuthorityError(
                     "calibration changed during finalization: " + "; ".join(issues)
                 )
+            observations: tuple[CalibrationObservation, ...] = ()
+            if self.enabled:
+                with session._retention_lock:
+                    frames = list(session._frames)
+                observations = observe_transfers(
+                    frames, item_id=session._item_id, quantity=session._quantity,
+                    action=session._action, context_frames=session._context_frames,
+                    min_confidence=session._min_confidence, run_id=self._run_id,
+                    frames_discarded=result.retention.frames_discarded,
+                )
             self.stop_reason = reason
         except BaseException as exc:
             session._record_error(exc)
@@ -218,7 +237,7 @@ class LiveCalibration:
                                              | {s.opcode for s in result.specs})),
                 missing_events=required_events(session._action) - result.events_found,
                 issues=issues, ready=not issues, retention=result.retention,
-                result=result,
+                result=result, observations=observations,
             )
             try:
                 self._emit(update)
