@@ -497,9 +497,12 @@ class AsyncCalibrationSession:
             raise ValueError("timeout must be finite and non-negative")
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
+        terminal_poll = False
         while True:
             remaining = None if deadline is None else max(0.0, deadline - loop.time())
             wait_seconds = 0.2 if remaining is None else min(0.2, remaining)
+            if terminal_poll:
+                wait_seconds = 0.0
             task = _thread_task(partial(self._session.wait, wait_seconds))
             try:
                 result = await _await_preserving_future(task)
@@ -512,7 +515,15 @@ class AsyncCalibrationSession:
             if result is not None:
                 self._result = result
                 return result
-            if self.stopped or (deadline is not None and loop.time() >= deadline):
+            if terminal_poll:
+                return None  # Terminal discard, without a result or error.
+            if self.stopped:
+                # Completion may have raced the empty poll's delivery. Re-read
+                # through wait() to retrieve the final result or raise its error,
+                # using the same cancellation-safe worker path as ordinary polls.
+                terminal_poll = True
+                continue
+            if deadline is not None and loop.time() >= deadline:
                 return None
 
     async def start(self) -> None:

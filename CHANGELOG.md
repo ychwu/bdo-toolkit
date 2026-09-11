@@ -6,6 +6,58 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.4 - 2026-09-10
+
+This release adds guided live calibration progress while hardening item
+decoding, live TCP recovery, diagnostics, async completion, and worker-origin
+performance.
+
+### Added
+
+- Observe calibration progress and stop when evidence is complete. Synchronous
+  and asynchronous live sessions can report replaceable evidence assessments
+  and optionally stop once calibration is ready. Final retained frames are
+  revalidated before a result is returned, profile writes remain separate, and
+  manual stopping remains the default.
+- Expose provisional transfer observations during live calibration. Immutable
+  progress snapshots can report structurally supported transfer candidates,
+  including direction, watched-item counts, opcode, capture order, and
+  session-scoped identity. Observations remain conservative and replaceable;
+  they do not change calibration readiness, final schemas, or runtime decoding.
+
+### Changed
+
+- Avoid repeated structural companion discovery. Deposit-origin lookahead now
+  reuses bounded positive and negative byte-level matches while continuing to
+  evaluate ownership, conflicts, flow boundaries, operation identity, and
+  ordering live. Public decoding and observation output remain unchanged.
+
+### Fixed
+
+- Require independent message boundaries for item activity. Nested signatures
+  and differently segmented retransmissions can no longer create ordinary
+  inventory or loot events without independent top-level framing evidence.
+- Preserve inventory boundary recovery across TCP sequence wraps by comparing
+  unwrapped absolute sequence positions while retaining the existing flow,
+  generation, adjacency, and wrapper-validation requirements.
+- Preserve queued TCP data before servicing idle gap deadlines. Live item
+  capture now services the idle clock on the decoder worker at drained queue
+  boundaries, preventing already accepted data from being abandoned while
+  truly missing segments still time out.
+- Report shortened storage messages as decoder incompatibility. Independently
+  framed configured storage opcodes that are too short for layout validation
+  now update decoder health and emit the existing out-of-band warning without
+  misclassifying compact count-zero or valid shorter activity messages.
+- Reject transfers after structural record validation fails. Invalid record
+  markers, instances, and repeated-record geometry no longer retry through
+  weaker configured-length or stride decoding; structurally unsupported valid
+  layouts retain their existing fallback paths.
+- Preserve calibration outcomes when async polling races completion.
+  `AsyncCalibrationSession.wait()` now rechecks terminal state after an empty
+  poll so successful results and terminal errors are delivered, discarded
+  sessions still return `None`, and cancellation continues to settle the
+  pending worker operation.
+
 ## 1.0.3 - 2026-09-03
 
 This patch improves post-patch calibration and live Arena of Solare capture

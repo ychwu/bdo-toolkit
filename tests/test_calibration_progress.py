@@ -445,6 +445,87 @@ def test_async_wait_timeout_cancel_and_completion():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("timeout", [None, 2, 0])
+@pytest.mark.parametrize("outcome", ["success", "error", "discard"])
+def test_async_wait_rechecks_completion_after_empty_poll(timeout, outcome):
+    from types import SimpleNamespace
+
+    expected = calibrate_frames(transfer_frames(), item_id=99123, quantity=1)
+    failure = RuntimeError("terminal capture failure")
+    calls = []
+    backend = SimpleNamespace(stopped=False, result=None)
+
+    def wait(seconds):
+        calls.append(seconds)
+        if len(calls) == 1:
+            # The poll timed out, then capture completed before asyncio resumed.
+            backend.result = expected if outcome == "success" else None
+            backend.stopped = True
+            return None
+        assert seconds == 0
+        if outcome == "error":
+            raise failure
+        return backend.result
+
+    backend.wait = wait
+
+    async def run():
+        session = AsyncCalibrationSession(item_id=99123, quantity=1)
+        session._session = backend
+        if outcome == "error":
+            with pytest.raises(RuntimeError) as caught:
+                await session.wait(timeout)
+            assert caught.value is failure
+        else:
+            result = await session.wait(timeout)
+            assert result is (expected if outcome == "success" else None)
+            assert session.result is result
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
+def test_async_terminal_recheck_settles_before_cancellation_escapes():
+    from types import SimpleNamespace
+
+    entered, release, settled = Event(), Event(), Event()
+    backend = SimpleNamespace(stopped=False)
+    calls = []
+
+    def wait(seconds):
+        calls.append(seconds)
+        if len(calls) == 1:
+            backend.stopped = True
+            return None
+        assert seconds == 0
+        entered.set()
+        try:
+            assert release.wait(2)
+            raise RuntimeError("failure while the caller is cancelling")
+        finally:
+            settled.set()
+
+    backend.wait = wait
+
+    async def run():
+        session = AsyncCalibrationSession(item_id=99123)
+        session._session = backend
+        pending = asyncio.create_task(session.wait())
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            pending.cancel()
+            await asyncio.sleep(0)  # Deliver cancellation while the worker is held.
+            assert not pending.done()
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        assert settled.is_set()
+        assert len(calls) == 2
+
+    asyncio.run(run())
+
+
 def test_slow_callback_retains_worker_for_bounded_cleanup_retry(monkeypatch):
     entered, release = Event(), Event()
     def observe(update):
