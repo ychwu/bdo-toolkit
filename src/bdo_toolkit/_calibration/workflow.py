@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from .._capture_options import PacketCaptureOptions
 from .._protocol import DEFAULT_SERVER_PORTS
 from ._constants import (
@@ -13,8 +13,9 @@ from ._constants import (
 )
 from .capture import calibrate_live, calibrate_pcap
 from .models import CalibrationResult, ProfileUpdate
+from .progress import CalibrationProgress
 from .persistence import update_profile
-from .validation import _validate_profile_replacement_options
+from .validation import _validate_live_options, _validate_profile_replacement_options
 
 
 def calibrate_and_update(
@@ -31,6 +32,8 @@ def calibrate_and_update(
     min_confidence: float = 0.80,
     max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
     max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+    stop_on_complete: bool = False,
+    on_update: Callable[[CalibrationProgress], object] | None = None,
     replace: bool = True,
     replace_entire_action: bool = False,
     backup: bool = True,
@@ -60,9 +63,16 @@ def calibrate_and_update(
     of every family owned by ``action``. Pass ``replace=False`` only for an
     intentional reviewed merge, or use the two-step API when specs must be
     inspected or filtered before persistence.
+
+    For live input, ``stop_on_complete=True`` requests evidence-based stopping
+    and ``on_update`` observes provisional assessments. Both are live-only.
+    Only the finalized result is eligible for the separate profile write.
     """
     _validate_profile_replacement_options(replace, replace_entire_action)
+    _validate_live_options(stop_on_complete, on_update)
     if pcap is not None:
+        if stop_on_complete or on_update is not None:
+            raise ValueError("stop_on_complete and on_update apply to live calibration only")
         for name, value in (
             ("capture_seconds", capture_seconds),
             ("capture_options", capture_options),
@@ -112,6 +122,8 @@ def calibrate_and_update(
             min_confidence=min_confidence,
             max_retained_frames=max_retained_frames,
             max_retained_bytes=max_retained_bytes,
+            stop_on_complete=stop_on_complete,
+            on_update=on_update,
         )
 
     if not result.specs:

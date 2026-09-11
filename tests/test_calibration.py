@@ -601,6 +601,16 @@ def test_one_session_1_4_deposits_and_5_withdrawal_keep_all_strides():
     frames.extend(
         collect_frames_pcap(fixture_path('inventory--withdraw-unstackable-batch--3efc952c1e'))
     )
+    # Capture-derived 1/4 witnesses (not a newly recorded in-game sequence).
+    # Guidance can acknowledge the first witness without promoting its layout.
+    from bdo_toolkit._calibration.observations import observe_transfers
+    for prefix, counts in ((frames[:2], [1]), (frames[:4], [1, 4]), (frames, [1, 4, 5])):
+        observed = observe_transfers(
+            prefix, item_id=1000306, quantity=1, action="auto", context_frames=5,
+            min_confidence=0.8, run_id="capture-derived", frames_discarded=0,
+        )
+        assert [o.record_count for o in observed] == counts
+        assert [o.item_quantity for o in observed] == counts
     result = calibrate_frames(
         frames,
         item_id=1000306,

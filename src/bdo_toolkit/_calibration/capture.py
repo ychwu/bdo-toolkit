@@ -7,7 +7,7 @@ from collections import deque
 from dataclasses import replace
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Optional
+from typing import Callable, Optional
 from .._capture_backend import (
     make_packet_handler,
     replay_pcap_file,
@@ -29,9 +29,12 @@ from ._constants import (
 )
 from .analysis import calibrate_frames
 from .models import CalibrationResult, CalibrationRetention
+from .live import LiveCalibration
+from .progress import CalibrationProgress
 from .validation import (
     _validate_calibration_options,
     _validate_calibration_retention_limits,
+    _validate_live_options,
 )
 
 
@@ -123,6 +126,24 @@ class CalibrationSession:
 
     Used as a context manager, the capture is stopped on exit even if the
     block raises; call ``stop()`` inside the block to get the result.
+
+    Set ``stop_on_complete=True`` to stop when the selected action has enough
+    evidence, then use ``wait(timeout=None)`` to obtain the final result.
+    Wait timeouts do not stop capture. Either ``on_update`` or automatic stopping
+    enables live scoring. ``progress`` is a replaceable CalibrationProgress:
+    candidate layouts may change or disappear as evidence arrives.
+
+    Callbacks must be synchronous and lightweight. They run on the assessment
+    worker, or on the caller performing manual finalization. Marshal UI/asyncio
+    work to its owning thread. Use ``request_stop()`` inside callbacks; blocking
+    same-session lifecycle methods are prohibited. The worker holds at most one
+    additional bounded frame snapshot; there is no progress queue.
+
+    Automatic stopping rechecks the finalized frame tail and runtime layouts.
+    Known capture loss or retention eviction prevents automatic readiness.
+    Manual stop can still return a partial batch result. ``result`` is set
+    only after successful finalization; repeated successful stops return that
+    same object. Sessions never write a profile.
     """
 
     _STARTUP_TIMEOUT_SECONDS = DEFAULT_STARTUP_TIMEOUT_SECONDS
@@ -138,6 +159,8 @@ class CalibrationSession:
         min_confidence: float = 0.80,
         max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
         max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+        stop_on_complete: bool = False,
+        on_update: Callable[[CalibrationProgress], object] | None = None,
     ) -> None:
         _validate_calibration_options(
             item_id=item_id,
@@ -157,6 +180,10 @@ class CalibrationSession:
             raise TypeError(
                 "capture_options must be a PacketCaptureOptions or None"
             )
+        _validate_live_options(stop_on_complete, on_update)
+        self._stop_on_complete = stop_on_complete
+        self._on_update = on_update
+        self._live: LiveCalibration | None = None
         self._item_id = item_id
         self._quantity = quantity
         self._action = action
@@ -174,6 +201,8 @@ class CalibrationSession:
         self._manager: Optional[FlowManager] = None
         self._capture: Optional[LivePacketCapture] = None
         self._error: Optional[BaseException] = None
+        self._flow_evictions = 0
+        self._final_integrity_issues: tuple[str, ...] = ()
         self._lifecycle_lock = RLock()
         # Scanner callbacks run on the capture thread. Keep their short data
         # lock independent from lifecycle operations that may join that thread.
@@ -191,7 +220,58 @@ class CalibrationSession:
 
         with self._lifecycle_lock:
             capture = self._capture
-            return capture is not None and capture.cleanup_incomplete
+            return bool(self._live and self._live.cleanup_incomplete) or (
+                capture is not None and capture.cleanup_incomplete
+            )
+
+    @property
+    def progress(self) -> CalibrationProgress | None:
+        """Latest replaceable assessment; enabled by on_update or stop_on_complete."""
+        return self._live.progress if self._live is not None else None
+
+    @property
+    def result(self) -> CalibrationResult | None:
+        """Final result only, never a provisional live assessment."""
+        return self._live.result if self._live is not None else None
+
+    @property
+    def stopped(self) -> bool:
+        return self._live is not None and self._live.done.is_set()
+
+    @property
+    def stop_reason(self) -> str | None:
+        return self._live.stop_reason if self._live is not None else None
+
+    def request_stop(self) -> None:
+        """Request asynchronous capture shutdown and final analysis; callback-safe."""
+        live = self._live
+        if live is None:
+            raise RuntimeError("calibration session was not started")
+        live.requested.set()
+
+    def wait(self, timeout: float | None = None) -> CalibrationResult | None:
+        """Wait for finalization, returning None on timeout (without stopping)."""
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout < 0
+        ):
+            raise ValueError("timeout must be finite and non-negative")
+        live = self._live
+        if live is None:
+            raise RuntimeError("calibration session was not started")
+        live.check_callback()
+        # Finite waits let a failed background cleanup surface without claiming
+        # that capture resources have stopped.
+        import time
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while not live.done.is_set():
+            self.raise_if_failed()
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return None
+            live.done.wait(0.2 if remaining is None else min(0.2, remaining))
+        self.raise_if_failed()
+        return live.result
 
     @property
     def error(self) -> Optional[BaseException]:
@@ -258,11 +338,18 @@ class CalibrationSession:
         """Begin passive capture and return once the adapter is ready."""
 
         with self._lifecycle_lock:
+            if self._live is not None and (
+                self._live.thread.is_alive() or self._live.finalizing.is_set()
+            ):
+                raise RuntimeError("calibration session is already running")
             if self._capture is not None or self._manager is not None:
                 raise RuntimeError("calibration session is already running")
 
             self._reset_retention()
             self._error = None
+            self._live = None
+            self._flow_evictions = 0
+            self._final_integrity_issues = ()
             manager = FlowManager(
                 server_ports=self._capture_options.ports,
                 scanner_factory=lambda: FrameCollectorScanner(
@@ -270,6 +357,7 @@ class CalibrationSession:
                 ),
                 max_flows=_CALIBRATION_MAX_ACTIVE_FLOWS,
                 track_flow_generations=True,
+                on_flow_eviction=self._record_flow_eviction,
             )
             capture = LivePacketCapture(
                 capture_options=self._capture_options,
@@ -302,23 +390,72 @@ class CalibrationSession:
                 self._manager = None
                 self._capture = None
                 raise
+            live = LiveCalibration(
+                self, stop_on_complete=self._stop_on_complete, on_update=self._on_update,
+            )
+            self._live = live
+            try:
+                live.thread.start()
+            except BaseException as exc:
+                self._record_error(exc)
+                try:
+                    self._finish_capture()
+                except BaseException as cleanup_error:
+                    if self.cleanup_incomplete:
+                        _attach_cleanup_owner(exc, self, context="calibration worker startup")
+                    if cleanup_error is not exc:
+                        exc.add_note(f"calibration cleanup also failed: {cleanup_error!r}")
+                raise
 
     def stop(self) -> CalibrationResult:
         """End the capture and calibrate the collected frames."""
+        with self._lifecycle_lock:
+            live = self._live
+        if live is None:
+            return self._stop_and_calibrate()
+        live.join()
+        if live.enabled and live.done.is_set():
+            self.raise_if_failed()
+        result = live.finish("manual")
+        assert result is not None
+        return result
+
+    def _record_flow_eviction(self) -> None:
+        with self._retention_lock:
+            self._flow_evictions += 1
+
+    def _integrity_issues(self) -> tuple[str, ...]:
+        """Known acquisition loss prevents automatic certification."""
+        issues = list(self._final_integrity_issues)
+        manager = self._manager
+        if manager is not None and manager.tcp_gap_resets:
+            issues.append("TCP reassembly lost data")
+        with self._retention_lock:
+            evictions = self._flow_evictions
+        if evictions:
+            issues.append("TCP flow capacity evicted evidence")
+        capture = self._capture
+        snapshot_stats = getattr(capture, "snapshot_stats", None)
+        stats = snapshot_stats() if snapshot_stats is not None else None
+        if stats is not None and (stats.dropped or stats.interface_dropped):
+            issues.append("capture backend reported dropped packets")
+        return tuple(dict.fromkeys(issues))
+
+    def _stop_and_calibrate(self) -> CalibrationResult:
         with self._lifecycle_lock:
             self._finish_capture()
             with self._retention_lock:
                 frames = list(self._frames)
                 retention = self._retention_unlocked()
-            result = calibrate_frames(
-                frames,
-                item_id=self._item_id,
-                quantity=self._quantity,
-                action=self._action,
-                context_frames=self._context_frames,
-                min_confidence=self._min_confidence,
-            )
-            return replace(result, retention=retention)
+        result = calibrate_frames(
+            frames,
+            item_id=self._item_id,
+            quantity=self._quantity,
+            action=self._action,
+            context_frames=self._context_frames,
+            min_confidence=self._min_confidence,
+        )
+        return replace(result, retention=retention)
 
     def raise_if_failed(self) -> None:
         """Re-raise a background capture failure in the calling thread."""
@@ -381,6 +518,7 @@ class CalibrationSession:
             retain(exc)
         try:
             manager.finish()
+            self._final_integrity_issues = self._integrity_issues()
         except BaseException as exc:
             retain(exc)
         finally:
@@ -446,24 +584,30 @@ class CalibrationSession:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         # Safety net only: discard the capture if the block exited without
         # calling stop() (for example on an exception).
-        with self._lifecycle_lock:
-            if self._capture is None:
-                return
-            try:
-                self._finish_capture()
-            except BaseException as cleanup_error:
-                if exc_value is None:
-                    raise
-                if self.cleanup_incomplete:
-                    _attach_cleanup_owner(
-                        exc_value,
-                        self,
-                        context="live calibration context",
-                    )
-                exc_value.add_note(
-                    "calibration context cleanup also failed: "
-                    f"{cleanup_error!r}"
+        try:
+            live = self._live
+            if live is not None:
+                live.join()
+            with self._lifecycle_lock:
+                if self._capture is None:
+                    if live is not None and live.enabled and exc_value is None:
+                        self.raise_if_failed()
+                    return
+            if live is not None:
+                live.finish("discarded", discard=True)
+            else:
+                with self._lifecycle_lock:
+                    self._finish_capture()
+        except BaseException as cleanup_error:
+            if exc_value is None:
+                raise
+            if self.cleanup_incomplete:
+                _attach_cleanup_owner(
+                    exc_value, self, context="live calibration context",
                 )
+            exc_value.add_note(
+                "calibration context cleanup also failed: " f"{cleanup_error!r}"
+            )
 
 
 def calibrate_live(
@@ -477,6 +621,8 @@ def calibrate_live(
     min_confidence: float = 0.80,
     max_retained_frames: int = DEFAULT_CALIBRATION_MAX_RETAINED_FRAMES,
     max_retained_bytes: int = DEFAULT_CALIBRATION_MAX_RETAINED_BYTES,
+    stop_on_complete: bool = False,
+    on_update: Callable[[CalibrationProgress], object] | None = None,
 ) -> CalibrationResult:
     """Blocking convenience wrapper around :class:`CalibrationSession`.
 
@@ -492,6 +638,10 @@ def calibrate_live(
     capture runs until the user interrupts (Ctrl+C), which is treated as
     "actions performed, calibrate now" rather than as an abort. Apps with
     their own UI should use :class:`CalibrationSession` directly.
+
+    ``stop_on_complete=True`` adds evidence-based stopping; the duration remains
+    an optional upper bound. ``on_update`` reports provisional assessments.
+    Callback failures propagate, and profile writes remain separate.
     """
     import time
 
@@ -512,6 +662,8 @@ def calibrate_live(
         min_confidence=min_confidence,
         max_retained_frames=max_retained_frames,
         max_retained_bytes=max_retained_bytes,
+        stop_on_complete=stop_on_complete,
+        on_update=on_update,
     )
     with session:
         deadline = (
@@ -522,6 +674,8 @@ def calibrate_live(
         try:
             while True:
                 session.raise_if_failed()
+                if (stop_on_complete or on_update is not None) and session.stopped:
+                    break
                 if deadline is None:
                     wait_seconds = 0.2
                 else:

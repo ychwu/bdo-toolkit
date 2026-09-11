@@ -16,6 +16,7 @@ from fixture_paths import fixture_path, has_fixture_pcaps
 from bdo_toolkit import load_opcode_profile, replay_pcap
 from bdo_toolkit._framing import TargetMessageScanner
 from bdo_toolkit._specs import event_specs_from_profile
+from bdo_toolkit._calibration.analysis import assess_frames
 from bdo_toolkit.calibration import (
     CalibrationAuthorityError,
     calibrate_frames,
@@ -200,6 +201,22 @@ def test_lone_legacy_1b6a_fixture_has_insufficient_count_authority():
             quantity=20,
             action="inventory-to-storage",
         )
+
+
+@pytest.mark.parametrize("case", _CASES, ids=lambda case: case.name)
+def test_live_assessment_matches_batch_at_cross_era_evidence_prefixes(case):
+    frames = _evidence_for(case)
+    for end in sorted({0, len(frames) // 4, len(frames) // 2,
+                       3 * len(frames) // 4, len(frames)}):
+        options = dict(item_id=case.item_id, quantity=case.quantity,
+                       action="inventory-to-storage")
+        assessment = assess_frames(frames[:end], **options)
+        if assessment.error is not None:
+            with pytest.raises(type(assessment.error)) as raised:
+                calibrate_frames(frames[:end], **options)
+            assert str(raised.value) == str(assessment.error)
+        else:
+            assert assessment.result == calibrate_frames(frames[:end], **options)
 
 
 @pytest.mark.parametrize("case", _CASES, ids=lambda case: case.name)
