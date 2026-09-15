@@ -142,7 +142,9 @@ def _windows_snapshot(timeout: float) -> dict[str, Any]:
     result = subprocess.run(
         ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_SNAPSHOT],
         capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        # subprocess exposes this constant only on Windows. Discovery already
+        # gates this helper by platform; getattr also permits non-Windows typing.
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.returncode:
         raise RuntimeError("Windows connection inspection failed; check permissions and NetTCPIP availability")

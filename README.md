@@ -10,10 +10,10 @@
 Passive, read-only Python tooling that turns live or recorded Black Desert
 traffic into structured, application-ready data.
 
-[Documentation](https://ychwu.github.io/bdo-toolkit/) ·
-[Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) ·
-[Examples](https://ychwu.github.io/bdo-toolkit/#item-examples) ·
-[API index](https://ychwu.github.io/bdo-toolkit/#api-index) ·
+[Documentation](https://ychwu.github.io/bdo-toolkit/) Â·
+[Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) Â·
+[Examples](https://ychwu.github.io/bdo-toolkit/#item-examples) Â·
+[API index](https://ychwu.github.io/bdo-toolkit/#api-index) Â·
 [Report an issue](https://github.com/ychwu/bdo-toolkit/issues)
 
 > **Passive, read-only boundary.** bdo-toolkit observes local traffic or saved
@@ -26,19 +26,10 @@ Live capture depends heavily on your network setup and on whether the capture
 backend can see BDO traffic. VPNs and routing services such as ExitLag may require
 manual interface, local IP, and port settings; automatic detection may select the
 wrong connection. Traffic visible only as an encrypted tunnel cannot be decoded.
-See [packet capture setup](https://ychwu.github.io/bdo-toolkit/#capture-foundation)
-and [capture settings](https://ychwu.github.io/bdo-toolkit/#packet-capture-options)
-for requirements and manual configuration.
-
-With BDO running, inspect candidate settings on Windows:
-
-```powershell
-python -m bdo_toolkit.cli diagnose-capture
-```
-
-Add `--json` for structured output. Apps can call
-[`diagnose_capture()`](https://ychwu.github.io/bdo-toolkit/#live-capture-health/diagnose-capture)
-to populate a settings UI. Discovery does not apply settings or verify decoding.
+Follow [Diagnose capture when automatic selection fails](https://ychwu.github.io/bdo-toolkit/#capture-foundation/diagnose-network)
+to inspect connections on Windows, select grouped capture settings, and verify
+them with game activity. The guide covers VPNs, local proxies, and cases where
+no usable adapter is found. Discovery does not apply settings or verify decoding.
 
 ## Capabilities
 
@@ -97,7 +88,7 @@ installed with the Python wheel.
 | Observe live item activity | [`examples/live_transfer_log.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_transfer_log.py) |
 | Capture inventory and town storage on character load | [`examples/live_character_load_snapshot.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_character_load_snapshot.py) |
 | Rebuild an item profile after a patch | [`examples/live_calibrate_profile.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibrate_profile.py) |
-| Observe calibration progress and stop on completion | [`examples/live_calibration_progress.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibration_progress.py) · [async](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibration_progress.py) |
+| Observe calibration progress and stop on completion | [`examples/live_calibration_progress.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibration_progress.py) Â· [async](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibration_progress.py) |
 | Capture an Arena of Solare leaderboard load | [`examples/solare_live_snapshot.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_live_snapshot.py) |
 
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
