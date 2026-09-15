@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Optional
 from . import __version__
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from .capture import capture_live, replay_pcap
+from .capture_diagnosis import diagnose_capture
 from .diagnostics import DecoderDiagnostic
 from ._protocol import DEFAULT_SERVER_PORTS
 from .calibration import (
@@ -544,6 +546,27 @@ def _run_origin_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_diagnose_capture(args: argparse.Namespace) -> int:
+    result = diagnose_capture(timeout=args.timeout)
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        print(f"Capture discovery: {result.status}")
+        for message in result.messages:
+            print(message)
+        for number, proposal in enumerate(result.proposals, 1):
+            print(f"\n{number}. {proposal.kind} (BDO PID {proposal.process_id})")
+            print(f"   Interface: {proposal.interface or '(no matching adapter)'}")
+            print(f"   Local IP: {proposal.local_ip}; ports: {','.join(map(str, proposal.ports))}")
+            for explanation in dict.fromkeys(c.explanation for c in proposal.candidates):
+                print(f"   {explanation}")
+            print(f"   Connections: {len(proposal.candidates)}")
+            for candidate in proposal.candidates:
+                peer = f" ({candidate.peer_process})" if candidate.peer_process else ""
+                print(f"     {candidate.local_ip}:{candidate.local_port} -> {candidate.remote_ip}:{candidate.remote_port}{peer}")
+    return 2 if result.status == "unavailable" else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bdo-toolkit",
@@ -557,6 +580,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    diagnose = subparsers.add_parser(
+        "diagnose-capture", help="inspect Windows BDO connections and suggest capture settings",
+    )
+    diagnose.add_argument("--json", action="store_true", help="print structured JSON")
+    diagnose.add_argument("--timeout", type=_positive_float, default=15.0, help="Windows inspection timeout in seconds (default: 15)")
+    diagnose.set_defaults(func=_run_diagnose_capture)
 
     profile = subparsers.add_parser(
         "profile",

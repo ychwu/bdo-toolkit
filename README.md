@@ -20,6 +20,26 @@ traffic into structured, application-ready data.
 > captures. It does not send or modify packets, replay traffic to the game,
 > automate gameplay, inspect process memory, or bypass anti-cheat software.
 
+## Live-capture limitations
+
+Live capture depends heavily on your network setup and on whether the capture
+backend can see BDO traffic. VPNs and routing services such as ExitLag may require
+manual interface, local IP, and port settings; automatic detection may select the
+wrong connection. Traffic visible only as an encrypted tunnel cannot be decoded.
+See [packet capture setup](https://ychwu.github.io/bdo-toolkit/#capture-foundation)
+and [capture settings](https://ychwu.github.io/bdo-toolkit/#packet-capture-options)
+for requirements and manual configuration.
+
+With BDO running, inspect candidate settings on Windows:
+
+```powershell
+python -m bdo_toolkit.cli diagnose-capture
+```
+
+Add `--json` for structured output. Apps can call
+[`diagnose_capture()`](https://ychwu.github.io/bdo-toolkit/#live-capture-health/diagnose-capture)
+to populate a settings UI. Discovery does not apply settings or verify decoding.
+
 ## Capabilities
 
 bdo-toolkit exposes three passive workflows. Each can observe live traffic or

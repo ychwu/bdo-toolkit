@@ -3,6 +3,7 @@
 from ._async_sessions import AsyncCalibrationSession, AsyncLiveCaptureSession
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
 from ._capture_runtime import CaptureEndpoint
+from .capture_diagnosis import CaptureCandidate, CaptureDiagnosis, CaptureSettingsProposal, diagnose_capture
 from .capture import (
     CaptureIntegrityError,
     LiveCaptureHealth,
@@ -48,6 +49,10 @@ __all__ = [
     "AsyncLiveCaptureSession",
     "BDOEvent",
     "CaptureEndpoint",
+    "CaptureCandidate",
+    "CaptureDiagnosis",
+    "CaptureSettingsProposal",
+    "diagnose_capture",
     "CaptureIntegrityError",
     "ConsoleEventWriter",
     "DecoderDiagnostic",
