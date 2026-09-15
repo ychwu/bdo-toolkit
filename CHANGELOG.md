@@ -6,6 +6,21 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.5 - 2026-09-15
+
+This patch adds read-only Windows capture discovery for network setups where
+automatic interface or port selection is unsuitable.
+
+### Added
+
+- Discover capture settings from running BDO connections. Applications can use
+  the public `diagnose_capture()` API, and users can run `diagnose-capture` with
+  human-readable or JSON output, to inspect candidate interfaces, local
+  addresses, peer ports, proxy ownership, and grouped settings proposals.
+  Candidates remain unverified and require explicit selection; discovery does
+  not apply capture settings or change existing automatic detection. Other
+  platforms and inspection failures return explanatory diagnostics.
+
 ## 1.0.4 - 2026-09-10
 
 This release adds guided live calibration progress while hardening item
