@@ -10,10 +10,10 @@
 Passive, read-only Python tooling that turns live or recorded Black Desert
 traffic into structured, application-ready data.
 
-[Documentation](https://ychwu.github.io/bdo-toolkit/) Â·
-[Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) Â·
-[Examples](https://ychwu.github.io/bdo-toolkit/#item-examples) Â·
-[API index](https://ychwu.github.io/bdo-toolkit/#api-index) Â·
+[Documentation](https://ychwu.github.io/bdo-toolkit/) ·
+[Quickstart](https://ychwu.github.io/bdo-toolkit/#quickstart) ·
+[Examples](https://ychwu.github.io/bdo-toolkit/#item-examples) ·
+[API index](https://ychwu.github.io/bdo-toolkit/#api-index) ·
 [Report an issue](https://github.com/ychwu/bdo-toolkit/issues)
 
 > **Passive, read-only boundary.** bdo-toolkit observes local traffic or saved
@@ -88,7 +88,7 @@ installed with the Python wheel.
 | Observe live item activity | [`examples/live_transfer_log.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_transfer_log.py) |
 | Capture inventory and town storage on character load | [`examples/live_character_load_snapshot.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_character_load_snapshot.py) |
 | Rebuild an item profile after a patch | [`examples/live_calibrate_profile.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibrate_profile.py) |
-| Observe calibration progress and stop on completion | [`examples/live_calibration_progress.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibration_progress.py) Â· [async](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibration_progress.py) |
+| Observe calibration progress and stop on completion | [`examples/live_calibration_progress.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/live_calibration_progress.py) · [async](https://github.com/ychwu/bdo-toolkit/blob/main/examples/async_calibration_progress.py) |
 | Capture an Arena of Solare leaderboard load | [`examples/solare_live_snapshot.py`](https://github.com/ychwu/bdo-toolkit/blob/main/examples/solare_live_snapshot.py) |
 
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
