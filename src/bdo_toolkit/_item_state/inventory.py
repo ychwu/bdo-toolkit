@@ -185,17 +185,17 @@ def _discover_inventory_tail_layout(
             observed_codes: set[int] = set()
             valid = True
             for frame, group, _, _ in frame_groups:
-                codes = {
+                codes = [
                     frame.message[int(event.record_offset) + container_relative]
                     for event in group
                     if event.record_offset is not None
                     and int(event.record_offset) + container_relative
                     < len(frame.message)
-                }
-                if len(codes) != 1:
+                ]
+                if len(codes) != len(group) or len(set(codes)) != 1:
                     valid = False
                     break
-                code = next(iter(codes))
+                code = codes[0]
                 if code not in _INVENTORY_CONTAINER_LABELS:
                     valid = False
                     break

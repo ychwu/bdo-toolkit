@@ -6,6 +6,35 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.6 - 2026-09-19
+
+This patch adds experimental, session-local Agris balance observation and
+hardens calibration and inventory-layout discovery after packet changes.
+
+### Added
+
+- Add session-local Agris balance discovery. The separate
+  `bdo_toolkit.agris` API supports synchronous and asynchronous live sessions
+  and saved-capture replay, while `agris live` and `agris replay` expose the
+  same capability through the CLI. Every acquisition entry point requires the
+  caller's known maximum points and learns a provisional layout without reading
+  or writing opcode profiles. Outputs contain observed remaining and maximum
+  points with timestamp and connection provenance, not inferred starting
+  balances or consumption totals; ambiguous discovery or acquisition loss
+  withholds current balance authority.
+
+### Fixed
+
+- Avoid mistaking receipt batch counts for storage destinations. Complete
+  record geometry now prevents a batch-count field that matches a registered
+  town ID from independently implying the opposite transfer direction. Live
+  guidance, automatic completion, and offline calibration use the same
+  corrected inference while separate conflicting evidence remains rejected.
+- Reject incomplete inventory container columns. Dynamic tail-layout discovery
+  now requires slot and container columns to cover every record in each
+  hydration wrapper, preventing a following record header from masquerading as
+  incomplete tail metadata and suppressing a valid header-based layout.
+
 ## 1.0.5 - 2026-09-15
 
 This patch adds read-only Windows capture discovery for network setups where

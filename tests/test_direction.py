@@ -7,7 +7,7 @@ and auto calibration never silently mislabels a wrong-direction capture.
 
 import pytest
 
-from fixture_paths import fixture_path, has_fixture_pcaps
+from fixture_paths import fixture_path, has_fixture_pcaps, optional_fixture_path
 from bdo_toolkit import load_opcode_profile
 from bdo_toolkit.calibration import (
     DirectionMismatchError,
@@ -457,3 +457,93 @@ def test_current_wrapper_town_key_is_structural_storage_signal():
 
     assert family == "into_storage"
     assert storage_ctx and not ref and not ctx
+
+
+def _receipt_with_count_town_collision(count=5, count_offset=5, mixed=False):
+    from dataclasses import replace
+
+    item_offset, stride, prefix_length = 33, 226, 32
+    frame = _synthetic_storage_record_frame(99123, 1)
+    message = bytearray(prefix_length + count * stride)
+    message[:2] = len(message).to_bytes(2, "little")
+    message[3:5] = (0x2345).to_bytes(2, "little")
+    message[count_offset:count_offset + 2] = count.to_bytes(2, "little")
+    message[26:30] = bytes.fromhex("d0f205a3")
+    for index in range(count):
+        offset = item_offset + index * stride
+        item = 99123 + index if mixed else 99123
+        message[offset:offset + 4] = item.to_bytes(4, "little")
+        message[offset + 4:offset + 8] = (1).to_bytes(4, "little")
+        message[offset + 12:offset + 20] = b"\xff" * 8
+        message[offset + 35:offset + 43] = (0x1234567800000001 + index).to_bytes(8, "little")
+    return replace(frame, message=bytes(message))
+
+
+@pytest.mark.parametrize("count", [5, 32, 52])
+@pytest.mark.parametrize("count_offset", [5, 12])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_receipt_batch_count_is_not_independent_town_evidence(count, count_offset, mixed):
+    from bdo_toolkit.calibration import calibrate_frames
+    from bdo_toolkit._calibration.observations import observe_transfers
+
+    frame = _receipt_with_count_town_collision(count, count_offset, mixed)
+    assert detect_transfer_family([frame], frame, 33, 99123) == (
+        "into_inventory", False, True, False,
+    )
+    # Large synthetic batches exercise classification without repeating the
+    # expensive full calibration search for every watched record.
+    if count != 5:
+        return
+    result = calibrate_frames([frame], item_id=99123, quantity=1)
+    assert {spec.event for spec in result.specs} == {"INVENTORY_TRANSFER"}
+    observations = observe_transfers(
+        [frame], item_id=99123, quantity=1, action="auto", context_frames=5,
+        min_confidence=0.8, run_id="test", frames_discarded=0,
+    )
+    assert len(observations) == 1
+    assert observations[0].direction == "storage-to-inventory"
+    assert observations[0].record_count == count
+
+
+@pytest.mark.parametrize("mutation", ["separate_count", "broken_record", "no_source"])
+def test_count_collision_does_not_bypass_other_direction_guards(mutation):
+    from dataclasses import replace
+
+    frame = _receipt_with_count_town_collision()
+    message = bytearray(frame.message)
+    if mutation == "separate_count":
+        # Velia plus an independent, equally plausible count: still conflict.
+        message[12:14] = (5).to_bytes(2, "little")
+        message[14:16] = b"\xaa\xbb"  # count, not another uint32 town match
+    elif mutation == "broken_record":
+        message[259 + 12:259 + 20] = b"\x00" * 8
+    else:
+        message[26:30] = b"\x00" * 4
+    frame = replace(frame, message=bytes(message))
+    family, _, source, town = detect_transfer_family([frame], frame, 33, 99123)
+    assert family is None
+    assert (source, town) == ((False, False) if mutation == "no_source" else (True, True))
+
+
+def test_september_receipt_collision_capture_is_ready():
+    from bdo_toolkit.calibration import calibrate_frames
+    from bdo_toolkit._calibration.progress import readiness_issues
+    from bdo_toolkit._calibration.observations import observe_transfers
+
+    path = optional_fixture_path('storage--transfer-calibration-missing-receipt--756daa3faa')
+    if not path.exists():
+        pytest.skip("private September calibration capture not present")
+    frames = collect_frames_pcap(path)
+    result = calibrate_frames(frames, item_id=15156, quantity=1)
+    assert readiness_issues(result, "auto") == ()
+    assert {spec.event for spec in result.specs} == {
+        "INVENTORY_TRANSFER", "SOURCE_CONTAINER_DECREMENT",
+        "SOURCE_STACK_DECREMENT", "SOURCE_ITEM_REFERENCE", "STORAGE_ITEM_DELTA",
+    }
+    receipt = next(spec for spec in result.specs if spec.event == "INVENTORY_TRANSFER")
+    assert (receipt.opcode, receipt.item_id_offset, receipt.repeat_stride) == (0x18CF, 33, 226)
+    observations = observe_transfers(
+        frames, item_id=15156, quantity=1, action="auto", context_frames=5,
+        min_confidence=0.8, run_id="test", frames_discarded=0,
+    )
+    assert any(o.direction == "storage-to-inventory" and o.item_quantity == 5 for o in observations)

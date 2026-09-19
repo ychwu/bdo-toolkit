@@ -548,6 +548,71 @@ def _synthetic_inventory_header_group(
     return frame, records, spec, stride
 
 
+def _synthetic_boundary_aligned_inventory_header_group(
+    *,
+    sequence: int,
+    container_code: int,
+) -> tuple[BDOFrame, list[BDOEvent], EventSpec, int]:
+    """Build a header layout whose next-record prefix resembles a tail field."""
+
+    item_offset = 33
+    stride = 226
+    count = 3
+    base_length = 258
+    message_length = base_length + (count - 1) * stride
+    message = bytearray(message_length)
+    message[:2] = message_length.to_bytes(2, "little")
+    message[3:5] = (0x18CF).to_bytes(2, "little")
+    message[6:10] = CHARACTER_LOAD_CONTEXT
+    flow_key = FlowKey("10.0.0.1", 8889, "10.0.0.2", 50000)
+    flow = Flow("10.0.0.1", 8889, "10.0.0.2", 50000)
+    records: list[BDOEvent] = []
+    for index in range(count):
+        record_offset = item_offset + index * stride
+        # The container precedes each item. From the previous item, every
+        # non-final occurrence therefore resembles a tail-relative byte at
+        # ``stride - 1``; the final record has no such following byte.
+        message[record_offset - 1] = container_code
+        message[record_offset + stride - 2] = 2 + index
+        records.append(
+            BDOEvent(
+                event_type="inventory_snapshot",
+                timestamp=float(sequence),
+                flow=flow,
+                item_id=7003 + index,
+                quantity=1,
+                opcode=0x18CF,
+                message_length=message_length,
+                item_instance=f"boundary-instance-{sequence}-{index}",
+                record_index=index + 1,
+                record_count=count,
+                record_offset=record_offset,
+                extra={"stream_sequence": sequence},
+            )
+        )
+    frame = BDOFrame(
+        index=sequence,
+        message=bytes(message),
+        context=PacketContext(
+            timestamp=float(sequence),
+            flow=flow_key,
+            stream_start=sequence,
+        ),
+        stream_sequence=sequence,
+    )
+    spec = EventSpec(
+        label="INVENTORY_TRANSFER",
+        opcode=0x18CF,
+        item_offset=item_offset,
+        quantity_offset=item_offset + 4,
+        min_message_length=base_length,
+        source_context_offset=6,
+        item_instance_offset=68,
+        single_record_message_length=base_length,
+    )
+    return frame, records, spec, stride
+
+
 def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
     groups = [
         _synthetic_inventory_header_group(
@@ -580,6 +645,36 @@ def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
     assert summary.container(0x00).occupied_stacks == 3
     assert summary.container(0x0B).occupied_stacks == 3
     assert all(item.inventory_slot is None for item in summary.items)
+
+
+def test_inventory_header_layout_rejects_incomplete_next_record_tail_candidate():
+    groups = [
+        _synthetic_boundary_aligned_inventory_header_group(
+            sequence=450 + code,
+            container_code=code,
+        )
+        for code in (0x00, 0x0B)
+    ]
+
+    assert inventory_module._discover_inventory_tail_layout(groups) is None
+    assert inventory_module._discover_inventory_header_container_offset(groups) == 32
+
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test",
+        specs=(groups[0][2],),
+    )
+    assembly = inventory_module._assemble_inventory(
+        accumulator.inventory_specs,
+        tuple(frame for frame, _, _, _ in groups),
+        tuple(event for _, records, _, _ in groups for event in records),
+        generations_observed=1,
+    )
+
+    assert assembly.diagnostics.inferred_strides == (226,)
+    assert assembly.summary.unclassified_records == 0
+    assert assembly.summary.container(0x00).occupied_stacks == 3
+    assert assembly.summary.container(0x0B).occupied_stacks == 3
+    assert all(item.inventory_slot is None for item in assembly.summary.items)
 
 
 def test_inventory_summary_selects_unique_geometry_from_same_opcode_layouts():

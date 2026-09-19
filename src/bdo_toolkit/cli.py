@@ -11,6 +11,13 @@ from typing import Optional
 
 from . import __version__
 from ._capture_options import LiveCaptureOptions, PacketCaptureOptions
+from .agris import (
+    AgrisBalance,
+    AgrisDiscoveryOptions,
+    AgrisStatus,
+    LiveAgrisSession,
+    replay_agris,
+)
 from .capture import capture_live, replay_pcap
 from .capture_diagnosis import diagnose_capture
 from .diagnostics import DecoderDiagnostic
@@ -246,6 +253,126 @@ def _run_profile_fetch(args: argparse.Namespace) -> int:
     if result.backup_path is not None:
         print(f"backup at {result.backup_path}", file=sys.stderr)
     return 0
+
+
+def _write_agris_balance(balance: AgrisBalance, *, jsonl: bool) -> None:
+    if jsonl:
+        print(json.dumps(balance.to_dict(), sort_keys=True), flush=True)
+    else:
+        print(
+            f"Agris remaining={balance.remaining_points:,} "
+            f"maximum={balance.maximum_points:,} "
+            f"confidence={balance.confidence}",
+            flush=True,
+        )
+
+
+def _report_agris_status(status: AgrisStatus) -> None:
+    print(
+        f"agris {status.status}: {status.reason or 'balance discovery'}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _agris_discovery_options(args: argparse.Namespace) -> AgrisDiscoveryOptions:
+    return AgrisDiscoveryOptions(
+        minimum_updates=args.minimum_updates,
+        settle_seconds=args.settle_seconds,
+    )
+
+
+def _agris_minimum_updates(value: str) -> int:
+    count = _positive_int(value)
+    if count < 3:
+        raise argparse.ArgumentTypeError("minimum updates must be at least 3")
+    return count
+
+
+def _run_agris_replay(args: argparse.Namespace) -> int:
+    with replay_agris(
+        args.pcap,
+        expected_maximum_points=args.cap,
+        ports=args.ports,
+        discovery_options=_agris_discovery_options(args),
+    ) as replay:
+        for balance in replay:
+            _write_agris_balance(balance, jsonl=args.jsonl)
+    _report_agris_status(replay.status)
+    print(
+        "agris health: " + json.dumps(replay.health.to_dict(), sort_keys=True),
+        file=sys.stderr,
+    )
+    return 0 if replay.status.status == "tracking" else 2
+
+
+def _run_agris_live(args: argparse.Namespace) -> int:
+    session = LiveAgrisSession(
+        expected_maximum_points=args.cap,
+        live_options=LiveCaptureOptions(
+            interface=args.iface,
+            local_ip=args.local_ip,
+            ports=args.ports,
+            use_bpf=not args.no_bpf,
+        ),
+        discovery_options=_agris_discovery_options(args),
+        capture_seconds=args.capture_seconds,
+        save_pcap=args.save_pcap,
+    )
+    previous_status = None
+    with session:
+        print(
+            "agris capture-ready: waiting for balance discovery; "
+            "the supplied cap is not a starting balance. Ctrl+C stops capture.",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            while True:
+                balance = session.poll(timeout=0.2)
+                status = session.status
+                status_key = (status.status, status.reason)
+                if status_key != previous_status:
+                    _report_agris_status(status)
+                    previous_status = status_key
+                if balance is not None:
+                    _write_agris_balance(balance, jsonl=args.jsonl)
+                elif session.stopped:
+                    break
+        except KeyboardInterrupt:
+            pass
+    # Stop drains accepted packets; deliver any balances buffered by that drain.
+    while (balance := session.poll(timeout=0)) is not None:
+        _write_agris_balance(balance, jsonl=args.jsonl)
+    _report_agris_status(session.status)
+    print(
+        "agris health: " + json.dumps(session.health.to_dict(), sort_keys=True),
+        file=sys.stderr,
+    )
+    return 0 if session.status.status == "tracking" else 2
+
+
+def _add_agris_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--cap", type=_positive_int, required=True, metavar="POINTS",
+        help="your known Agris maximum (required; not your starting balance)",
+    )
+    parser.add_argument(
+        "--ports", type=_parse_ports, default=DEFAULT_SERVER_PORTS,
+        help="comma-separated server source ports (default: 8884,8885,8889)",
+    )
+    parser.add_argument(
+        "--jsonl", action="store_true",
+        help="emit balance JSON lines; status and health stay on stderr",
+    )
+    parser.add_argument(
+        "--minimum-updates", type=_agris_minimum_updates, default=5, metavar="COUNT",
+        help="minimum distinct decreasing balances for discovery (default: 5)",
+    )
+    parser.add_argument(
+        "--settle-seconds", type=_nonnegative_float, default=3.0,
+        metavar="SECONDS", help="candidate uniqueness interval (default: 3)",
+    )
 
 
 def _write_solare_result(
@@ -668,6 +795,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum decoded events buffered for the consumer (default: 1024)",
     )
 
+    agris = subparsers.add_parser(
+        "agris", help="discover and observe Agris balances without an opcode profile",
+        description="Provisional, session-local Agris balance discovery. A known cap is required.",
+    )
+    agris_commands = agris.add_subparsers(dest="agris_command", required=True)
+    agris_replay = agris_commands.add_parser(
+        "replay", help="observe Agris balances in a saved capture",
+    )
+    agris_replay.add_argument("pcap", type=Path, help="capture file to inspect")
+    _add_agris_arguments(agris_replay)
+    agris_replay.set_defaults(func=_run_agris_replay)
+    agris_live = agris_commands.add_parser(
+        "live", help="passively observe live Agris balances until Ctrl+C",
+    )
+    _add_agris_arguments(agris_live)
+    agris_live.add_argument("--iface", help="capture interface (default: auto-detect)")
+    agris_live.add_argument("--local-ip", help="local destination IPv4 (default: auto-detect)")
+    agris_live.add_argument("--no-bpf", action="store_true", help="use a Python packet filter")
+    agris_live.add_argument(
+        "--capture-seconds", type=_positive_float, default=None,
+        metavar="SECONDS", help="optional deadline (default: Ctrl+C)",
+    )
+    agris_live.add_argument(
+        "--save-pcap", type=Path, default=None, metavar="PATH",
+        help="record matching packets to a new .pcap/.pcapng file; refuses overwrite",
+    )
+    agris_live.set_defaults(func=_run_agris_live)
+
     solare = subparsers.add_parser(
         "solare",
         help="capture or replay an experimental Arena of Solare snapshot",
@@ -970,7 +1125,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return args.func(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return 2
+        return 1 if args.command == "agris" else 2
 
 
 if __name__ == "__main__":

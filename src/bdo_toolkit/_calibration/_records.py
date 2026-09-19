@@ -508,8 +508,43 @@ def _discover_storage_context_offset(
         before_offset=before_offset,
     )
     if len(candidates) == 1:
-        return candidates[0][0]
+        offset = candidates[0][0]
+        if _storage_candidate_aliases_batch_count(frame, before_offset, offset):
+            return None
+        return offset
     return None
+
+
+def _storage_candidate_aliases_batch_count(
+    frame: BDOFrame, item_offset: int, destination_offset: int,
+) -> bool:
+    """A batch count cannot also provide independent destination evidence.
+
+    Require complete, uniformly spaced records and a plausible normalized
+    envelope. This only discounts a single-frame town candidate when every
+    geometrically possible count column overlaps it. A separate count column
+    preserves the destination signal (and any intrinsic direction conflict).
+    Cross-frame destination/count authority is deliberately unchanged.
+    """
+    if frame.length != len(frame.message):
+        return False
+    offsets = _full_transfer_record_offsets(frame, item_offset, item_offset + 35)
+    stride = uniform_stride(offsets) if len(offsets) > 1 else None
+    if stride is None or item_offset not in offsets:
+        return False
+    count = len(offsets)
+    base_length = frame.length - (count - 1) * stride
+    prefix_length = frame.length - count * stride
+    if not (200 <= base_length <= 300 and 5 <= prefix_length <= offsets[0]):
+        return False
+    count_offsets = [
+        offset for offset in range(5, prefix_length - 1)
+        if int.from_bytes(frame.message[offset:offset + 2], "little") == count
+    ]
+    return bool(count_offsets) and all(
+        _ranges_overlap(offset, 2, destination_offset, 4)
+        for offset in count_offsets
+    )
 
 
 def _discover_storage_context_offset_from_frames(

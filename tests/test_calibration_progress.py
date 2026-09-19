@@ -270,9 +270,14 @@ def test_each_prefix_preserves_batch_outcome_and_readiness():
     assert assessment.result.specs_by_event()["SOURCE_STACK_DECREMENT"][0].repeat_stride == 23
 
 
-def test_live_auto_stop_final_result_equals_batch():
+@pytest.mark.parametrize("count_town_collision", [False, True])
+def test_live_auto_stop_final_result_equals_batch(count_town_collision):
     updates = []
     frames = transfer_frames()
+    if count_town_collision:
+        message = bytearray(frames[-1].message)
+        message[5:9] = (5).to_bytes(4, "little")
+        frames[-1] = replace(frames[-1], message=bytes(message))
     with CalibrationSession(item_id=99123, quantity=1, stop_on_complete=True,
                             on_update=updates.append) as session:
         capture = session._capture

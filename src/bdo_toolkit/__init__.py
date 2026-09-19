@@ -41,7 +41,7 @@ from .origin_learning import (
     promote_origin_candidates,
 )
 from .writers import ConsoleEventWriter, JsonlEventWriter
-from . import solare
+from . import agris, solare
 from ._version import __version__
 
 __all__ = [
@@ -83,6 +83,7 @@ __all__ = [
     "StorageLocation",
     "__version__",
     "capture_live",
+    "agris",
     "fetch_opcode_profile",
     "load_opcode_profile",
     "promote_origin_candidates",
