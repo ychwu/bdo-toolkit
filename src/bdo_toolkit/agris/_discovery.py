@@ -14,6 +14,7 @@ from typing import NoReturn
 
 from .._protocol import BDOFrame, FlowKey
 from ..events import Flow
+from ..profiles import AgrisProfileLayout
 from ._validation import validate_expected_maximum_points
 from .models import (
     AgrisBalance,
@@ -61,6 +62,7 @@ class AgrisTracker:
         expected_maximum_points: int,
         options: AgrisDiscoveryOptions | None = None,
         on_balance: Callable[[AgrisBalance], None] | None = None,
+        profile_layout: AgrisProfileLayout | None = None,
     ) -> None:
         self.expected_maximum_points = validate_expected_maximum_points(expected_maximum_points)
         if options is not None and not isinstance(options, AgrisDiscoveryOptions):
@@ -69,6 +71,7 @@ class AgrisTracker:
             raise TypeError("on_balance must be callable or None")
         self.options = options if options is not None else AgrisDiscoveryOptions()
         self._on_balance = on_balance
+        self._profile_layout = profile_layout
         self._families: dict[_FamilyKey, _Family] = {}
         self._column_count = 0
         self._observed_frames = 0
@@ -105,6 +108,9 @@ class AgrisTracker:
             self.invalidate("A frame has a non-finite observation timestamp.")
         self._observed_frames += 1
         self._clock = max(self._clock, frame.context.timestamp)
+        if self._profile_layout is not None:
+            self._observe_profile(frame)
+            return
         message = frame.message
         if self._selected is not None:
             chosen = self._selected[0]
@@ -128,6 +134,26 @@ class AgrisTracker:
         else:
             self._update_family(key, message, frame.context.timestamp)
         self.refresh()
+
+    def _observe_profile(self, frame: BDOFrame) -> None:
+        layout = self._profile_layout
+        assert layout is not None
+        key = (frame.context.flow, frame.context.flow_generation, frame.opcode, len(frame.message))
+        if self._selected is not None and key[0] == self._selected[0][0] and key[1] != self._selected[0][1]:
+            self.invalidate("Selected connection epoch changed; restart capture.")
+        if frame.opcode != layout.opcode:
+            return
+        if frame.flag != layout.flag or frame.length != layout.message_length or len(frame.message) != layout.message_length:
+            self.invalidate("Agris profile message shape rejected; recalibrate Agris.")
+        if self._selected is not None and key[:2] != self._selected[0][:2]:
+            self.invalidate("Agris profile matched multiple connections; balance is ambiguous.")
+        self._selected = (key, layout.remaining_offset, layout.maximum_offset)
+        self._decode_selected(frame)
+        self._candidates = (self._selected,)
+        self._tracking = True
+        if self._on_balance is not None:
+            assert self._latest_balance is not None
+            self._on_balance(self._latest_balance)
 
     def _add_family(self, key: _FamilyKey, message: bytes, observed_at: float) -> None:
         if len(self._families) >= self.options.max_families:
@@ -217,6 +243,8 @@ class AgrisTracker:
                 raise ValueError("now must be finite")
             self._clock = max(self._clock, now)
         if self._invalid_reason is not None:
+            return self.snapshot()
+        if self._profile_layout is not None:
             return self.snapshot()
         self._find_candidates()
         unique = self._candidates[0] if len(self._candidates) == 1 else None

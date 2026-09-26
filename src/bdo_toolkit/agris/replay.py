@@ -10,6 +10,8 @@ from typing import cast
 
 from .._capture_backend import iter_pcap_file
 from .._protocol import DEFAULT_SERVER_PORTS
+from ..profiles import OpcodeProfile
+from ._profile import profile_layout
 from ._capture import AgrisCaptureHealth, AgrisFlowManager
 from ._discovery import AgrisTracker
 from .models import AgrisBalance, AgrisDiscoveryOptions, AgrisStatus
@@ -18,17 +20,19 @@ from .models import AgrisBalance, AgrisDiscoveryOptions, AgrisStatus
 class AgrisReplay(Iterator[AgrisBalance]):
     """Single-consumer iterator. Close early-stopped replays or use a with block.
 
-    Discovery is local to this object. Initial learning observations are not
+    An explicit profile bypasses discovery. Otherwise discovery is local to this object. Initial learning observations are not
     replayed as historical events: the first event is the newest balance at
     selection time. No entire-file list of balances or packets is retained.
     """
 
     def __init__(self, path: str | Path, *, expected_maximum_points: int,
                  ports: Iterable[int] = DEFAULT_SERVER_PORTS,
-                 discovery_options: AgrisDiscoveryOptions | None = None) -> None:
+                 discovery_options: AgrisDiscoveryOptions | None = None,
+                 profile: OpcodeProfile | None = None) -> None:
         self._pending: deque[AgrisBalance] = deque()
         self._tracker = AgrisTracker(expected_maximum_points=expected_maximum_points,
-                                    options=discovery_options, on_balance=self._enqueue)
+                                    options=discovery_options, on_balance=self._enqueue,
+                                    profile_layout=profile_layout(profile))
         self._manager = AgrisFlowManager(self._tracker, ports)
         self._packets = cast(Generator[None, None, None], iter_pcap_file(Path(path), self._manager))
         self._processed = 0
@@ -106,7 +110,8 @@ class AgrisReplay(Iterator[AgrisBalance]):
 
 def replay_agris(path: str | Path, *, expected_maximum_points: int,
                  ports: Iterable[int] = DEFAULT_SERVER_PORTS,
-                 discovery_options: AgrisDiscoveryOptions | None = None) -> AgrisReplay:
+                 discovery_options: AgrisDiscoveryOptions | None = None,
+                 profile: OpcodeProfile | None = None) -> AgrisReplay:
     """Discover and stream balance observations; the caller must supply the cap."""
     return AgrisReplay(path, expected_maximum_points=expected_maximum_points,
-                       ports=ports, discovery_options=discovery_options)
+                       ports=ports, discovery_options=discovery_options, profile=profile)

@@ -1,4 +1,4 @@
-"""Single-owner live Agris acquisition; no profiles or consumption accounting."""
+"""Single-owner live Agris acquisition; no implicit writes or consumption accounting."""
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -15,6 +15,9 @@ from .._capture_backend import make_packet_handler, open_packet_writer
 from .._capture_options import LiveCaptureOptions
 from .._capture_runtime import CaptureEndpoint, CaptureStats, LivePacketCapture, _attach_cleanup_owner
 from ..capture import CaptureIntegrityError
+from ..profiles import OpcodeProfile
+from ._profile import profile_layout
+from ._calibration_models import AgrisCalibrationResult, final_calibration_result
 from ._capture import AgrisCaptureHealth, AgrisFlowManager
 from ._discovery import AgrisTracker
 from .models import AgrisBalance, AgrisDiscoveryOptions, AgrisStatus
@@ -26,7 +29,8 @@ class LiveAgrisSession:
     One owner thread starts/stops acquisition, decodes packets, and services
     deadlines even if the application stops polling. Native callbacks only
     enqueue packets. Both queues are bounded: overflow is an explicit failure.
-    Every session cold-discovers an inferred layout; none is saved or reused.
+    Omit profile for cold discovery, or supply a profile for strict saved-layout decoding.
+    Sessions never write profiles or silently fall back to discovery.
     """
 
     _JOIN_TIMEOUT = 15.0
@@ -36,7 +40,8 @@ class LiveAgrisSession:
                  live_options: LiveCaptureOptions | None = None,
                  discovery_options: AgrisDiscoveryOptions | None = None,
                  capture_seconds: float | None = None,
-                 save_pcap: str | Path | None = None) -> None:
+                 save_pcap: str | Path | None = None,
+                 profile: OpcodeProfile | None = None) -> None:
         if live_options is not None and not isinstance(live_options, LiveCaptureOptions):
             raise TypeError("live_options must be LiveCaptureOptions or None")
         if capture_seconds is not None and (isinstance(capture_seconds, bool)
@@ -44,10 +49,13 @@ class LiveAgrisSession:
                 or not math.isfinite(capture_seconds) or capture_seconds <= 0):
             raise ValueError("capture_seconds must be finite and positive")
         self._options = live_options or LiveCaptureOptions()
+        layout = profile_layout(profile)
+        self._detection_mode = "profile" if layout is not None else "discovery"
+        self._calibration_result: AgrisCalibrationResult | None = None
         self._events: Queue[AgrisBalance] = Queue(self._options.event_queue_size)
         self._packets: Queue[object] = Queue(self._options.packet_queue_size)
         self._tracker = AgrisTracker(expected_maximum_points=expected_maximum_points,
-                                    options=discovery_options, on_balance=self._publish)
+                                    options=discovery_options, on_balance=self._publish, profile_layout=layout)
         self._manager = AgrisFlowManager(self._tracker, self._options.ports, live=True)
         self._status = self._tracker.snapshot()
         self._seconds = capture_seconds
@@ -72,6 +80,16 @@ class LiveAgrisSession:
         self._error: BaseException | None = None
         self._stop_reason: str | None = None
         self._accepted = self._processed = self._packet_overflows = self._event_overflows = 0
+
+    @property
+    def detection_mode(self) -> str:
+        """Either profile decoding or cold discovery; never silently switched."""
+        return self._detection_mode
+
+    @property
+    def calibration_result(self) -> AgrisCalibrationResult | None:
+        """Final clean discovery evidence only; never available in profile mode."""
+        return self._calibration_result if self.stopped and self.error is None else None
 
     @property
     def status(self) -> AgrisStatus:
@@ -304,6 +322,8 @@ class LiveAgrisSession:
         with self._state_lock:
             self._cleanup_incomplete = False
             self._stop_reason = self._stop_reason or "requested"
+        if self.error is None and self._detection_mode == "discovery":
+            self._calibration_result = final_calibration_result(self.status, self.health)
         self._stopped.set()
 
     def stop(self) -> None:

@@ -9,10 +9,26 @@ import json
 import pytest
 
 from bdo_toolkit.agris.replay import replay_agris
+from bdo_toolkit import load_opcode_profile
 from fixture_paths import optional_fixture_path
 
 
 GRIND = optional_fixture_path("research--agris-grind-98600-to-96720--e5d398bcd7")
+
+
+@pytest.mark.skipif(not GRIND.is_file(), reason="private Agris grind capture is not installed")
+def test_matching_era_profile_includes_first_observed_balance(tmp_path):
+    path = tmp_path / "agris-era.json"
+    path.write_text(json.dumps({"version": 1, "profile_active": True, "specs": {},
+        "agris": {"opcode": "0x1337", "message_length": 40, "flag": 0,
+                  "remaining_offset": 9, "maximum_offset": 13, "encoding": "uint32_le"}}))
+    with replay_agris(GRIND, expected_maximum_points=100000,
+                      profile=load_opcode_profile(path)) as replay:
+        observations = list(replay)
+    assert len(observations) == 45
+    assert observations[0].remaining_points == 98560
+    assert observations[-1].remaining_points == 96720
+    assert replay.health.capture_is_clean
 
 
 @pytest.mark.skipif(not GRIND.is_file(), reason="private Agris grind capture is not installed")

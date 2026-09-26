@@ -17,6 +17,7 @@ from .agris import (
     AgrisStatus,
     LiveAgrisSession,
     replay_agris,
+    calibrate_agris_and_update,
 )
 from .capture import capture_live, replay_pcap
 from .capture_diagnosis import diagnose_capture
@@ -43,6 +44,7 @@ from .remote_profiles import (
     fetch_opcode_profile,
 )
 from .filters import EventFilter
+from .profiles import load_opcode_profile
 from .writers import ConsoleEventWriter, JsonlEventWriter
 from .solare import (
     SolareCaptureResult,
@@ -295,6 +297,7 @@ def _run_agris_replay(args: argparse.Namespace) -> int:
         expected_maximum_points=args.cap,
         ports=args.ports,
         discovery_options=_agris_discovery_options(args),
+        profile=load_opcode_profile(args.profile) if args.profile is not None else None,
     ) as replay:
         for balance in replay:
             _write_agris_balance(balance, jsonl=args.jsonl)
@@ -318,11 +321,12 @@ def _run_agris_live(args: argparse.Namespace) -> int:
         discovery_options=_agris_discovery_options(args),
         capture_seconds=args.capture_seconds,
         save_pcap=args.save_pcap,
+        profile=load_opcode_profile(args.profile) if args.profile is not None else None,
     )
     previous_status = None
     with session:
         print(
-            "agris capture-ready: waiting for balance discovery; "
+            "agris capture-ready: waiting for a qualified balance; "
             "the supplied cap is not a starting balance. Ctrl+C stops capture.",
             file=sys.stderr,
             flush=True,
@@ -352,7 +356,10 @@ def _run_agris_live(args: argparse.Namespace) -> int:
     return 0 if session.status.status == "tracking" else 2
 
 
-def _add_agris_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_agris_arguments(parser: argparse.ArgumentParser, *, profile_required: bool = False) -> None:
+    parser.add_argument("--profile", type=Path, required=profile_required,
+                        help="existing destination profile; only Agris is updated, with backup" if profile_required
+                        else "explicit Agris profile; missing layout is an error, no fallback")
     parser.add_argument(
         "--cap", type=_positive_int, required=True, metavar="POINTS",
         help="your known Agris maximum (required; not your starting balance)",
@@ -361,10 +368,11 @@ def _add_agris_arguments(parser: argparse.ArgumentParser) -> None:
         "--ports", type=_parse_ports, default=DEFAULT_SERVER_PORTS,
         help="comma-separated server source ports (default: 8884,8885,8889)",
     )
-    parser.add_argument(
-        "--jsonl", action="store_true",
-        help="emit balance JSON lines; status and health stay on stderr",
-    )
+    if not profile_required:
+        parser.add_argument(
+            "--jsonl", action="store_true",
+            help="emit balance JSON lines; status and health stay on stderr",
+        )
     parser.add_argument(
         "--minimum-updates", type=_agris_minimum_updates, default=5, metavar="COUNT",
         help="minimum distinct decreasing balances for discovery (default: 5)",
@@ -373,6 +381,22 @@ def _add_agris_arguments(parser: argparse.ArgumentParser) -> None:
         "--settle-seconds", type=_nonnegative_float, default=3.0,
         metavar="SECONDS", help="candidate uniqueness interval (default: 3)",
     )
+
+
+def _run_agris_calibrate(args: argparse.Namespace) -> int:
+    try:
+        update = calibrate_agris_and_update(
+            args.profile, expected_maximum_points=args.cap,
+            live_options=LiveCaptureOptions(interface=args.iface, local_ip=args.local_ip,
+                                            ports=args.ports, use_bpf=not args.no_bpf),
+            discovery_options=_agris_discovery_options(args), capture_seconds=args.capture_seconds,
+            save_pcap=args.save_pcap, on_update=_report_agris_status,
+        )
+    except KeyboardInterrupt:
+        print("Agris calibration interrupted; inspect the profile before retrying.", file=sys.stderr)
+        return 130
+    print(json.dumps(update.to_dict(), sort_keys=True))
+    return 0
 
 
 def _write_solare_result(
@@ -796,8 +820,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     agris = subparsers.add_parser(
-        "agris", help="discover and observe Agris balances without an opcode profile",
-        description="Provisional, session-local Agris balance discovery. A known cap is required.",
+        "agris", help="observe Agris balances using a profile or cold discovery",
+        description="Agris profile decoding, discovery and explicit calibration. A known cap is required.",
     )
     agris_commands = agris.add_subparsers(dest="agris_command", required=True)
     agris_replay = agris_commands.add_parser(
@@ -822,6 +846,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="record matching packets to a new .pcap/.pcapng file; refuses overwrite",
     )
     agris_live.set_defaults(func=_run_agris_live)
+
+    agris_calibrate = agris_commands.add_parser("calibrate", help="cold-discover and save Agris to an existing profile")
+    _add_agris_arguments(agris_calibrate, profile_required=True)
+    agris_calibrate.add_argument("--iface")
+    agris_calibrate.add_argument("--local-ip")
+    agris_calibrate.add_argument("--no-bpf", action="store_true")
+    agris_calibrate.add_argument("--capture-seconds", type=_positive_float, default=None)
+    agris_calibrate.add_argument("--save-pcap", type=Path, default=None)
+    agris_calibrate.set_defaults(func=_run_agris_calibrate)
 
     solare = subparsers.add_parser(
         "solare",

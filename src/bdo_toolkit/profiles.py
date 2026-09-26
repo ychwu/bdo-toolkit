@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Optional
@@ -16,6 +17,58 @@ OPCODE_PROFILE_SCHEMA_VERSION = 1
 
 class ProfileError(ValueError):
     """Raised when an opcode profile has an invalid JSON or schema shape."""
+
+
+@dataclass(frozen=True)
+class AgrisProfileLayout:
+    """Portable Agris geometry; no player balance or connection identity."""
+
+    opcode: int
+    message_length: int
+    remaining_offset: int
+    maximum_offset: int
+    flag: int = 0
+    encoding: str = "uint32_le"
+    observed_date: str | None = None
+
+    def __post_init__(self) -> None:
+        for name, low, high in (("opcode", 0, 65535), ("message_length", 13, 65535),
+                                ("remaining_offset", 5, 65531), ("maximum_offset", 5, 65531),
+                                ("flag", 0, 0)):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ProfileError(f"agris.{name} must be an integer from {low} to {high}")
+        if self.encoding != "uint32_le":
+            raise ProfileError("agris.encoding must be uint32_le")
+        if max(self.remaining_offset, self.maximum_offset) + 4 > self.message_length:
+            raise ProfileError("agris offsets extend outside the message")
+        if abs(self.remaining_offset - self.maximum_offset) < 4:
+            raise ProfileError("agris remaining and maximum fields overlap")
+        if self.observed_date is not None:
+            try:
+                if not isinstance(self.observed_date, str) or date.fromisoformat(self.observed_date).isoformat() != self.observed_date:
+                    raise ValueError
+            except ValueError as exc:
+                raise ProfileError("agris.observed_date must be YYYY-MM-DD or null") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"opcode": f"0x{self.opcode:04X}", "message_length": self.message_length,
+                "remaining_offset": self.remaining_offset, "maximum_offset": self.maximum_offset,
+                "flag": self.flag, "encoding": self.encoding, "observed_date": self.observed_date}
+
+
+def _agris_layout(value: object) -> AgrisProfileLayout | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ProfileError("agris must be an object or null")
+    required = {"opcode", "message_length", "remaining_offset", "maximum_offset", "flag", "encoding"}
+    if not required <= value.keys() or value.keys() - required - {"observed_date"}:
+        raise ProfileError("agris has missing or unsupported fields")
+    return AgrisProfileLayout(opcode=_profile_opcode(value["opcode"], "agris.opcode"),
+                              message_length=value["message_length"],
+                              remaining_offset=value["remaining_offset"], maximum_offset=value["maximum_offset"],
+                              flag=value["flag"], encoding=value["encoding"], observed_date=value.get("observed_date"))
 
 
 @dataclass(frozen=True)
@@ -63,8 +116,13 @@ class OpcodeProfile:
     calibration_item_id: Optional[int]
     specs: Mapping[str, tuple[Mapping[str, Any], ...]]
     origin_companion_families: tuple[OriginCompanionFamily, ...] = ()
+    agris: AgrisProfileLayout | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.agris is not None:
+            if not isinstance(self.agris, AgrisProfileLayout):
+                raise ProfileError("agris must be an AgrisProfileLayout or None")
+            self.agris.__post_init__()
         object.__setattr__(
             self,
             "specs",
@@ -92,6 +150,7 @@ class OpcodeProfile:
             "origin_companion_families": [
                 family.to_dict() for family in self.origin_companion_families
             ],
+            **({"agris": self.agris.to_dict()} if self.agris is not None else {}),
         }
 
 
@@ -105,6 +164,11 @@ def load_opcode_profile(path: str | Path) -> OpcodeProfile:
         data = json.loads(profile_path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, RecursionError, UnicodeError) as exc:
         raise ProfileError(f"Could not parse opcodes JSON {profile_path}: {exc}") from exc
+    return _opcode_profile_from_data(data, profile_path)
+
+
+def _opcode_profile_from_data(data: Any, profile_path: Path) -> OpcodeProfile:
+    """Shared validation for loaded and proposed profile content."""
     if not isinstance(data, dict):
         raise ProfileError(f"Opcodes JSON {profile_path} must be a top-level object")
 
@@ -182,6 +246,7 @@ def load_opcode_profile(path: str | Path) -> OpcodeProfile:
         calibration_item_id=calibration_item_value,
         specs=immutable_specs,
         origin_companion_families=families,
+        agris=_agris_layout(data.get("agris")),
     )
 
 

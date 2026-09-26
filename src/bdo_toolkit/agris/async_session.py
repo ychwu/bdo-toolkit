@@ -16,6 +16,8 @@ from bdo_toolkit._async_utils import (
 )
 from bdo_toolkit._capture_options import LiveCaptureOptions
 from bdo_toolkit._capture_runtime import CaptureEndpoint, _attach_cleanup_owner
+from bdo_toolkit.profiles import OpcodeProfile
+from ._calibration_models import AgrisCalibrationResult
 
 from ._capture import AgrisCaptureHealth
 from .models import AgrisBalance, AgrisDiscoveryOptions, AgrisStatus
@@ -29,8 +31,8 @@ class AsyncLiveAgrisSession:
     """Single-use, single-consumer async Agris balance session.
 
     ``expected_maximum_points`` is required and validated by the synchronous
-    owner before any capture resources are acquired. Discovery is session-local;
-    this wrapper neither loads nor writes an opcode profile. It publishes only
+    owner before any capture resources are acquired. Optional profile decoding
+    bypasses discovery without fallback; this wrapper never writes profiles. It publishes only
     observed balances, never inferred consumption or a starting balance.
 
     Cancelling a poll stops capture and retains any balance already removed by
@@ -45,6 +47,7 @@ class AsyncLiveAgrisSession:
         discovery_options: AgrisDiscoveryOptions | None = None,
         capture_seconds: float | None = None,
         save_pcap: str | Path | None = None,
+        profile: OpcodeProfile | None = None,
     ) -> None:
         self._session = LiveAgrisSession(
             expected_maximum_points=expected_maximum_points,
@@ -52,6 +55,7 @@ class AsyncLiveAgrisSession:
             discovery_options=discovery_options,
             capture_seconds=capture_seconds,
             save_pcap=save_pcap,
+            profile=profile,
         )
         # Reserve a worker for stop() even while a balance poll is in flight.
         self._executor = ThreadPoolExecutor(
@@ -63,6 +67,14 @@ class AsyncLiveAgrisSession:
         self._poll_active = False
         self._pending_balance: AgrisBalance | None = None
         self._stop_future: asyncio.Future[None] | None = None
+
+    @property
+    def detection_mode(self) -> str:
+        return self._session.detection_mode
+
+    @property
+    def calibration_result(self) -> AgrisCalibrationResult | None:
+        return self._session.calibration_result
 
     @property
     def running(self) -> bool:

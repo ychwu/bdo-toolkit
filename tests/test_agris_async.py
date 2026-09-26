@@ -122,6 +122,7 @@ def test_configuration_metadata_and_context_forwarding(fake_sessions, tmp_path):
                 "discovery_options": discovery,
                 "capture_seconds": 30,
                 "save_pcap": target,
+                "profile": None,
             }
             assert session.running
             assert not session.stopped

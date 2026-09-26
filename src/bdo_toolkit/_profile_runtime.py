@@ -14,6 +14,7 @@ from .profiles import (
     OpcodeProfile,
     OriginCompanionFamily,
     ProfileError,
+    AgrisProfileLayout,
 )
 
 
@@ -39,6 +40,10 @@ def validate_runtime_profile(profile: OpcodeProfile) -> RuntimeProfileValidation
         )
     if profile.active is not True:
         raise ProfileError(f"Opcode profile is inactive: {profile.path}")
+    if profile.agris is not None:
+        if not isinstance(profile.agris, AgrisProfileLayout):
+            raise ProfileError("agris must be an AgrisProfileLayout")
+        profile.agris.__post_init__()
 
     loaded_specs = event_specs_from_profile(profile)
     decrement_specs = tuple(
