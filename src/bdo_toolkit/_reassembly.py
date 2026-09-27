@@ -357,18 +357,22 @@ class TCPFlowState:
             and self.gap_started_at is not None
             and now - self.gap_started_at >= GAP_RESET_SECONDS
         ):
-            fin_sequence = _unwrap_tcp_sequence(
-                self.fin_sequence,
-                self.next_sequence,
-            )
-            if self.next_sequence < fin_sequence:
-                self.scanner.reset()
-                if self.on_gap_reset is not None:
-                    self.on_gap_reset(fin_sequence)
-                self.next_sequence = fin_sequence
-                self.gap_started_at = None
-                resets += 1
+            resets += self._resume_after_fin_gap()
         return resets
+
+    def _resume_after_fin_gap(self) -> bool:
+        """Report bytes proven missing by FIN, after pending payload is drained."""
+        if self.fin_sequence is None or self.next_sequence is None:
+            return False
+        fin_sequence = _unwrap_tcp_sequence(self.fin_sequence, self.next_sequence)
+        if self.next_sequence >= fin_sequence:
+            return False
+        self.scanner.reset()
+        if self.on_gap_reset is not None:
+            self.on_gap_reset(fin_sequence)
+        self.next_sequence = fin_sequence
+        self.gap_started_at = None
+        return True
 
     def _resume_after_gap(self) -> None:
         if not self.pending:
@@ -394,6 +398,9 @@ class TCPFlowState:
         self._commit_unanchored()
         while self.pending:
             self._resume_after_gap()
+        # EOF alone cannot prove missing bytes. An observed FIN ahead of the
+        # drained stream can, even when shutdown precedes the live gap timer.
+        self._resume_after_fin_gap()
 
 
 class FlowManager:

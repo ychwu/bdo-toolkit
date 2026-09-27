@@ -237,6 +237,10 @@ class _EventCollector:
         _profile_authority: Optional[_ProfileAuthority] = None,
         _max_pending_segments: int = MAX_PENDING_SEGMENTS,
         _max_pending_bytes: Optional[int] = None,
+        _defer_gap_timeouts: bool = False,
+        _flow_close_observer: Optional[Callable[[FlowKey], None]] = None,
+        _flow_reset_observer: Optional[Callable[[FlowKey, int, int], None]] = None,
+        _unhinted_frame_observer: Optional[Callable[[BDOFrame], None]] = None,
     ) -> None:
         if _profile_authority is not None:
             if opcode_profile is not None:
@@ -317,6 +321,17 @@ class _EventCollector:
             if frame_observer is not None:
                 frame_observer(frame)
 
+        def close_flow(flow: FlowKey) -> None:
+            self._close_flow(flow)
+            if _flow_close_observer is not None:
+                _flow_close_observer(flow)
+
+        def reset_flow(flow: FlowKey, generation: int, sequence: int) -> None:
+            if tracker is not None:
+                tracker.reset_flow(flow, generation, sequence)
+            if _flow_reset_observer is not None:
+                _flow_reset_observer(flow, generation, sequence)
+
         self.engine = PacketEngine(
             server_ports=server_ports,
             event_specs=loaded_specs.specs,
@@ -331,13 +346,17 @@ class _EventCollector:
                 else None
             ),
             stream_observer=(tracker.observe_stream if tracker is not None else None),
-            flow_close_observer=self._close_flow,
-            flow_reset_observer=(tracker.reset_flow if tracker is not None else None),
+            flow_close_observer=close_flow,
+            flow_reset_observer=(
+                reset_flow if tracker is not None or _flow_reset_observer is not None else None
+            ),
             message_observer=(
                 self._observe_storage_message if observe_storage_messages else None
             ),
             max_pending_segments=_max_pending_segments,
             max_pending_bytes=_max_pending_bytes,
+            defer_gap_timeouts=_defer_gap_timeouts,
+            unhinted_frame_observer=_unhinted_frame_observer,
         )
         self._preflight_done = False
         if preflight:

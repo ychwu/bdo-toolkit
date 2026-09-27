@@ -41,16 +41,20 @@ class _TeeScanner:
         primary: TargetMessageScanner,
         tap: Optional[FrameCollectorScanner],
         stream_observer: Optional[Callable[[bytes, PacketContext], None]],
+        unhinted_tap: Optional[FrameCollectorScanner] = None,
     ) -> None:
         self._primary = primary
         self._tap = tap
         self._stream_observer = stream_observer
+        self._unhinted_tap = unhinted_tap
 
     def feed(self, data, context) -> None:
         if self._stream_observer is not None:
             self._stream_observer(data, context)
         if self._tap is not None:
             self._tap.feed(data, context)
+        if self._unhinted_tap is not None:
+            self._unhinted_tap.feed(data, context)
         self._primary.feed(data, context)
 
     def scan_standalone(self, data, context) -> None:
@@ -58,6 +62,8 @@ class _TeeScanner:
             self._stream_observer(data, context)
         if self._tap is not None:
             self._tap.scan_standalone(data, context)
+        if self._unhinted_tap is not None:
+            self._unhinted_tap.scan_standalone(data, context)
         self._primary.scan_standalone(data, context)
 
     def can_anchor_at_start(self, data: bytes) -> bool:
@@ -69,6 +75,8 @@ class _TeeScanner:
     def reset(self) -> None:
         if self._tap is not None:
             self._tap.reset()
+        if self._unhinted_tap is not None:
+            self._unhinted_tap.reset()
         self._primary.reset()
 
 
@@ -189,6 +197,8 @@ class PacketEngine:
         message_observer: Optional[MessageObserver] = None,
         max_pending_segments: int = MAX_PENDING_SEGMENTS,
         max_pending_bytes: Optional[int] = None,
+        defer_gap_timeouts: bool = False,
+        unhinted_frame_observer: Optional[Callable[[BDOFrame], None]] = None,
     ) -> None:
         self.event_specs = tuple(event_specs)
         self.events_found = 0
@@ -203,7 +213,7 @@ class PacketEngine:
                 self.event_specs,
                 message_observer=message_observer,
             )
-            if frame_observer is None and stream_observer is None:
+            if frame_observer is None and stream_observer is None and unhinted_frame_observer is None:
                 return primary
             tap = (
                 FrameCollectorScanner(
@@ -213,7 +223,12 @@ class PacketEngine:
                 if frame_observer is not None
                 else None
             )
-            return _TeeScanner(primary, tap, stream_observer)
+            # Optional telemetry must keep its standalone synchronization
+            # authority. Item opcode hints are only for the existing item tap;
+            # accidental headers in a midstream prefix must not steer XP/Agris.
+            unhinted_tap = (FrameCollectorScanner(unhinted_frame_observer)
+                            if unhinted_frame_observer is not None else None)
+            return _TeeScanner(primary, tap, stream_observer, unhinted_tap)
 
         self._flow_manager = FlowManager(
             server_ports=server_ports,
@@ -226,6 +241,7 @@ class PacketEngine:
             idle_timeout=_ITEM_FLOW_IDLE_SECONDS,
             max_pending_segments=max_pending_segments,
             max_pending_bytes=max_pending_bytes,
+            defer_gap_timeouts=defer_gap_timeouts,
         )
         self._seen_event_keys: set[
             tuple[FlowKey, int, int, int, Optional[int], bytes]

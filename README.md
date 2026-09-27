@@ -39,6 +39,7 @@ replay a saved PCAP or PCAPNG file.
 | Capability | What it provides | Guide | Status |
 | --- | --- | --- | --- |
 | Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) | Stable |
+| Grind tracking | One capture for confirmed mob drops, with optional profile-based Agris and solo XP | [GrindSession](https://ychwu.github.io/bdo-toolkit/#grind-session) | Experimental |
 | Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
 | Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
 
@@ -93,6 +94,32 @@ installed with the Python wheel.
 
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
 for every script, its prerequisites, and the guide that explains it.
+
+## Experimental grind tracking
+
+Use `bdo_toolkit.grind.GrindSession` for one capture and TCP reassembly pipeline
+serving confirmed mob-drop receipts plus optional Agris and solo XP:
+
+```python
+from bdo_toolkit import load_opcode_profile
+from bdo_toolkit.grind import GrindSession
+
+profile = load_opcode_profile("opcodes.local")
+with GrindSession(profile=profile, track_xp=True) as session:
+    for event in session.events():
+        print(event.to_dict())
+```
+
+Both optional readers default off. Enabled readers require saved layouts;
+`track_agris=True` additionally requires `expected_maximum_points` for your
+character. Recording never runs discovery, fetches profiles, or writes them.
+Handle `GrindFeatureError` and inspect `session.status`: a recognized optional
+reader failure disables that feature while others continue; shared capture loss
+raises and invalidates the entire session. Events are not correlated to kills.
+Stop before changing characters; XP remains solo-only. Existing standalone APIs
+remain supported; do not run them alongside the grind session for the same work.
+See the [API reference](https://ychwu.github.io/bdo-toolkit/#grind-session)
+and [runnable example](examples/live_grind.py) (`--help` lists feature switches).
 
 ## Experimental solo XP tracking
 

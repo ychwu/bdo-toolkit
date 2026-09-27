@@ -849,6 +849,76 @@ def test_wall_clock_closes_fin_only_gap_when_missing_bytes_never_arrive():
     assert len(closed) == 1
 
 
+@pytest.mark.parametrize("start", [100, 0xFFFFFFF8])
+@pytest.mark.parametrize("syn", [False, True])
+def test_finish_reports_fin_tail_without_waiting_for_timer(start, syn):
+    scanner = _RecordingScanner()
+    resets, closed = [], []
+    manager = FlowManager(server_ports=(8889,), scanner_factory=lambda: scanner,
+        defer_gap_timeouts=True, on_flow_close=closed.append,
+        on_flow_reset=lambda flow, generation, sequence: resets.append(sequence))
+    if syn:
+        _segment(manager, sequence=start - 1, timestamp=1., syn=True)
+    _segment(manager, sequence=start, payload=b"0123456789", timestamp=1.01)
+    _segment(manager, sequence=(start + 20) & 0xFFFFFFFF, timestamp=1.02, fin=True)
+    assert manager.tcp_gap_resets == 0 and not closed
+    manager.finish()
+    assert resets == [start + 20]
+    assert scanner.resets == manager.tcp_gap_resets == 1
+    assert len(closed) == 1
+    manager.finish()
+    assert manager.tcp_gap_resets == 1 and len(closed) == 1
+
+
+@pytest.mark.parametrize("ending", ["eof", "contiguous-fin", "late-payload"])
+def test_finish_does_not_invent_fin_loss(ending):
+    scanner = _RecordingScanner()
+    manager = FlowManager(server_ports=(8889,), scanner_factory=lambda: scanner, defer_gap_timeouts=True)
+    _segment(manager, sequence=99, timestamp=1., syn=True)
+    _segment(manager, sequence=100, payload=b"0123456789", timestamp=1.01)
+    if ending == "contiguous-fin":
+        _segment(manager, sequence=110, timestamp=1.02, fin=True)
+    elif ending == "late-payload":
+        _segment(manager, sequence=120, timestamp=1.02, fin=True)
+        _segment(manager, sequence=110, payload=b"abcdefghij", timestamp=1.03)
+    manager.finish()
+    assert scanner.resets == manager.tcp_gap_resets == 0
+    assert b"".join(scanner.feeds) == (b"0123456789abcdefghij" if ending == "late-payload" else b"0123456789")
+
+
+def test_finish_reports_pending_gap_and_remaining_fin_tail():
+    scanner = _RecordingScanner()
+    resets = []
+    manager = FlowManager(server_ports=(8889,), scanner_factory=lambda: scanner,
+        defer_gap_timeouts=True,
+        on_flow_reset=lambda flow, generation, sequence: resets.append(sequence))
+    _segment(manager, sequence=99, timestamp=1., syn=True)
+    _segment(manager, sequence=100, payload=b"0123456789", timestamp=1.01)
+    _segment(manager, sequence=120, payload=b"abcde", timestamp=1.02)
+    _segment(manager, sequence=130, timestamp=1.03, fin=True)
+    manager.finish()
+    assert scanner.feeds == [b"0123456789", b"abcde"]
+    assert resets == [120, 130]
+    assert manager.tcp_gap_resets == 2
+
+
+def test_finish_fin_tail_failure_precedes_close_notification():
+    scanner = _RecordingScanner()
+    closed = []
+    failure = RuntimeError("known missing tail")
+    def fail_gap(*args):
+        raise failure
+    manager = FlowManager(server_ports=(8889,), scanner_factory=lambda: scanner,
+        defer_gap_timeouts=True, on_flow_close=closed.append, on_flow_reset=fail_gap)
+    _segment(manager, sequence=99, timestamp=1., syn=True)
+    _segment(manager, sequence=120, timestamp=1.01, fin=True)
+    with pytest.raises(RuntimeError) as caught:
+        manager.finish()
+    assert caught.value is failure
+    assert manager.tcp_gap_resets == 1
+    assert not closed
+
+
 def test_idle_and_capacity_removal_notify_flow_owner_without_false_loss_count():
     closed = []
     evictions = []

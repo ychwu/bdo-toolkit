@@ -8,12 +8,19 @@ from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread, current_thread
 import time
 from types import TracebackType
-from typing import Any, Callable, Self
+from typing import Any, Callable, Protocol, Self
 
 from ._capture_options import LiveCaptureOptions
 from ._capture_runtime import CaptureEndpoint, CaptureStats, LivePacketCapture, _attach_cleanup_owner
-from ._reassembly import FlowManager
+from ._capture_backend import SegmentConsumer
 from .capture import CaptureIntegrityError
+
+
+class ObservationManager(SegmentConsumer, Protocol):
+    @property
+    def tcp_gap_resets(self) -> int: ...
+
+    def service_gaps(self, now: float) -> int: ...
 
 
 class ObservationSession[T, S]:
@@ -27,7 +34,7 @@ class ObservationSession[T, S]:
     _START_TIMEOUT = 15.0
 
     def __init__(self, *, label: str, snapshot: Callable[[], S],
-                 manager: FlowManager, refresh: Callable[[float | None], None],
+                 manager: ObservationManager, refresh: Callable[[float | None], None],
                  live_options: LiveCaptureOptions | None,
                  capture_seconds: float | None, save_pcap: str | Path | None,
                  capture_factory: Callable[..., LivePacketCapture],
