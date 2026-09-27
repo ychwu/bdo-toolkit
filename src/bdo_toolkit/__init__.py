@@ -41,7 +41,7 @@ from .origin_learning import (
     promote_origin_candidates,
 )
 from .writers import ConsoleEventWriter, JsonlEventWriter
-from . import agris, solare
+from . import agris, solare, xp
 from ._version import __version__
 
 __all__ = [
@@ -90,4 +90,5 @@ __all__ = [
     "replay_pcap",
     "storage_location",
     "solare",
+    "xp",
 ]

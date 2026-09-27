@@ -20,6 +20,53 @@ class ProfileError(ValueError):
 
 
 @dataclass(frozen=True)
+class XPProfileLayout:
+    """Solo-only numeric XP geometry, never a player identifier or balance.
+
+    Level is a logical uint8 (supported levels 1..75); both XP counters are
+    uint64 little endian. This does not assert the server's level storage width.
+    """
+
+    opcode: int
+    message_length: int
+    level_offset: int
+    current_offset: int
+    required_offset: int
+    flag: int = 0
+    encoding: str = "level-u8-xp-u64le-solo-v1"
+
+    def __post_init__(self) -> None:
+        for name, low, high in (("opcode", 0, 65535), ("message_length", 22, 4096),
+                                ("level_offset", 5, 4095), ("current_offset", 5, 4088),
+                                ("required_offset", 5, 4088), ("flag", 0, 0)):
+            value = getattr(self, name)
+            if type(value) is not int or not low <= value <= high:
+                raise ProfileError(f"xp.{name} must be an integer from {low} to {high}")
+        if self.encoding != "level-u8-xp-u64le-solo-v1":
+            raise ProfileError("Unsupported xp encoding/scope")
+        occupied: set[int] = set()
+        for offset, width in ((self.level_offset, 1), (self.current_offset, 8), (self.required_offset, 8)):
+            positions = set(range(offset, offset + width))
+            if offset + width > self.message_length or occupied & positions:
+                raise ProfileError("xp fields overlap or extend outside the message")
+            occupied.update(positions)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"opcode": f"0x{self.opcode:04X}", "message_length": self.message_length,
+                "level_offset": self.level_offset, "current_offset": self.current_offset,
+                "required_offset": self.required_offset, "flag": self.flag, "encoding": self.encoding}
+
+
+def _xp_layout(value: object) -> XPProfileLayout | None:
+    if value is None:
+        return None
+    keys = {"opcode", "message_length", "level_offset", "current_offset", "required_offset", "flag", "encoding"}
+    if not isinstance(value, dict) or value.keys() != keys:
+        raise ProfileError("xp must contain exactly the solo numeric layout fields")
+    return XPProfileLayout(**{**value, "opcode": _profile_opcode(value["opcode"], "xp.opcode")})
+
+
+@dataclass(frozen=True)
 class AgrisProfileLayout:
     """Portable Agris geometry; no player balance or connection identity."""
 
@@ -117,8 +164,13 @@ class OpcodeProfile:
     specs: Mapping[str, tuple[Mapping[str, Any], ...]]
     origin_companion_families: tuple[OriginCompanionFamily, ...] = ()
     agris: AgrisProfileLayout | None = field(default=None, kw_only=True)
+    xp: XPProfileLayout | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.xp is not None:
+            if not isinstance(self.xp, XPProfileLayout):
+                raise ProfileError("xp must be an XPProfileLayout or None")
+            self.xp.__post_init__()
         if self.agris is not None:
             if not isinstance(self.agris, AgrisProfileLayout):
                 raise ProfileError("agris must be an AgrisProfileLayout or None")
@@ -151,6 +203,7 @@ class OpcodeProfile:
                 family.to_dict() for family in self.origin_companion_families
             ],
             **({"agris": self.agris.to_dict()} if self.agris is not None else {}),
+            **({"xp": self.xp.to_dict()} if self.xp is not None else {}),
         }
 
 
@@ -247,6 +300,7 @@ def _opcode_profile_from_data(data: Any, profile_path: Path) -> OpcodeProfile:
         specs=immutable_specs,
         origin_companion_families=families,
         agris=_agris_layout(data.get("agris")),
+        xp=_xp_layout(data.get("xp")),
     )
 
 

@@ -15,6 +15,7 @@ from .profiles import (
     OriginCompanionFamily,
     ProfileError,
     AgrisProfileLayout,
+    XPProfileLayout,
 )
 
 
@@ -40,6 +41,10 @@ def validate_runtime_profile(profile: OpcodeProfile) -> RuntimeProfileValidation
         )
     if profile.active is not True:
         raise ProfileError(f"Opcode profile is inactive: {profile.path}")
+    if profile.xp is not None:
+        if not isinstance(profile.xp, XPProfileLayout):
+            raise ProfileError("xp must be an XPProfileLayout")
+        profile.xp.__post_init__()
     if profile.agris is not None:
         if not isinstance(profile.agris, AgrisProfileLayout):
             raise ProfileError("agris must be an AgrisProfileLayout")

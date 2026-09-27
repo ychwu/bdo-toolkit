@@ -94,6 +94,38 @@ installed with the Python wheel.
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
 for every script, its prerequisites, and the guide that explains it.
 
+## Experimental solo XP tracking
+
+`load_opcode_profile(path).xp` optionally exposes an immutable `XPProfileLayout`
+from `bdo_toolkit.profiles`. Fetching a profile retains this section. Its fields
+are `opcode`, `message_length`, `level_offset`, `current_offset`,
+`required_offset`, `flag=0`, and `encoding="level-u8-xp-u64le-solo-v1"`.
+Offsets are measured from the start of the complete BDO message, including its
+five-byte header. The supported read is a one-byte level (1–75) and two unsigned
+eight-byte little-endian XP counters. The required counter is the whole level's
+requirement, not the remaining XP. No balances or player identifiers belong in
+this section.
+
+Use `bdo_toolkit.xp.LiveXPSession(profile=profile)` to observe level, balances,
+percentage, signed XP changes and net XP since the first update. Pass the
+`.profile` returned by `fetch_opcode_profile(...)`, or load an installed profile
+with `load_opcode_profile(...)`. Users do not need manual calibration when a
+maintainer supplies a current XP layout. See the [XP API reference](https://ychwu.github.io/bdo-toolkit/#xp-live-session)
+and the runnable [live example](examples/live_xp.py).
+
+The first reading establishes a baseline, not the gain that caused it. Stop
+before switching characters. Party/group tracking is unsupported; the tracker
+does not detect whether you are solo. Known acquisition loss or unexplained
+state changes invalidate current readings and session totals. Offline
+`replay_xp(...)` uses the same decoder and requires an explicit matching profile.
+
+Maintainers can use `update_xp_profile(layout, path)` to merge reviewed XP
+geometry into an existing active opcode profile with backup and atomic replace.
+It preserves item/Agris sections and does not perform calibration or publish.
+Fetching does not establish compatibility with the running patch. XP is a
+separate API, not a new BDOEvent in the item capture stream or an installed CLI
+command; existing profiles may omit XP, but the XP API requires it.
+
 ## Support
 
 For questions, contact me on Discord: `._.__.__._._.__._____.__._.___.`
