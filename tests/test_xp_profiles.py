@@ -58,7 +58,7 @@ def test_item_update_preserves_xp(tmp_path):
 
 def test_remote_fetch_retains_xp_and_rejects_bad_xp_before_install(tmp_path, monkeypatch):
     from bdo_toolkit import fetch_opcode_profile, RemoteProfileError
-    from tests.test_remote_profiles import _envelope, _serve
+    from test_remote_profiles import _envelope, _serve
     data = json.loads(profile_file(tmp_path).read_text())
     dest = tmp_path / "fetched.json"
     _serve(monkeypatch, _envelope(data))

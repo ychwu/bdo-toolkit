@@ -14,8 +14,8 @@ from bdo_toolkit.profiles import ProfileError, XPProfileLayout
 from bdo_toolkit.xp import LiveXPSession, XPTrackingError, replay_xp, update_xp_profile
 from bdo_toolkit.xp._tracker import XPTracker, XPFlowManager
 from bdo_toolkit.xp import session as module
-from tests.test_remote_profiles import _serve, _envelope
-from tests.test_agris_session import FakeCapture, wait_stopped
+from test_remote_profiles import _serve, _envelope
+from test_agris_session import FakeCapture, wait_stopped
 
 
 LAYOUT = XPProfileLayout(0xBEEF, 60, 18, 5, 47)
@@ -214,7 +214,7 @@ def test_replay_error_hides_partial_state(tmp_path):
 
 
 def test_private_high_level_and_rollover_with_public_replay(tmp_path):
-    from tests.fixture_paths import capture_catalog
+    from fixture_paths import capture_catalog
     catalog = capture_catalog()
     if not catalog.installed:
         pytest.skip("Private capture catalog not installed")

@@ -15,10 +15,10 @@ from bdo_toolkit.grind import _pipeline as pipeline_module
 from bdo_toolkit.grind._pipeline import GrindPipeline
 from bdo_toolkit.profiles import ProfileError
 from bdo_toolkit.xp import XPReading, replay_xp
-from tests.test_agris_profiles import LAYOUT as AGRIS
-from tests.test_agris_session import FakeCapture, frames as agris_frames, wait_stopped
-from tests.test_xp import LAYOUT as XP, FLOW, frame as xp_frame
-from tests.test_inventory_snapshots import _inventory_snapshot
+from test_agris_profiles import LAYOUT as AGRIS
+from test_agris_session import FakeCapture, frames as agris_frames, wait_stopped
+from test_xp import LAYOUT as XP, FLOW, frame as xp_frame
+from test_inventory_snapshots import _inventory_snapshot
 
 
 @pytest.fixture

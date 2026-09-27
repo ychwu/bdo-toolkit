@@ -16,9 +16,9 @@ from bdo_toolkit.agris import calibration as calibration_module
 from bdo_toolkit.agris._discovery import AgrisTracker
 from bdo_toolkit.agris.models import AgrisDetectionError
 from bdo_toolkit.calibration import MessageSpec, update_profile
-from tests.test_agris_session import fake, wait_stopped
-from tests.test_agris_discovery import frame, OTHER_FLOW
-from tests.test_agris_replay import write_capture
+from test_agris_session import fake, wait_stopped
+from test_agris_discovery import frame, OTHER_FLOW
+from test_agris_replay import write_capture
 
 
 LAYOUT = AgrisProfileLayout(0x1746, 37, 33, 12, observed_date="2026-09-17")
@@ -289,7 +289,7 @@ def test_cli_calibration_requires_destination_before_capture(fake):
 
 def test_remote_fetch_preserves_agris_and_rejects_invalid_geometry(tmp_path, monkeypatch):
     from bdo_toolkit import fetch_opcode_profile, RemoteProfileError
-    from tests.test_remote_profiles import _serve, _envelope
+    from test_remote_profiles import _serve, _envelope
     source = {"version": 1, "profile_active": True, "specs": {}, "agris": LAYOUT.to_dict()}
     path = tmp_path / "download.json"
     _serve(monkeypatch, _envelope(source))
@@ -325,7 +325,7 @@ def test_cli_calibration_interrupt_is_reported(tmp_path, monkeypatch, capsys):
 
 def test_final_capture_loss_blocks_calibration_save(fake, tmp_path, monkeypatch):
     from bdo_toolkit import CaptureIntegrityError
-    from tests.test_agris_session import FakeCapture
+    from test_agris_session import FakeCapture
     original_stop = FakeCapture.stop
     def dirty_stop(self):
         original_stop(self)
