@@ -39,7 +39,6 @@ replay a saved PCAP or PCAPNG file.
 | Capability | What it provides | Guide | Status |
 | --- | --- | --- | --- |
 | Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) | Stable |
-| Grind tracking | One capture for confirmed mob drops, with optional profile-based Agris and solo XP | [GrindSession](https://ychwu.github.io/bdo-toolkit/#grind-session) | Experimental |
 | Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
 | Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
 
@@ -94,64 +93,6 @@ installed with the Python wheel.
 
 See the [Examples index](https://ychwu.github.io/bdo-toolkit/#item-examples)
 for every script, its prerequisites, and the guide that explains it.
-
-## Experimental grind tracking
-
-Use `bdo_toolkit.grind.GrindSession` for one capture and TCP reassembly pipeline
-serving confirmed mob-drop receipts plus optional Agris and solo XP:
-
-```python
-from bdo_toolkit import load_opcode_profile
-from bdo_toolkit.grind import GrindSession
-
-profile = load_opcode_profile("opcodes.local")
-with GrindSession(profile=profile, track_xp=True) as session:
-    for event in session.events():
-        print(event.to_dict())
-```
-
-Both optional readers default off. Enabled readers require saved layouts;
-`track_agris=True` additionally requires `expected_maximum_points` for your
-character. Recording never runs discovery, fetches profiles, or writes them.
-Handle `GrindFeatureError` and inspect `session.status`: a recognized optional
-reader failure disables that feature while others continue; shared capture loss
-raises and invalidates the entire session. Events are not correlated to kills.
-Stop before changing characters; XP remains solo-only. Existing standalone APIs
-remain supported; do not run them alongside the grind session for the same work.
-See the [API reference](https://ychwu.github.io/bdo-toolkit/#grind-session)
-and [runnable example](examples/live_grind.py) (`--help` lists feature switches).
-
-## Experimental solo XP tracking
-
-`load_opcode_profile(path).xp` optionally exposes an immutable `XPProfileLayout`
-from `bdo_toolkit.profiles`. Fetching a profile retains this section. Its fields
-are `opcode`, `message_length`, `level_offset`, `current_offset`,
-`required_offset`, `flag=0`, and `encoding="level-u8-xp-u64le-solo-v1"`.
-Offsets are measured from the start of the complete BDO message, including its
-five-byte header. The supported read is a one-byte level (1–75) and two unsigned
-eight-byte little-endian XP counters. The required counter is the whole level's
-requirement, not the remaining XP. No balances or player identifiers belong in
-this section.
-
-Use `bdo_toolkit.xp.LiveXPSession(profile=profile)` to observe level, balances,
-percentage, signed XP changes and net XP since the first update. Pass the
-`.profile` returned by `fetch_opcode_profile(...)`, or load an installed profile
-with `load_opcode_profile(...)`. Users do not need manual calibration when a
-maintainer supplies a current XP layout. See the [XP API reference](https://ychwu.github.io/bdo-toolkit/#xp-live-session)
-and the runnable [live example](examples/live_xp.py).
-
-The first reading establishes a baseline, not the gain that caused it. Stop
-before switching characters. Party/group tracking is unsupported; the tracker
-does not detect whether you are solo. Known acquisition loss or unexplained
-state changes invalidate current readings and session totals. Offline
-`replay_xp(...)` uses the same decoder and requires an explicit matching profile.
-
-Maintainers can use `update_xp_profile(layout, path)` to merge reviewed XP
-geometry into an existing active opcode profile with backup and atomic replace.
-It preserves item/Agris sections and does not perform calibration or publish.
-Fetching does not establish compatibility with the running patch. XP is a
-separate API, not a new BDOEvent in the item capture stream or an installed CLI
-command; existing profiles may omit XP, but the XP API requires it.
 
 ## Support
 
