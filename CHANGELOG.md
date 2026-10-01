@@ -6,6 +6,47 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.7 - 2026-10-01
+
+This release adds shared grind capture, profile-based solo XP tracking, and
+explicit Agris calibration while improving capture-loss detection at shutdown.
+
+### Added
+
+- Add a shared-capture grind session. `bdo_toolkit.grind.GrindSession` streams
+  confirmed mob-drop receipts with optional profile-based Agris and solo XP
+  through one passive capture and TCP reassembly pipeline. Enabled readers
+  require saved layouts, and Agris requires the caller's known maximum.
+  Recognized feature decoding failures disable only that reader and emit an
+  explicit error; shared capture or queue loss invalidates the whole session.
+  The combined session is live and synchronous, with bounded delivery and
+  optional non-overwriting recording. It does not attribute observations to
+  individual kills; XP remains solo-only and character changes require restart.
+- Add profile-based solo XP tracking. Optional schema-1 XP layouts support
+  `LiveXPSession` and streaming `replay_xp`, with immutable level, current and
+  required XP, percentage, signed changes, and session net XP readings. The
+  first update establishes a baseline, duplicates add no gains, and one
+  observed level rollover is accounted for. Unexplained state changes,
+  connection changes, and known acquisition loss invalidate current totals.
+  Explicit `update_xp_profile` preserves item/Agris and extension fields with
+  backup, atomic replacement, and optional digest checks. Group play and
+  automatic player identification are unsupported; no XP async facade is added.
+- Add explicit Agris profile decoding and calibration. Live, async, and replay
+  sessions can use a validated saved layout for immediate matching observations
+  without discovery delay, retaining the required known maximum. Incompatible
+  evidence fails closed without silently switching to discovery. Separate
+  calibration APIs and CLI explicitly save clean finalized evidence into an
+  existing profile with backup, atomic replacement, and optional digest checks,
+  preserving item fields and existing cold-discovery support.
+
+### Fixed
+
+- Detect known missing TCP tails when capture stops. Finalization now reports
+  a gap when an observed FIN lies beyond received stream bytes, including when
+  capture stops before the live gap timeout and across sequence wrap. Loss is
+  reported before connection-close notification; clean EOF and tails repaired
+  before finalization retain their existing behavior.
+
 ## 1.0.6 - 2026-09-19
 
 This patch adds experimental, session-local Agris balance observation and
