@@ -70,7 +70,6 @@ _MAX_AGGREGATE_VECTORS = 256
 _MAX_LEARNED_RECORD_END = 32 * 1024
 _MIN_HISTORY_DISCRIMINATORS = 5
 _PREFILTER_ROWS = 32
-_MAX_UNASSIGNED_FIELD_BYTES = 4
 _MAX_ZERO_OUTCOME_PADDING = 3
 
 
@@ -481,9 +480,10 @@ def _anchored_zero_outcome_offsets(
 
     Require two complementary active outcomes and independently validated
     text-array boundaries. Across the tail from class codes to record end,
-    one bounded 12..15-byte zero region may remain; other unassigned fields
-    are at most four bytes. Enumerate every position in that region: all must
-    decode the same zero vector. No arbitrary zero region is promoted.
+    one bounded 12..15-byte zero region may remain. Shorter unassigned gaps
+    cannot contain a complete three-counter array. Every complete placement
+    in the remaining region must decode the same zero vector. No arbitrary
+    zero region is promoted.
     Distinct container proofs and conflicting counter solutions still reject.
     """
     complementary = tuple(
@@ -543,9 +543,9 @@ def _anchored_zero_outcome_offsets(
         if cursor < records.record_end:
             gaps.append((cursor, records.record_end - cursor))
         wide = [(start, size) for start, size in gaps if size >= 12]
-        if (len(wide) != 1 or wide[0][1] > 12 + _MAX_ZERO_OUTCOME_PADDING
-                or any(_MAX_UNASSIGNED_FIELD_BYTES < size < 12
-                       for _, size in gaps)):
+        # Unknown bytes smaller than a full array cannot compete with its
+        # container. Larger gaps still require the unique bounded proof below.
+        if len(wide) != 1 or wide[0][1] > 12 + _MAX_ZERO_OUTCOME_PADDING:
             continue
         start, size = wide[0]
         if all(row[start:start + size] == bytes(size) for row in rows):

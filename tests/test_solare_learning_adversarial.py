@@ -662,7 +662,33 @@ def test_zero_outcomes_allow_one_separate_unassigned_word_and_binary_gear_prefix
     assert performance.zero_outcome_candidates == (7871, 7872, 7873)
 
 
-@pytest.mark.parametrize("damage", ("large_tail", "nonzero_before", "nonzero_after", "other_wide_gap", "extra_word"))
+@pytest.mark.parametrize("gap_size", range(1, 12))
+@pytest.mark.parametrize("zero_filled", (False, True))
+def test_zero_outcomes_ignore_gaps_too_short_for_another_counter_array(gap_size, zero_filled):
+    records, occupancies = _zero_draw_tail()
+    # Place unknown bytes before gear, shifting both gear and the draw container.
+    # Exercise zeros too: a short zero run is not a competing three-counter array.
+    gap = bytes(gap_size) if zero_filled else bytes(range(17, 17 + gap_size))
+    records.family.frame_length += gap_size + 2
+    rows = tuple(row[:1864] + gap + row[1864:] + bytes(2) for row in records.rows)
+    performance = learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies)
+    assert performance is not None
+    assert (performance.matches_offset, performance.wins_offset,
+            performance.losses_offset) == (15, 27, 39)
+    assert performance.zero_outcome_candidates == tuple(range(7867 + gap_size, 7870 + gap_size))
+
+
+@pytest.mark.parametrize("gap_size", (12, 13, 15, 16, 24))
+@pytest.mark.parametrize("zero_filled", (False, True))
+def test_zero_outcomes_reject_another_gap_large_enough_for_a_counter_array(gap_size, zero_filled):
+    records, occupancies = _zero_draw_tail()
+    gap = bytes(gap_size) if zero_filled else bytes(range(17, 17 + gap_size))
+    records.family.frame_length += gap_size
+    rows = tuple(row[:1864] + gap + row[1864:] for row in records.rows)
+    assert learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies) is None
+
+
+@pytest.mark.parametrize("damage", ("large_tail", "nonzero_before", "nonzero_after", "other_wide_gap"))
 def test_zero_outcome_equivalence_rejects_unproved_containers(damage):
     records, occupancies = _zero_draw_tail()
     rows = [row + bytes(2) for row in records.rows]
@@ -675,7 +701,7 @@ def test_zero_outcome_equivalence_rejects_unproved_containers(damage):
         row[7867 if damage == "nonzero_before" else -1] = 1
         rows[0] = bytes(row)
     else:
-        size = 12 if damage == "other_wide_gap" else 5
+        size = 12
         rows = [row[:1864] + bytes(size) + row[1864:] for row in rows]
         extra += size
     records.family.frame_length += extra

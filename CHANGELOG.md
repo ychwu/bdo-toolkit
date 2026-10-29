@@ -6,6 +6,18 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.0.16 - 2026-10-29
+
+This patch restores Solare details around short unassigned fields.
+
+### Fixed
+
+- Preserve Solare details around short unassigned fields. Discovery now tolerates
+  unassigned byte ranges shorter than a complete three-counter array when
+  proving an all-zero outcome field. This restores affected performance and
+  equipment without requiring unrelated fields to be interpreted. Competing
+  containers, contradictory counters, and malformed supporting fields remain rejected.
+
 ## 1.0.15 - 2026-10-25
 
 This patch restores Solare player details when recent match histories contain draws.

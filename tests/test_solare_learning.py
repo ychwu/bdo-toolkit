@@ -71,6 +71,44 @@ class _ReplayPair:
     learned: SolareCaptureResult
 
 
+@pytest.mark.parametrize("capture_id,occupied_counts,first_outcomes", (
+    ("solare--leaderboard-kr-eight-byte-gap--b7a6dab339", (798, 112), (179, 110, 0, 69)),
+    ("solare--leaderboard-kr-eight-byte-gap--b0438d4f48", (805, 116), (190, 117, 0, 73)),
+    ("solare--leaderboard-sea-eight-byte-gap--09e5978bd4", (895, 126), (102, 66, 0, 36)),
+))
+def test_short_unknown_fields_preserve_complete_real_capture_details(
+    capture_id, occupied_counts, first_outcomes,
+):
+    path = optional_fixture_path(capture_id)
+    if not path.is_file():
+        pytest.skip("private short-gap Solare capture is not installed")
+    result = replay_solare(path)
+    assert result.complete and result.evidence.health.capture_is_clean
+    assert result.evidence.exact_cross_check == 100
+    snapshot = result.snapshot
+    assert snapshot is not None
+    assert len(snapshot.players) == 640 and len(snapshot.overall_top_100) == 100
+    required = {"rankings", "elo", "performance", "equipment"}
+    assert required <= snapshot.class_table_capabilities
+    assert required <= snapshot.overall_capabilities
+    assert tuple(sum(len(p.classes_played) for p in rows) for rows in (
+        snapshot.players, snapshot.overall_top_100,
+    )) == occupied_counts
+    by_rank = {player.global_rank: player for player in snapshot.players}
+    primary = by_rank[1].classes_played[0]
+    assert (primary.matches, primary.wins, primary.draws, primary.losses) == first_outcomes
+    for player in (*snapshot.players, *snapshot.overall_top_100):
+        for slot in player.classes_played:
+            assert slot.record_is_balanced and slot.draws == 0
+            assert slot.equipment is not None and len(slot.equipment) == 14
+    for overall in snapshot.overall_top_100:
+        rich = by_rank[overall.global_rank]
+        assert (overall.name, overall.elo) == (rich.name, rich.elo)
+        assert overall.classes_played == rich.classes_played
+    # Unknown groups remain optional; recovery never synthesizes aggregates.
+    assert "aggregate_performance" not in snapshot.overall_capabilities
+
+
 def test_eu_recent_draw_capture_recovers_all_details():
     if not _EU_RECENT_DRAW_CAPTURE.is_file():
         pytest.skip('private EU recent-draw capture is not installed')
@@ -456,7 +494,9 @@ def test_mixed_registered_and_unknown_tables_keep_independent_details(
     "capture_id, recoverable",
     (
         ("solare--leaderboard-complete--1065cbd89c", {"rich", "overall"}),
-        ("solare--leaderboard-complete-retry--8bfa6979ab", {"overall"}),
+        # Its separate five-byte gap cannot compete with the 12-byte draw
+        # container. Removing draws must still recover the original layout.
+        ("solare--leaderboard-complete-retry--8bfa6979ab", {"rich", "overall"}),
         ("solare--leaderboard-complete-post-patch--92d835cbe9", {"rich"}),
         ("solare--leaderboard-complete-unregistered--dfeb623bda", {"rich", "overall"}),
         ("solare--leaderboard-complete-live-clock-regression--45c54a0567", {"rich"}),
