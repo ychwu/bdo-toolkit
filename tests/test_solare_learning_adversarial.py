@@ -1043,3 +1043,32 @@ def test_counter_solver_applies_evidence_before_rejecting_multiple_alignments():
     assert learning._balanced_counter_solution(
         records.rows, performance.occupancies, validate=lambda *args: True,
     ) is None
+
+@pytest.mark.parametrize("history", (b"1,0,1,1", b"1,1,1,1,1,1,1,1,1,1"))
+def test_short_fallback_preserves_unrelated_recent_history_with_independent_counters(history):
+    source, perf = _performance_rows()
+    source = _table(source.rows * 2)
+    occupied = perf.occupancies * 2
+    companion = replace(source, rows=source.rows[:-1], names=source.names[:-1], ranks=source.ranks[:-1])
+    known = replace(perf, occupancies=occupied[:-1])
+    row = bytearray(source.rows[-1])
+    for offset, value in ((_MATCHES_OFFSET, 2), (_WINS_OFFSET, 0), (_DRAWS_OFFSET, 0), (_LOSSES_OFFSET, 2)):
+        row[offset:offset+4] = value.to_bytes(4, "little")
+    row[_HISTORY_OFFSET:_HISTORY_OFFSET+101] = history + bytes(101-len(history))
+    target = replace(source, rows=source.rows[:-1] + (bytes(row),))
+    def infer(other):
+        return learning._validate_performance_candidate(
+            target, _CLASS_OFFSET, occupied, _SPEC_OFFSET, _MATCHES_OFFSET,
+            (_WINS_OFFSET, _DRAWS_OFFSET, _LOSSES_OFFSET), companion=other,
+        )
+    # The full-board route keeps the old strict rule.
+    assert infer((companion, known)) is None
+    target.family.short_record_locations = ((None, 0),)
+    assert infer(None) is None
+    assert infer((companion, known)) is not None
+    damaged = replace(companion, ranks=(999,) + companion.ranks[1:])
+    assert infer((damaged, known)) is None
+    malformed = bytearray(target.rows[-1])
+    malformed[_HISTORY_OFFSET:_HISTORY_OFFSET+101] = b"2,2" + bytes(98)
+    target = replace(target, rows=target.rows[:-1] + (bytes(malformed),))
+    assert infer((companion, known)) is None

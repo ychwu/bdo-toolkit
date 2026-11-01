@@ -79,6 +79,9 @@ class LiveSolareDiscoveryTracker:
     def __init__(self, emit: Callable[[SolareUpdate], None]) -> None:
         self._emit = emit
         self._frames: Deque[BDOFrame] = deque()
+        self._boundary_frames: Deque[BDOFrame] = deque()
+        self._boundary_bytes = 0
+        self._pending_boundaries: Deque[BDOFrame] = deque(maxlen=256)
         self._retained_bytes = 0
         self._peak_retained_frame_count = 0
         self._peak_retained_bytes = 0
@@ -116,8 +119,18 @@ class LiveSolareDiscoveryTracker:
             <= frame.length
             <= DISCOVERY_MAX_FRAME_LENGTH
         ):
+            # Bounded auxiliary evidence for the fallback only. Keep ordinary
+            # discovery milestones, counts and retention accounting unchanged.
+            if frame.flag == 0 and 5 <= frame.length < DISCOVERY_MIN_FRAME_LENGTH:
+                self._pending_boundaries.append(frame)
             return
 
+        for boundary in self._pending_boundaries:
+            self._boundary_frames.append(boundary)
+            self._boundary_bytes += boundary.length
+        self._pending_boundaries.clear()
+        while len(self._boundary_frames) > 512 or self._boundary_bytes > 2 * 1024 * 1024:
+            self._boundary_bytes -= self._boundary_frames.popleft().length
         self._last_candidate_activity_at = time.monotonic()
         rolled_over = self._make_room_for(frame)
         if self.complete:
@@ -237,6 +250,7 @@ class LiveSolareDiscoveryTracker:
             self._frames,
             allow_trailing_overall=end_of_burst,
             _analysis_cache=self._analysis_cache,
+            _boundary_frames=tuple(self._boundary_frames),
         )
         candidate = replace(
             candidate,
@@ -246,6 +260,9 @@ class LiveSolareDiscoveryTracker:
         self._tail_finalized = end_of_burst
         if candidate.confirmed:
             self._analysis_cache.clear()
+            self._boundary_frames.clear()
+            self._pending_boundaries.clear()
+            self._boundary_bytes = 0
             self.result = candidate
             assert candidate.rich is not None
             assert candidate.overall is not None

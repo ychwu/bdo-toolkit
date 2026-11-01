@@ -359,7 +359,7 @@ def _history_matches_outcomes(
 def _rich_layout_for(
     family: DiscoveredSolareFamily,
 ) -> Optional[_RichDetailLayout]:
-    if family.class_offset is None:
+    if family.class_offset is None or family.short_record_locations:
         return None
     geometry = (
         family.frame_length,

@@ -132,13 +132,19 @@ def _extract_records(
     record_end = family.frame_length - family.record_stride
     if not 0 < record_end <= _MAX_LEARNED_RECORD_END:
         return None
-    locations = _record_locations(
-        frames,
-        expected_frames=expected_frames,
-        frame_length=family.frame_length,
-        record_stride=family.record_stride,
-        required_record_end=record_end,
-    )
+    locations: Optional[tuple[tuple[bytes, int], ...]]
+    if family.short_record_locations:
+        locations = tuple((frame.message, base) for frame, base in family.short_record_locations)
+        if any(base + record_end > len(data) for data, base in locations):
+            return None
+    else:
+        locations = _record_locations(
+            frames,
+            expected_frames=expected_frames,
+            frame_length=family.frame_length,
+            record_stride=family.record_stride,
+            required_record_end=record_end,
+        )
     if locations is None or len(locations) != expected_records:
         return None
     rows = tuple(bytes(data[base : base + record_end]) for data, base in locations)
@@ -640,6 +646,7 @@ def _history_candidates(
     rows: Sequence[bytes],
     occupancies: Sequence[int],
     matches_offset: int,
+    *, independent_counters: bool = False,
 ) -> tuple[int, ...]:
     required = _CLASS_SLOT_COUNT * _HISTORY_SLOT_SIZE
     sample = _sample_ordinals(len(rows), occupancies)
@@ -660,7 +667,9 @@ def _history_candidates(
                 if slot < occupied:
                     if (
                         not raw
-                        or len(codes) != 2 * min(matches, 5)
+                        or (not independent_counters and len(codes) != 2 * min(matches, 5))
+                        or (independent_counters and (len(codes) not in (2, 4, 6, 8, 10)
+                                                     or _history_outcome_counts(codes) is None))
                     ):
                         return False
                 elif raw or codes:
@@ -869,10 +878,12 @@ def _validate_performance_candidate(
     *,
     companion: Optional[tuple[_RecordTable, _PerformanceOffsets]] = None,
 ) -> Optional[_PerformanceOffsets]:
+    independent = bool(getattr(records.family, "short_record_locations", ())) and companion is not None
     histories = _history_candidates(
         records.rows,
         occupancies,
         matches_offset,
+        independent_counters=independent,
     )
     if len(histories) != 1:
         return None
@@ -885,12 +896,17 @@ def _validate_performance_candidate(
         history_offset,
     )
     if oriented is None and companion is not None:
-        # The companion already has independent outcome authority. Local
-        # history must not contradict it, but no short-history witness is needed.
+        # Short-board fallback: a separately oriented companion establishes
+        # labels. Recent UI history may cover a different set of matches;
+        # preserve valid raw windows without treating them as counter totals.
+        # Ordinary full-board inference retains its original history checks.
         supported = tuple(
-            proposed for proposed in _history_outcome_candidates(
-                records.rows, occupancies, matches_offset, outcome_offsets,
-                history_offset, minimum_discriminators=0,
+            proposed for proposed in (
+                tuple((a, b, c) for a, b, c in itertools.permutations(outcome_offsets)) if independent else
+                _history_outcome_candidates(
+                    records.rows, occupancies, matches_offset, outcome_offsets,
+                    history_offset, minimum_discriminators=0,
+                )
             )
             if _companion_outcomes_agree(
                 records, class_offset, occupancies, matches_offset, proposed,
@@ -1731,7 +1747,7 @@ def learn_unknown_solare_details(
     cached or written to disk.
     """
 
-    if rich.record_count not in SOLARE_RICH_RECORD_COUNTS:
+    if rich.record_count not in SOLARE_RICH_RECORD_COUNTS and not rich.short_record_locations:
         return None, None
     rich_records = _extract_records(
         rich_frames,

@@ -2035,3 +2035,93 @@ def test_agent_continuation_does_not_latch_historical_prefix_live() -> None:
     assert tracker.complete
     assert tracker.result.rich is not None
     assert tracker.result.rich.record_count == 640
+
+
+def _short_board_frames(count=637):
+    original = _complete_frames(include_agent=True)
+    messages = []
+    for i, f in enumerate(original[:count // 2]):
+        msg = bytearray(f.message + bytes(7))
+        msg[:2] = len(msg).to_bytes(2, "little")
+        msg[5] = int(i == 0)
+        msg[10:12] = (2).to_bytes(2, "little")
+        messages.append(bytes(msg))
+    # Include a complete control frame within the response.
+    messages.insert(50, b"\x0d\x00\x00\x66\x66" + bytes(8))
+    msg = bytearray(original[count // 2].message[:4217] if count % 2 else bytes(17))
+    msg[:2] = len(msg).to_bytes(2, "little")
+    msg[3:5] = (0x4444).to_bytes(2, "little")
+    msg[5] = 0
+    msg[10:12] = (count % 2).to_bytes(2, "little")
+    messages.append(bytes(msg))
+    messages += [f.message for f in original[-50:]]
+    frames = []
+    sequence = 100000
+    for i, msg in enumerate(messages):
+        frames.append(BDOFrame(index=i, message=msg, context=PacketContext(1000 + i, FLOW),
+                               stream_sequence=sequence))
+        sequence += len(msg)
+    return tuple(frames)
+
+
+@pytest.mark.parametrize("count", (621, 634, 635, 636, 637, 639))
+def test_short_board_fallback_preserves_actual_counts_and_live_completion(count):
+    frames = _short_board_frames(count)
+    tracker = LiveSolareDiscoveryTracker(lambda update: None)
+    for f in frames:
+        tracker.observe(f)
+    tracker.refresh()
+    assert tracker.complete
+    result = build_solare_result(tracker.confirmed_frames, _health(frames), _discovery=tracker.result)
+    assert result.complete and len(result.snapshot.players) == count
+    assert result.evidence.exact_cross_check == 100
+    assert len(result.snapshot.overall_top_100) == 100
+    assert build_solare_result(frames, _health(frames)).snapshot == result.snapshot
+    dirty = replace(_health(frames), tcp_gap_resets=1)
+    assert not build_solare_result(frames, dirty).complete
+
+
+@pytest.mark.parametrize("damage", ("first", "middle", "control", "terminal", "overall", "start", "count", "name", "class", "generation"))
+def test_short_board_fallback_rejects_incomplete_or_contradictory_windows(damage):
+    frames = list(_short_board_frames())
+    remove = {"first": 0, "middle": 100, "control": 50, "terminal": -51, "overall": -1}
+    if damage in remove:
+        del frames[remove[damage]]
+    elif damage == "generation":
+        frames[-1] = replace(frames[-1], context=replace(frames[-1].context, flow_generation=1))
+    else:
+        i = 0 if damage == "start" else 100
+        msg = bytearray(frames[i].message)
+        if damage == "start": msg[5] = 0
+        if damage == "count": msg[10] = 1
+        if damage == "name": _put_name(msg, 20, "Player0001")
+        if damage == "class": msg[104] = 99
+        frames[i] = replace(frames[i], message=bytes(msg))
+    frames = tuple(frames)
+    assert not build_solare_result(frames, _health(frames)).complete
+
+
+def test_regular_complete_board_never_invokes_short_fallback(monkeypatch):
+    from bdo_toolkit.solare import _short_board
+    def forbidden(*args, **kwargs):
+        raise AssertionError("regular complete board entered fallback")
+    monkeypatch.setattr(_short_board, "discover_short_board", forbidden)
+    frames = _complete_frames(include_agent=True)
+    assert build_solare_result(frames, _health(frames)).complete
+
+def test_short_board_live_idle_closes_despite_trailing_small_traffic():
+    frames = _short_board_frames(637)
+    tracker = LiveSolareDiscoveryTracker(lambda update: None)
+    for frame in frames:
+        tracker.observe(frame)
+    assert not tracker.complete
+    message = b"\x0d\x00\x00\x66\x66" + bytes(8)
+    sequence = frames[-1].stream_sequence + frames[-1].length
+    for i in range(1000):
+        tracker.observe(BDOFrame(index=len(frames)+i, message=message,
+                                context=frames[-1].context, stream_sequence=sequence+i*len(message)))
+    assert len(tracker._pending_boundaries) <= 256
+    assert tracker.service_candidate_idle(float("inf"))
+    assert tracker.complete
+    assert tracker.result.rich.record_count == 637
+    assert not tracker._pending_boundaries and not tracker._boundary_frames

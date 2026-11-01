@@ -82,6 +82,7 @@ class DiscoveredSolareFamily:
         compare=False,
     )
     flow_generation: int = 0
+    short_record_locations: tuple[tuple[BDOFrame, int], ...] = field(default=(), repr=False, compare=False)
 
     @property
     def record_count(self) -> int:
@@ -1031,6 +1032,7 @@ def discover_solare(
     *,
     allow_trailing_overall: bool = True,
     _analysis_cache: Optional[_DiscoveryAnalysisCache] = None,
+    _boundary_frames: Sequence[BDOFrame] = (),
 ) -> SolareDiscoveryResult:
     """Identify a complete Solare snapshot without seeded opcode values.
 
@@ -1140,6 +1142,20 @@ def discover_solare(
                     following = group[end + 1]
                     if _u32le(following.message, rich.rank_offset) != 1:
                         rich = None
+                elif rich.frame_length == 17 + 2 * rich.record_stride and window[0].message[5] == 1 and any(
+                    frame.context.flow == rich.flow
+                    and frame.context.flow_generation == rich.flow_generation
+                    and frame.opcode == rich.opcode
+                    and _stream_offset(frame) == rich.last_stream_end
+                    and frame.length == rich.frame_length - rich.record_stride
+                    and len(frame.message) > rich.rank_offset + 4
+                    and frame.message[5] == 0
+                    and frame.message[10:12] == b"\x01\x00"
+                    and _u32le(frame.message, rich.rank_offset) > rich.ranks[-1]
+                    for frame in (*unique_frames, *_boundary_frames)
+                ):
+                    # A real singleton continuation is not an old-roster end.
+                    rich = None
                 elif not allow_trailing_overall and not any(
                     observation_ordinals[id(frame)] > rich.completion_observation_ordinal
                     and _family_key(frame) != key
@@ -1222,6 +1238,19 @@ def discover_solare(
             overall=overall,
             ranked_candidate=rich,
             partial_overall=overall,
+            menu_context=menu_contexts[0] if menu_contexts else None,
+        )
+
+    # The regular path above always wins. Short boards never weaken its gates.
+    from ._short_board import discover_short_board
+    short = discover_short_board(
+        unique_frames, _boundary_frames, allow_trailing_overall=allow_trailing_overall,
+    )
+    if short is not None:
+        rich, overall = short
+        return SolareDiscoveryResult(
+            scanned_frames=len(unique_frames), candidate_families=summaries,
+            rich=rich, overall=overall, ranked_candidate=rich, partial_overall=overall,
             menu_context=menu_contexts[0] if menu_contexts else None,
         )
 
