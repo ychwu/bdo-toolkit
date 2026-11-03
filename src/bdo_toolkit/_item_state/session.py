@@ -104,6 +104,7 @@ def analyze_character_load_pcap(
                 "storage_snapshot",
                 "storage_record",
                 "storage_delta",
+                "item_received",
             }
         ),
         on_event=accumulator.observe_event,
@@ -240,6 +241,7 @@ class CharacterLoadSession:
                     "storage_snapshot",
                     "storage_record",
                     "storage_delta",
+                    "item_received",
                 }
             ),
             on_event=accumulator.observe_event,

@@ -33,6 +33,8 @@ def main() -> None:
     finally:
         snapshot = session.stop()
 
+    # Small storage cohorts may be inferred only by this finite-load API.
+    # Inspect warnings; absent towns are unknown, not empty.
     print(format_item_state(snapshot))
 
 

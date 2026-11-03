@@ -1244,17 +1244,18 @@ def test_split_hydration_reconciliation_isolates_connection_identity(
     assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids[:4])
 
 
-def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() -> None:
+@pytest.mark.parametrize("town_count", [1, 2, 3, 4, 7])
+def test_small_neutral_storage_uses_finite_load_fallback(town_count: int) -> None:
     accumulator = _CharacterStateAccumulator(
         profile_source="test",
         specs=(_storage_snapshot_spec(),),
     )
     accumulator.observe_event(_state_inventory_anchor())
-    storage_ids = tuple(STORAGE_LOCATIONS)[:4]
+    storage_ids = tuple(STORAGE_LOCATIONS)[:town_count]
     for index, storage_id in enumerate(storage_ids):
         accumulator.observe_event(
             _state_storage_event(
-                timestamp=1.10 + index * 0.01,
+                timestamp=16.60 + index * 0.01,
                 sequence=200 + index * 300,
                 storage_id=storage_id,
                 event_type="storage_record",
@@ -1264,9 +1265,10 @@ def test_subthreshold_neutral_storage_remains_unclassified_in_character_state() 
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage.records_decoded == 0
-    assert state.storages.registered_count == 0
-    assert all(state.storages.by_id(storage_id) is None for storage_id in storage_ids)
+    assert state.diagnostics.storage.records_decoded == town_count
+    assert state.storages.registered_count == town_count
+    assert all(state.storages.by_id(storage_id) is not None for storage_id in storage_ids)
+
 
 
 @pytest.mark.parametrize("repeat_stride", [222, None])
@@ -1584,8 +1586,9 @@ def test_sparse_empty_envelopes_do_not_cross_reused_flow_generations():
     state = accumulator.snapshot()
 
     assert state.diagnostics is not None
-    assert state.diagnostics.storage.records_decoded == 0
-    assert state.storages.registered_count == 0
+    assert state.diagnostics.storage.records_decoded == 3
+    assert state.storages.registered_count == 3
+    assert all(state.storages.by_id(sid) is None for sid in storage_ids[3:])
 
 
 def test_all_empty_character_storage_preserves_an_unregistered_numeric_id():
@@ -2916,3 +2919,60 @@ def test_live_character_load_successful_session_is_single_use_and_stop_is_cached
     assert first.diagnostics.capture_limits.max_relevant_bytes == 2_048
     with pytest.raises(RuntimeError, match="single-use"):
         session.start()
+
+
+@pytest.mark.parametrize("case", [
+    "no_anchor", "expired", "missing_identity", "other_flow", "other_generation",
+    "two_bursts", "two_opcodes", "revisited_town", "mutation_before",
+    "mutation_during", "withdrawal", "incompatible", "silence",
+])
+def test_small_load_fallback_rejects_ambiguous_or_activity_evidence(case):
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test", specs=(_storage_snapshot_spec(),),
+    )
+    if case != "no_anchor":
+        accumulator.observe_event(_state_inventory_anchor())
+    event = _state_storage_event(
+        timestamp=16.0, sequence=200, storage_id=32, event_type="storage_record",
+    )
+    if case == "expired":
+        event = replace(event, timestamp=32.0)
+    elif case == "missing_identity":
+        event = replace(event, storage_instance=None)
+    elif case == "other_flow":
+        event = replace(event, flow=Flow("10.0.0.3", 8889, "10.0.0.4", 50001))
+    elif case == "other_generation":
+        event = replace(event, _flow_generation=1)
+    if case != "silence":
+        accumulator.observe_event(event)
+    if case in {"two_bursts", "two_opcodes", "revisited_town"}:
+        second = replace(event, timestamp=16.1, storage_id=5, storage_instance="second")
+        if case == "two_bursts":
+            second = replace(second, timestamp=18.0)
+        elif case == "two_opcodes":
+            second = replace(second, opcode=0x9999)
+        accumulator.observe_event(second)
+        if case == "revisited_town":
+            accumulator.observe_event(replace(event, timestamp=16.2))
+    if case in {"mutation_before", "mutation_during", "withdrawal"}:
+        boundary = replace(event, event_type="storage_delta", timestamp=15.0)
+        if case == "mutation_during":
+            boundary = replace(boundary, timestamp=16.0)
+        elif case == "withdrawal":
+            boundary = replace(boundary, event_type="item_received", source="Storage")
+        accumulator.observe_event(boundary)
+    health = DecoderHealth(storage_status="incompatible") if case == "incompatible" else None
+    state = accumulator.snapshot(decoder_health=health)
+    assert len(state.storages) == 0
+    assert not any("Sparse storage state was inferred" in w for w in state.warnings)
+
+
+def test_small_load_fallback_preserves_snapshot_before_later_activity():
+    accumulator = _CharacterStateAccumulator(profile_source="test", specs=(_storage_snapshot_spec(),))
+    accumulator.observe_event(_state_inventory_anchor())
+    event = _state_storage_event(timestamp=16.0, sequence=200, storage_id=32, event_type="storage_record")
+    accumulator.observe_event(event)
+    accumulator.observe_event(replace(event, timestamp=20.0, event_type="storage_delta"))
+    state = accumulator.snapshot()
+    assert state.storages.nonempty_count == 1
+    assert any("Sparse storage state was inferred" in w for w in state.warnings)

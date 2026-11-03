@@ -39,6 +39,7 @@ from .storage import (
     _assemble_storage,
     _character_storage_snapshot_fallback,
     _reconcile_split_storage_hydration,
+    _small_character_storage_fallback,
 )
 
 
@@ -132,7 +133,8 @@ class _CharacterStateAccumulator:
         with self._lock:
             if self._limit_error is not None:
                 raise self._limit_error
-            if event.event_type not in {
+            withdrawal = event.event_type == "item_received" and event.source == "Storage"
+            if not withdrawal and event.event_type not in {
                 "inventory_snapshot",
                 "storage_snapshot",
                 "storage_record",
@@ -154,7 +156,7 @@ class _CharacterStateAccumulator:
                 self._inventory_events.append(event)
             elif event.event_type == "storage_snapshot":
                 self._storage_events.append(event)
-            elif event.event_type == "storage_delta":
+            elif event.event_type == "storage_delta" or withdrawal:
                 # A proven live mutation is not snapshot content, but it is a
                 # semantic boundary: neutral records on opposite sides must
                 # never be reconciled into one character-load sweep.
@@ -236,6 +238,7 @@ class _CharacterStateAccumulator:
         fallback_observations: Optional[
             tuple[_StorageGroupObservation, ...]
         ] = None
+        small_fallback_used = False
         sparse_fallback_used = False
         split_reconciliation_used = False
         if not storage_events:
@@ -251,6 +254,16 @@ class _CharacterStateAccumulator:
                 fallback_observations = selected_observations
                 sparse_fallback_used = True
 
+        if (
+            not storage_events
+            and fallback_observations is None
+            and (decoder_health is None or decoder_health.storage_status != "incompatible")
+        ):
+            storage_events = _small_character_storage_fallback(
+                neutral_storage_events, inventory_anchors, live_storage_boundaries,
+            )
+            small_fallback_used = bool(storage_events)
+
         if storage_events and neutral_storage_events:
             (
                 reconciled_events,
@@ -260,7 +273,7 @@ class _CharacterStateAccumulator:
                 frames,
                 storage_events,
                 neutral_storage_events,
-                live_storage_boundaries,
+                tuple(e for e in live_storage_boundaries if e.event_type == "storage_delta"),
                 inventory_anchors,
                 self.storage_specs,
             )
@@ -325,6 +338,19 @@ class _CharacterStateAccumulator:
                 "Inventory hydration was observed only through calibrated count-zero "
                 "wrappers; the empty current state is preserved, but no record-level "
                 "container metadata was available."
+            )
+        if small_fallback_used:
+            warnings.append(
+                "Sparse storage state was inferred from one identity-complete cohort "
+                "within the dedicated character-load boundary, with no preceding "
+                "or intervening recognized storage mutation. Only observed towns "
+                "are included; this is not proof of account-wide completeness. "
+                "The ordinary live stream remained fail-neutral."
+            )
+        elif not storage_events and neutral_storage_events:
+            warnings.append(
+                "Storage records decoded, but there was insufficient unambiguous "
+                "character-load evidence to accept them as current storage state."
             )
         if sparse_fallback_used:
             warnings.append(

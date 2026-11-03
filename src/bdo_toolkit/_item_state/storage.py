@@ -160,6 +160,70 @@ def _character_storage_snapshot_fallback(
     return tuple(promoted), selected
 
 
+def _small_character_storage_fallback(
+    neutral_events: Iterable[BDOEvent],
+    hydration_anchors: Iterable[_HydrationAnchor],
+    live_boundaries: Iterable[BDOEvent],
+) -> tuple[BDOEvent, ...]:
+    """Infer one small load cohort; never infer emptiness from silence.
+
+    This is a finite-capture inference, not a protocol completion signal.
+    Origin classification has already removed known activity. Require one
+    unambiguous, identity-complete cohort following an inventory boundary;
+    activity before or during it retires that boundary. Later activity does
+    not invalidate the earlier point-in-time observation.
+    """
+    events = tuple(neutral_events)
+    anchors = tuple(hydration_anchors)
+    if not events or not anchors:
+        return ()
+    key = _event_flow_generation_key(events[0])
+    if any(_event_flow_generation_key(event) != key for event in events):
+        return ()
+    matching_anchors = [
+        anchor.timestamp for anchor in anchors
+        if _anchor_flow_generation_key(anchor) == key
+    ]
+    if not matching_anchors or len({event.opcode for event in events}) != 1:
+        return ()
+    anchor_time = max(matching_anchors)
+    ordered = sorted(events, key=lambda event: event.timestamp)
+    first, last = ordered[0].timestamp, ordered[-1].timestamp
+    if not anchor_time <= first <= last <= anchor_time + _STORAGE_HYDRATION_EPOCH_SECONDS:
+        return ()
+    if last - first > _STORAGE_HYDRATION_MAX_BURST_SECONDS or any(
+        right.timestamp - left.timestamp > _STORAGE_HYDRATION_BURST_GAP_SECONDS
+        for left, right in zip(ordered, ordered[1:])
+    ):
+        return ()
+    destinations = {event.storage_id for event in events}
+    if not 1 <= len(destinations) < _STORAGE_HYDRATION_MIN_DESTINATIONS:
+        return ()
+    if any(
+        event.event_type != "storage_record"
+        or event.source is not None
+        or event.storage_id is None
+        or event.storage_id <= 0
+        or not event.storage_instance
+        or event.item_id is None
+        or event.quantity is None
+        or event.quantity <= 0
+        for event in events
+    ):
+        return ()
+    if any(
+        _event_flow_generation_key(event) == key
+        and anchor_time <= event.timestamp <= last
+        for event in live_boundaries
+    ):
+        return ()
+    # A return to an earlier town is a second sweep, not additional chunks.
+    observations = _storage_group_observations((), events, ())
+    if len(_infer_storage_sweeps(observations)) != 1:
+        return ()
+    return tuple(replace(event, event_type="storage_snapshot", source=None) for event in events)
+
+
 def _reconcile_split_storage_hydration(
     frames: Iterable[BDOFrame],
     snapshot_events: Iterable[BDOEvent],
