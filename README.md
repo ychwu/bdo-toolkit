@@ -41,6 +41,7 @@ combines supported observations in one live session.
 | --- | --- | --- | --- |
 | Item activity | A continuing stream of typed `BDOEvent` objects for supported loot, gathering, inventory, and storage changes | [Item events](https://ychwu.github.io/bdo-toolkit/#item-overview) | Stable |
 | Inventory and town storage | A finite `ItemStateSnapshot` assembled from character-load traffic, with inventory, known balances, and observed town storage | [Inventory & town storage](https://ychwu.github.io/bdo-toolkit/#item-state-overview) | Beta |
+| Character inventories and equipment | Per-character bags, equipped gear and life-skill gear from a normal world login | [Character loadouts and calibration](CHARACTER_LOADOUTS.md) | Experimental |
 | Arena of Solare leaderboards | A finite `SolareCaptureResult` containing overall rankings, class tables, and player statistics when the capture is complete | [Arena of Solare](https://ychwu.github.io/bdo-toolkit/#solare-overview) | Beta |
 | Grind tracking | One capture for confirmed mob drops, with optional profile-based Agris and solo XP | [GrindSession](https://ychwu.github.io/bdo-toolkit/#grind-session) | Experimental |
 | Raw server messages | Every length-framed server-to-client message, opcode-free and undecoded, for protocol research | [Raw server messages](https://ychwu.github.io/bdo-toolkit/#raw-messages) | Experimental |

@@ -24,6 +24,9 @@ from ._records import (
     _frame_flow_generation_key,
     _frame_key,
 )
+from .character_profile import CharacterLayoutProfile, NOVEMBER
+from . import characters
+from .character_models import CharacterRoster
 from .inventory import _assemble_inventory, _latest_inventory_generation
 from .models import (
     CharacterStateSnapshot,
@@ -44,12 +47,16 @@ from .storage import (
 
 
 class _CharacterStateAccumulator:
+
     def __init__(
         self,
         *,
         profile_source: str,
         specs: Iterable[EventSpec],
         capture_mode: str = "unknown",
+        include_characters: bool = False,
+        character_profile: CharacterLayoutProfile | None = None,
+        character_profile_error: str | None = None,
         input_path: str | Path | None = None,
         saved_capture_path: str | Path | None = None,
         capture_limits: Optional[ItemStateCaptureLimits] = None,
@@ -58,6 +65,14 @@ class _CharacterStateAccumulator:
             capture_limits, ItemStateCaptureLimits
         ):
             raise TypeError("capture_limits must be an ItemStateCaptureLimits or None")
+        if not isinstance(include_characters, bool):
+            raise TypeError("include_characters must be a bool")
+        self.include_characters = include_characters or character_profile is not None
+        self.character_profile_error = character_profile_error
+        self.character_profile = character_profile or NOVEMBER
+        self.character_tables = {
+            t.opcode: t for t in self.character_profile.tables.values()
+        }
         self.profile_source = profile_source
         self.capture_mode = capture_mode
         self.input_path = str(input_path) if input_path is not None else None
@@ -75,6 +90,21 @@ class _CharacterStateAccumulator:
         self.relevant_opcodes = {
             spec.opcode for spec in self.inventory_specs + self.storage_specs
         }
+        self.character_layout_supported = character_profile is not None or (
+            include_characters
+            and any(
+                spec.opcode == 0x14BE
+                and spec.repeat_stride == 224
+                and spec.item_offset == 29
+                for spec in self.inventory_specs
+            )
+        )
+        if self.character_layout_supported and self.relevant_opcodes.intersection(self.character_tables):
+            self.character_profile_error = "Character layout conflicts with an item decoder opcode."
+        if self.character_profile_error:
+            self.character_layout_supported = False
+        if self.character_layout_supported:
+            self.relevant_opcodes.update(self.character_tables)
         self._lock = RLock()
         self._frames_seen = 0
         self._relevant_frames_retained = 0
@@ -118,6 +148,15 @@ class _CharacterStateAccumulator:
                     self.capture_limits.max_relevant_bytes,
                     attempted_bytes,
                 )
+            if (
+                self.character_layout_supported
+                and frame.opcode in self.character_tables
+            ):
+                cost = characters.record_cost(frame,self.character_tables[frame.opcode])
+                attempted = self._snapshot_records_retained + cost + len(self._live_storage_boundaries)
+                if attempted > self.capture_limits.max_snapshot_records:
+                    self._raise_limit("max_snapshot_records", self.capture_limits.max_snapshot_records, attempted)
+                self._snapshot_records_retained += cost
             self._seen_frames.add(dedupe_key)
             self._frames.append(frame)
             self._relevant_frames_retained = attempted_frames
@@ -202,6 +241,27 @@ class _CharacterStateAccumulator:
         inventory_anchors = inventory_generation.anchors
         generation_start = inventory_generation.start
         generations_seen = inventory_generation.generations_observed
+        character_frames: tuple[BDOFrame, ...] = ()
+        if self.character_layout_supported and generation_start is not None:
+            # The active portrait immediately precedes the inventory burst. On
+            # later generations do not borrow a portrait from an earlier load.
+            character_frames = tuple(
+                frame
+                for frame in frames
+                if frame.opcode in self.character_tables
+                and _frame_flow_generation_key(frame)
+                == inventory_generation.flow_generation_key
+                and generation_start
+                - (
+                    1
+                    if self.character_tables[frame.opcode]
+                    is self.character_profile.tables.get("portrait")
+                    and generations_seen == 1
+                    else 0
+                )
+                <= frame.context.timestamp
+                <= generation_start + 30
+            )
         if generation_start is not None:
             # Current captures send the compact inventory hydration first and
             # storage hydration afterward. It is therefore a clean boundary
@@ -473,7 +533,21 @@ class _CharacterStateAccumulator:
             generation_selection = "all_observed_storage_no_inventory_boundary"
         else:
             generation_selection = "none_no_hydration_boundary"
+        roster = None
+        if self.include_characters:
+            if self.character_layout_supported:
+                roster = characters.assemble_characters(
+                    character_frames, inventory, self.character_profile
+                )
+            else:
+                roster = CharacterRoster(
+                    warnings=(
+                        self.character_profile_error
+                        or "Character layout unsupported for this inventory profile.",
+                    )
+                )
         return CharacterStateSnapshot(
+            characters=roster,
             inventory=inventory,
             storages=StorageContents(storages),
             provenance=ItemStateProvenance(

@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 from .._protocol import STORAGE_LOCATIONS
 from ..diagnostics import DecoderHealth
 
+from .character_models import CharacterRoster
 from ._constants import _INVENTORY_CONTAINER_LABELS, _ITEM_STATE_SCHEMA_VERSION
 
 
@@ -610,6 +611,7 @@ class CharacterStateSnapshot:
     decoder_health: DecoderHealth = DecoderHealth()
     warnings: tuple[str, ...] = ()
     diagnostics: Optional[ItemStateDiagnostics] = None
+    characters: CharacterRoster | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.inventory, InventorySnapshotSummary):
@@ -620,6 +622,8 @@ class CharacterStateSnapshot:
             raise TypeError("coverage must be an ItemStateCoverage")
         if not isinstance(self.decoder_health, DecoderHealth):
             raise TypeError("decoder_health must be a DecoderHealth")
+        if self.characters is not None and not isinstance(self.characters, CharacterRoster):
+            raise TypeError("characters must be a CharacterRoster or None")
         if self.diagnostics is not None and not isinstance(
             self.diagnostics, ItemStateDiagnostics
         ):
@@ -628,7 +632,7 @@ class CharacterStateSnapshot:
 
     @property
     def schema_version(self) -> int:
-        return _ITEM_STATE_SCHEMA_VERSION
+        return 6 if self.characters is not None else _ITEM_STATE_SCHEMA_VERSION
 
     @property
     def identity_complete(self) -> bool:
@@ -664,6 +668,8 @@ class CharacterStateSnapshot:
             "storages": self.storages.to_dict(),
             "warnings": list(self.warnings),
         }
+        if self.characters is not None:
+            output["characters"] = self.characters.to_dict()
         if include_diagnostics and self.diagnostics is not None:
             output["diagnostics"] = self.diagnostics.to_dict()
         return output

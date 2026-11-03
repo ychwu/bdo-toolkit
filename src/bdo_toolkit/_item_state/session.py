@@ -23,6 +23,7 @@ from ..capture import (
     _ProfileAuthority,
     _load_profile_authority,
 )
+from .character_profile import CharacterLayoutProfile
 from ..diagnostics import DecoderHealth
 from ..filters import EventFilter
 from ..profiles import OpcodeProfile, ProfileError
@@ -77,22 +78,48 @@ def _active_profile_authority(
     return authority
 
 
+def _resolve_character_profile(
+    value: str | Path | CharacterLayoutProfile | None, item_path: Path, enabled: bool
+) -> tuple[CharacterLayoutProfile | None, str | None]:
+    if not enabled:
+        return None, None
+    if isinstance(value, CharacterLayoutProfile):
+        return value, None
+    path = (
+        Path(value) if value is not None else Path(str(item_path) + ".characters.json")
+    )
+    try:
+        if value is None and not path.exists():
+            return None, None
+        return CharacterLayoutProfile.load(path), None
+    except (OSError, ValueError) as exc:
+        return None, f"Character layout profile unavailable: {exc}"
+
+
 def analyze_character_load_pcap(
     path: str | Path,
     *,
     opcode_profile: str | Path | OpcodeProfile,
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
     capture_limits: Optional[ItemStateCaptureLimits] = None,
+    include_characters: bool = True,
+    character_profile: str | Path | CharacterLayoutProfile | None = None,
 ) -> CharacterStateSnapshot:
     """Replay a capture and summarize framed inventory/storage hydration."""
     options = PacketCaptureOptions(ports=ports)
     authority = _active_profile_authority(opcode_profile)
     profile_source = str(authority.profile.path)
     specs = authority.loaded_specs.specs
+    layout, layout_error = _resolve_character_profile(
+        character_profile, authority.profile.path, include_characters
+    )
     accumulator = _CharacterStateAccumulator(
         profile_source=profile_source,
         specs=specs,
         capture_mode="pcap_replay",
+        include_characters=include_characters,
+        character_profile=layout,
+        character_profile_error=layout_error,
         input_path=path,
         capture_limits=capture_limits,
     )
@@ -146,7 +173,12 @@ class CharacterLoadSession:
         capture_options: Optional[PacketCaptureOptions] = None,
         save_pcap: str | Path | None = None,
         capture_limits: Optional[ItemStateCaptureLimits] = None,
+        include_characters: bool = True,
+        character_profile: str | Path | CharacterLayoutProfile | None = None,
     ) -> None:
+        if not isinstance(include_characters, bool):
+            raise TypeError("include_characters must be a bool")
+        self._include_characters = include_characters
         if capture_options is not None and not isinstance(
             capture_options, PacketCaptureOptions
         ):
@@ -161,6 +193,7 @@ class CharacterLoadSession:
             _validate_save_pcap_path(save_pcap) if save_pcap is not None else None
         )
         self._profile_authority = _active_profile_authority(opcode_profile)
+        self._character_profile,self._character_profile_error=_resolve_character_profile(character_profile,self._profile_authority.profile.path,include_characters)
         self._profile_source = str(self._profile_authority.profile.path)
         self._specs = self._profile_authority.loaded_specs.specs
         self._start_attempted = False
@@ -230,6 +263,9 @@ class CharacterLoadSession:
             profile_source=self._profile_source,
             specs=self._specs,
             capture_mode="live_capture",
+            include_characters=self._include_characters,
+            character_profile=self._character_profile,
+            character_profile_error=self._character_profile_error,
             saved_capture_path=self._save_pcap_path,
             capture_limits=self._capture_limits,
         )

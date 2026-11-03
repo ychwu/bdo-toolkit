@@ -8,6 +8,7 @@ package. This module preserves the established public imports and object names;
 # Public class annotations still resolve through this established module path.
 from typing import Optional
 
+from ._item_state.character_models import CharacterRoster
 from .diagnostics import DecoderHealth
 from ._item_state.formatting import format_character_state
 from ._item_state.models import (

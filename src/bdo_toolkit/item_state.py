@@ -7,6 +7,10 @@ names, without a package-root stability promise.
 
 from __future__ import annotations
 
+from ._item_state.character_models import (
+    CharacterItem, CharacterLoadout, CharacterRoster, CharacterSection,
+)
+from ._item_state.character_profile import CharacterLayoutProfile
 from .character_state import (
     CharacterLoadSession,
     CharacterStateSnapshot as ItemStateSnapshot,
@@ -29,6 +33,11 @@ from .character_state import (
 
 __all__ = [
     "CharacterLoadSession",
+    "CharacterItem",
+    "CharacterLayoutProfile",
+    "CharacterLoadout",
+    "CharacterRoster",
+    "CharacterSection",
     "InventoryContainerSummary",
     "InventoryHydrationDiagnostics",
     "InventorySnapshotSummary",

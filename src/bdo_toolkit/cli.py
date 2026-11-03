@@ -718,6 +718,65 @@ def _run_diagnose_capture(args: argparse.Namespace) -> int:
     return 2 if result.status == "unavailable" else 0
 
 
+def _run_character_calibration(args: argparse.Namespace) -> int:
+    from .character_calibration import (
+        calibrate_character_layout_live,
+        calibrate_character_layout_pcap,
+    )
+    from ._capture_options import LiveCaptureOptions
+
+    paths = [
+        p.resolve()
+        for p in (args.output, args.pcap, args.save_pcap, args.reference_pcap)
+        if p is not None
+    ]
+    if len(set(paths)) != len(paths):
+        raise ValueError("capture, reference and output paths must differ")
+    if (
+        args.previous_profile
+        and args.save_pcap
+        and args.previous_profile.resolve() == args.save_pcap.resolve()
+    ):
+        raise ValueError("capture and previous profile must differ")
+    if args.output.exists() and not args.overwrite:
+        raise FileExistsError(args.output)
+    previous = args.previous_profile
+    if previous is None and args.output.exists():
+        previous = args.output
+    if args.pcap is not None:
+        if args.save_pcap:
+            raise ValueError("--save-pcap applies only to live calibration")
+        result = calibrate_character_layout_pcap(
+            args.pcap,
+            previous_profile=previous,
+            reference_pcap=args.reference_pcap,
+            ports=args.ports,
+        )
+    else:
+        print(
+            "Starting passive calibration. Enter the world once capture is running.",
+            file=sys.stderr,
+            flush=True,
+        )
+        options = LiveCaptureOptions(
+            interface=args.iface, ports=args.ports, event_queue_size=16384
+        )
+        result = calibrate_character_layout_live(
+            on_ready=lambda: print(
+                "Capture active. Enter the world now.", file=sys.stderr, flush=True
+            ),
+            capture_seconds=args.capture_seconds,
+            live_options=options,
+            save_pcap=args.save_pcap,
+            previous_profile=previous,
+            reference_pcap=args.reference_pcap,
+        )
+    if result.profile is not None:
+        result.profile.save(args.output, overwrite=args.overwrite)
+    print(json.dumps(result.to_dict(), indent=2))
+    return 0 if result.profile is not None else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bdo-toolkit",
@@ -1149,6 +1208,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     origin_promote.set_defaults(func=_run_origin_promote)
 
+    char = subparsers.add_parser(
+        "character-calibrate", help="discover character layouts from one passive login"
+    )
+    mode = char.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--live", action="store_true")
+    mode.add_argument("--pcap", type=Path)
+    char.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="new versioned layout sidecar, e.g. opcodes.local.characters.json",
+    )
+    char.add_argument("--overwrite", action="store_true")
+    char.add_argument("--previous-profile", type=Path)
+    char.add_argument(
+        "--reference-pcap",
+        type=Path,
+        help="one previously verified login paired with the previous layout",
+    )
+    char.add_argument("--capture-seconds", type=_positive_float, default=120)
+    char.add_argument("--save-pcap", type=Path)
+    char.add_argument("--iface")
+    char.add_argument("--ports", type=_parse_ports, default=(8884, 8885, 8889))
+    char.set_defaults(func=_run_character_calibration)
     return parser
 
 
