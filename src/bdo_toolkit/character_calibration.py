@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+import json
 import math
+import shutil
 
 from ._capture_options import LiveCaptureOptions
 from ._protocol import DEFAULT_SERVER_PORTS
@@ -24,6 +26,8 @@ from ._item_state.character_witnesses import (
     stats_layout,
 )
 from .raw import LiveRawSession, RawMessage, replay_raw
+from ._profile_io import atomic_write_text, next_backup_path
+from .profiles import OPCODE_PROFILE_SCHEMA_VERSION, _opcode_profile_from_data
 
 _MAX_MESSAGES = 30000
 _MAX_BYTES = 96 * 1024 * 1024
@@ -62,7 +66,42 @@ def _previous(
 ) -> CharacterLayoutProfile:
     if isinstance(value, CharacterLayoutProfile):
         return value
-    return CharacterLayoutProfile.load(value) if value is not None else NOVEMBER
+    if value is None:
+        return NOVEMBER
+    path = Path(value)
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict) and "version" in data:
+        profile = _opcode_profile_from_data(data, path)
+        if profile.character_profile_error:
+            raise ValueError(profile.character_profile_error)
+        if profile.characters is not None:
+            return profile.characters
+        sidecar = Path(str(path) + ".characters.json")
+        return CharacterLayoutProfile.load(sidecar) if sidecar.exists() else NOVEMBER
+    if path.stat().st_size > 65536:
+        raise ValueError("character layout file exceeds 64 KiB")
+    return CharacterLayoutProfile.from_dict(data)
+
+
+def update_character_profile(path: str | Path, layout: CharacterLayoutProfile) -> None:
+    """Install verified geometry without replacing other calibration sections."""
+    path = Path(path)
+    original = path.read_bytes() if path.exists() else None
+    data = json.loads(original.decode("utf-8-sig")) if original is not None else {
+        "version": OPCODE_PROFILE_SCHEMA_VERSION, "profile_active": True, "specs": {}
+    }
+    existing = _opcode_profile_from_data(data, path)
+    if existing.characters == layout:
+        return
+    data["characters"] = layout.to_dict()
+    proposed = _opcode_profile_from_data(data, path)
+    if proposed.characters != layout:
+        raise ValueError(proposed.character_profile_error or "Invalid character layout")
+    if (path.read_bytes() if path.exists() else None) != original:
+        raise ValueError("Profile changed during character profile update")
+    if original is not None:
+        shutil.copy2(path, next_backup_path(path))
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def _references(

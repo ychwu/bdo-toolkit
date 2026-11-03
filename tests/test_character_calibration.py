@@ -179,3 +179,61 @@ def test_overwrite_refuses_non_character_profile(tmp_path):
     with pytest.raises(ValueError):
         NOVEMBER.save(path, overwrite=True)
     assert path.read_bytes() == JULY17_OPCODE_PROFILE.read_bytes()
+
+
+def test_embedded_layout_precedence_and_isolated_failure(tmp_path):
+    from bdo_toolkit._item_state.session import _resolve_character_profile
+    from bdo_toolkit.profiles import load_opcode_profile
+
+    path = tmp_path / "opcodes.local"
+    data = {"version": 1, "profile_active": True}
+    path.write_text(json.dumps(data))
+    NOVEMBER.save(Path(str(path) + ".characters.json"))
+    assert _resolve_character_profile(None, load_opcode_profile(path), True) == (NOVEMBER, None)
+    core = CharacterLayoutProfile({k: NOVEMBER.tables[k] for k in ("roster", "remote")})
+    data["characters"] = core.to_dict()
+    path.write_text(json.dumps(data))
+    assert _resolve_character_profile(None, load_opcode_profile(path), True) == (core, None)
+    data["characters"] = {"schema_version": 999}
+    path.write_text(json.dumps(data))
+    profile = load_opcode_profile(path)
+    assert _resolve_character_profile(None, profile, True) == (None, profile.character_profile_error)
+    assert profile.character_profile_error
+    assert _resolve_character_profile(NOVEMBER, profile, True) == (NOVEMBER, None)
+
+
+def test_character_cli_updates_only_combined_section(tmp_path, monkeypatch):
+    from bdo_toolkit.cli import main
+    from bdo_toolkit.profiles import load_opcode_profile
+    from bdo_toolkit.character_calibration import _previous
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "opcodes.local"
+    side = Path(str(path) + ".characters.json")
+    NOVEMBER.save(side)
+    result = _calibrate(synthetic_login(), NOVEMBER, Witnesses())
+    assert result.profile
+
+    def replay(_pcap, *, previous_profile, **kwargs):
+        assert _previous(previous_profile) == NOVEMBER
+        return result
+
+    monkeypatch.setattr("bdo_toolkit.character_calibration.calibrate_character_layout_pcap", replay)
+    args = ["character-calibrate", "--pcap", "login.pcap"]
+    assert main(args) == 0
+    assert load_opcode_profile(path).characters == result.profile
+
+    data = json.loads(JULY17_OPCODE_PROFILE.read_text(encoding="utf-8-sig"))
+    data["custom_metadata"] = {"keep": True}
+    path.write_text(json.dumps(data))
+    original = path.read_bytes()
+    assert main([*args, "--profile", str(path)]) == 0
+    assert json.loads(path.read_bytes()) == {**data, "characters": result.profile.to_dict()}
+    assert next((tmp_path / "opcodes_backups").iterdir()).read_bytes() == original
+    assert CharacterLayoutProfile.load(side) == NOVEMBER
+    before = path.read_bytes()
+    failure = _calibrate([], NOVEMBER, Witnesses())
+    monkeypatch.setattr("bdo_toolkit.character_calibration.calibrate_character_layout_pcap",
+                        lambda *args, **kwargs: failure)
+    assert main(args) == 2
+    assert path.read_bytes() == before

@@ -11,6 +11,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Optional
 
+from ._item_state.character_profile import CharacterLayoutProfile
+
 
 OPCODE_PROFILE_SCHEMA_VERSION = 1
 
@@ -165,8 +167,12 @@ class OpcodeProfile:
     origin_companion_families: tuple[OriginCompanionFamily, ...] = ()
     agris: AgrisProfileLayout | None = field(default=None, kw_only=True)
     xp: XPProfileLayout | None = field(default=None, kw_only=True)
+    characters: CharacterLayoutProfile | None = field(default=None, kw_only=True)
+    character_profile_error: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.characters is not None and not isinstance(self.characters, CharacterLayoutProfile):
+            raise ProfileError("characters must be a CharacterLayoutProfile or None")
         if self.xp is not None:
             if not isinstance(self.xp, XPProfileLayout):
                 raise ProfileError("xp must be an XPProfileLayout or None")
@@ -204,6 +210,7 @@ class OpcodeProfile:
             ],
             **({"agris": self.agris.to_dict()} if self.agris is not None else {}),
             **({"xp": self.xp.to_dict()} if self.xp is not None else {}),
+            **({"characters": self.characters.to_dict()} if self.characters is not None else {}),
         }
 
 
@@ -291,6 +298,13 @@ def _opcode_profile_from_data(data: Any, profile_path: Path) -> OpcodeProfile:
             for event, entries in normalized_specs.items()
         }
     )
+    characters = None
+    character_profile_error = None
+    if "characters" in data:
+        try:
+            characters = CharacterLayoutProfile.from_dict(data["characters"])
+        except ValueError as exc:
+            character_profile_error = f"Embedded character layout unavailable: {exc}"
     return OpcodeProfile(
         path=profile_path,
         active=active_value,
@@ -301,6 +315,8 @@ def _opcode_profile_from_data(data: Any, profile_path: Path) -> OpcodeProfile:
         origin_companion_families=families,
         agris=_agris_layout(data.get("agris")),
         xp=_xp_layout(data.get("xp")),
+        characters=characters,
+        character_profile_error=character_profile_error,
     )
 
 

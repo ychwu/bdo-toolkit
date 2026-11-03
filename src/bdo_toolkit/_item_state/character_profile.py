@@ -135,10 +135,14 @@ class CharacterLayoutProfile:
             raw = file.read(65537)
         if len(raw) > 65536:
             raise ValueError("character layout file exceeds 64 KiB")
-        data = json.loads(raw.decode("utf-8-sig"))
+        return cls.from_dict(json.loads(raw.decode("utf-8-sig")))
+
+    @classmethod
+    def from_dict(cls, data: object) -> CharacterLayoutProfile:
         if (
             not isinstance(data, dict)
             or set(data) != {"schema_version", "tables"}
+            or type(data["schema_version"]) is not int
             or type(data["schema_version"]) is not int
             or data["schema_version"] != 1
             or not isinstance(data["tables"], dict)

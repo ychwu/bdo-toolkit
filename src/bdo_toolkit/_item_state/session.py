@@ -79,15 +79,15 @@ def _active_profile_authority(
 
 
 def _resolve_character_profile(
-    value: str | Path | CharacterLayoutProfile | None, item_path: Path, enabled: bool
+    value: str | Path | CharacterLayoutProfile | None, profile: OpcodeProfile, enabled: bool
 ) -> tuple[CharacterLayoutProfile | None, str | None]:
     if not enabled:
         return None, None
     if isinstance(value, CharacterLayoutProfile):
         return value, None
-    path = (
-        Path(value) if value is not None else Path(str(item_path) + ".characters.json")
-    )
+    if value is None and (profile.characters is not None or profile.character_profile_error):
+        return profile.characters, profile.character_profile_error
+    path = Path(value) if value is not None else Path(str(profile.path) + ".characters.json")
     try:
         if value is None and not path.exists():
             return None, None
@@ -111,7 +111,7 @@ def analyze_character_load_pcap(
     profile_source = str(authority.profile.path)
     specs = authority.loaded_specs.specs
     layout, layout_error = _resolve_character_profile(
-        character_profile, authority.profile.path, include_characters
+        character_profile, authority.profile, include_characters
     )
     accumulator = _CharacterStateAccumulator(
         profile_source=profile_source,
@@ -193,7 +193,9 @@ class CharacterLoadSession:
             _validate_save_pcap_path(save_pcap) if save_pcap is not None else None
         )
         self._profile_authority = _active_profile_authority(opcode_profile)
-        self._character_profile,self._character_profile_error=_resolve_character_profile(character_profile,self._profile_authority.profile.path,include_characters)
+        self._character_profile, self._character_profile_error = _resolve_character_profile(
+            character_profile, self._profile_authority.profile, include_characters
+        )
         self._profile_source = str(self._profile_authority.profile.path)
         self._specs = self._profile_authority.loaded_specs.specs
         self._start_attempted = False

@@ -25,17 +25,19 @@ Place gear using `role`, and life gear using `activity` plus `role`. Preserve `s
 
 ## Calibrate after a patch
 
-Character calibration can run independently of inventory-transfer calibration. It uses raw login traffic and requires no character name. Run from a directory containing the item profile, or choose an output path beside it.
+Character calibration uses one normal login and requires no character name. Run it before or after inventory-transfer calibration. Both can share one `opcodes.local`.
 
 ```powershell
-python -m bdo_toolkit.cli character-calibrate --live --capture-seconds 120 --save-pcap login.pcap --output opcodes.local.characters.json
+python -m bdo_toolkit.cli character-calibrate --live --capture-seconds 120 --save-pcap login.pcap --profile opcodes.local
 ```
 
-Enter the world after the capture-ready message and let the timer finish. To replay, replace `--live --capture-seconds 120 --save-pcap login.pcap` with `--pcap login.pcap`. Use `--overwrite` to replace an existing character profile. An optional `--previous-profile` and matching `--reference-pcap` can corroborate layouts that a single login leaves unresolved.
+Enter the world after the capture-ready message and let the timer finish. To replay, replace `--live --capture-seconds 120 --save-pcap login.pcap` with `--pcap login.pcap`. The CLI defaults to `opcodes.local` in the current directory. Success replaces only its `characters` section, backs up a changed existing profile in `opcodes_backups/`, or creates a profile if needed. An optional `--previous-profile` and matching `--reference-pcap` can corroborate layouts that a single login leaves unresolved.
 
 The CLI saves a profile and exits 0 when it finds a unique corroborated remote inventory and roster layout. Read the per-family results even when `usable` is true. Stats, active gear, life gear, identity and remote lightstone offsets may be unavailable. If the core evidence is insufficient or ambiguous, the CLI reports `usable: false`, exits 2 and writes no profile.
 
-The importer looks for `<item-profile>.characters.json` by default. Pass `character_profile=` to select another layout. With no sidecar it tries the built-in November layout. Start a new session after updating the profile.
+Live and replay use an explicit `character_profile=` override first, then the embedded `characters` section. If that section is absent, they look for the existing `<item-profile>.characters.json` sidecar. If both are absent they try the built-in November layout. A malformed embedded section makes character data unavailable and supplies a warning. Inventory and storage can still decode. Start a new session after updating the profile.
+
+For a standalone layout file, the existing CLI form `--output opcodes.local.characters.json` remains supported. Use `--overwrite` to replace that standalone file.
 
 ## Research TODO
 

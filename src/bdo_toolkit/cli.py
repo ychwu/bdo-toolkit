@@ -722,27 +722,38 @@ def _run_character_calibration(args: argparse.Namespace) -> int:
     from .character_calibration import (
         calibrate_character_layout_live,
         calibrate_character_layout_pcap,
+        update_character_profile,
     )
     from ._capture_options import LiveCaptureOptions
 
+    destination = args.output or args.profile or Path("opcodes.local")
     paths = [
         p.resolve()
-        for p in (args.output, args.pcap, args.save_pcap, args.reference_pcap)
+        for p in (destination, args.pcap, args.save_pcap, args.reference_pcap)
         if p is not None
     ]
     if len(set(paths)) != len(paths):
         raise ValueError("capture, reference and output paths must differ")
+    if args.output is None and args.save_pcap and (
+        args.save_pcap.resolve() == Path(str(destination) + ".characters.json").resolve()
+    ):
+        raise ValueError("capture and character sidecar paths must differ")
     if (
         args.previous_profile
         and args.save_pcap
         and args.previous_profile.resolve() == args.save_pcap.resolve()
     ):
         raise ValueError("capture and previous profile must differ")
-    if args.output.exists() and not args.overwrite:
+    if args.output and args.output.exists() and not args.overwrite:
         raise FileExistsError(args.output)
     previous = args.previous_profile
-    if previous is None and args.output.exists():
-        previous = args.output
+    if previous is None:
+        if destination.exists():
+            previous = destination
+        elif args.output is None:
+            sidecar = Path(str(destination) + ".characters.json")
+            if sidecar.exists():
+                previous = sidecar
     if args.pcap is not None:
         if args.save_pcap:
             raise ValueError("--save-pcap applies only to live calibration")
@@ -772,7 +783,10 @@ def _run_character_calibration(args: argparse.Namespace) -> int:
             reference_pcap=args.reference_pcap,
         )
     if result.profile is not None:
-        result.profile.save(args.output, overwrite=args.overwrite)
+        if args.output is None:
+            update_character_profile(destination, result.profile)
+        else:
+            result.profile.save(args.output, overwrite=args.overwrite)
     print(json.dumps(result.to_dict(), indent=2))
     return 0 if result.profile is not None else 2
 
@@ -1214,11 +1228,12 @@ def build_parser() -> argparse.ArgumentParser:
     mode = char.add_mutually_exclusive_group(required=True)
     mode.add_argument("--live", action="store_true")
     mode.add_argument("--pcap", type=Path)
-    char.add_argument(
+    destination = char.add_mutually_exclusive_group()
+    destination.add_argument("--profile", type=Path, help="combined opcode profile to update (default: opcodes.local)")
+    destination.add_argument(
         "--output",
-        required=True,
         type=Path,
-        help="new versioned layout sidecar, e.g. opcodes.local.characters.json",
+        help="write a standalone character layout instead of updating the combined profile",
     )
     char.add_argument("--overwrite", action="store_true")
     char.add_argument("--previous-profile", type=Path)
