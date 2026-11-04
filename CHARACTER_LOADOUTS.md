@@ -19,7 +19,11 @@ for owner_id, character in roster["by_id"].items():
 
 Use the opaque `owner_id` to associate a character with an app’s saved label. The same IDs recurred across the historical captures tested. A name can be available for the logged-in character. Remote names, class and level can be unknown. `raw_metadata_value` has no verified meaning. Combat stats are optional.
 
-Each character has `main_inventory`, `pearl_inventory`, `gear`, `life_skills` and `other_inventory`. Check each section’s `status` and `observed_sources` before replacing saved data. An unavailable section gives no evidence that the player emptied it. If the roster itself is unavailable, inspect `characters.warnings` and continue using the available inventory and storage results.
+Each character has `main_inventory`, `pearl_inventory`, `gear`, `life_skills` and `other_inventory`. For each section, `available` replaces saved items, including with an empty list. `unavailable` preserves the previous observation. Inspect `characters.warnings` separately from inventory and town storage results.
+
+For remote characters, the importer checks that the inventory pages occupy consecutive bytes on the same connection and that a different framed message touches each end. If any page or either boundary is missing, the whole remote item table is withheld. A complete table covers main inventory, Pearl inventory, equipment and other inventory for each owner with remote rows. An owner found only in validated combat stats is covered when the active character is known and is someone else. A roster entry alone never establishes an empty section.
+
+Life skills combine equipment-wheel tools and a separate life-gear list. Both sources are needed to replace the whole section. A remote fishing rod or hunting weapon may appear under `items` with `observed_sources` even when the section is `unavailable`. It can be displayed without deleting previously saved life gear.
 
 Place gear using `role`, and life gear using `activity` plus `role`. Preserve `source` and `raw_slot` when a label is unknown. The hunting and farming knot assignments (life slots 53 and 54) carry `role_inferred`. For equipped artifacts with a decoded socket layout, `lightstones` preserves both socket positions, with `null` for an empty socket. An empty list provides no socket reading. Loose artifacts in bags and town storage currently provide no socket reading.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from math import isfinite
 from struct import unpack_from
 
@@ -15,6 +16,7 @@ from .character_models import (
 )
 from .character_profile import NOVEMBER, CharacterLayoutProfile, CharacterTable
 from .character_slots import GEAR, INFERRED_LIFE, LIFE, MAIN_LIFE
+from ._records import _FrameKey, _frame_key
 from .models import InventorySnapshotSummary
 
 ROSTER, REMOTE, STATS = 0x160C, 0x1543, 0x134C
@@ -55,7 +57,10 @@ class _Sections:
 
     def section(self, key: str) -> CharacterSection:
         return CharacterSection(
-            tuple(self.items[key]), tuple(sorted(self.sources[key]))
+            tuple(self.items[key]), tuple(sorted(self.sources[key])),
+            # Remote equipment carries fishing/hunting tools but cannot
+            # replace an earlier observation of the dedicated life-skill bag.
+            complete=key != "life" or {"active_equipment", "life_equipment"} <= self.sources[key],
         )
 
 
@@ -197,6 +202,9 @@ def assemble_characters(
     frames: tuple[BDOFrame, ...],
     inventory: InventorySnapshotSummary,
     profile: CharacterLayoutProfile = NOVEMBER,
+    *,
+    remote_starts: set[_FrameKey],
+    remote_ends: set[_FrameKey],
 ) -> CharacterRoster:
     layouts = profile.tables
     by_opcode = {t.opcode: name for name, t in layouts.items()}
@@ -231,10 +239,27 @@ def assemble_characters(
         return CharacterRoster(
             warnings=("No unique validated character roster in the selected login.",)
         )
+    remote_complete = False
     try:
+        pages = [f for f in frames if f.opcode == layouts["remote"].opcode]
+        # The framed stream uses unwrapped TCP byte positions. A different
+        # message must touch each outer edge of one uninterrupted page run.
+        if not pages or any(f.stream_sequence is None for f in pages):
+            raise ValueError("missing remote pages or stream positions")
+        pages.sort(key=lambda f: int(f.stream_sequence or 0))
+        cursor = _frame_key(pages[0])
+        if cursor not in remote_starts:
+            raise ValueError("first remote page not bracketed")
+        for page in pages:
+            if cursor != _frame_key(page) or cursor.stream_sequence is None:
+                raise ValueError("gap or overlap between remote pages")
+            cursor = replace(cursor, stream_sequence=cursor.stream_sequence + len(page.message))
+        if cursor not in remote_ends:
+            raise ValueError("last remote page not bracketed")
         sections = _remote(tables["remote"], owners, layouts["remote"])
         remote_ids = set(sections)
-    except ValueError:
+        remote_complete = True
+    except ValueError as exc:
         sections = defaultdict(_Sections)
         # A broken remote section should not erase independently proven active
         # state. Still withhold active attribution if a readable remote row
@@ -248,9 +273,7 @@ def assemble_characters(
                 continue
             offset = rt.fields["owner"]
             remote_ids.update(row[offset : offset + 8].hex() for row in rows)
-        warnings.append(
-            "Remote items withheld: invalid layout, owner, or conflicting slots."
-        )
+        warnings.append(f"Remote items withheld: {exc}.")
 
     stats: dict[str, tuple[float, float, float]] = {}
     if tables["stats"]:
@@ -320,6 +343,15 @@ def assemble_characters(
             ):
                 candidates.add(owner)
     active = next(iter(candidates)) if len(candidates) == 1 else None
+    if remote_complete:
+        covered = remote_ids.copy()
+        # A stats-only owner is safe to classify as remote only when the
+        # active owner was independently identified.
+        if active is not None:
+            covered.update(stats.keys() - {active})
+        for owner in covered:
+            for section in ("main", "pearl", "gear", "other"):
+                sections[owner].sources[section].add("remote")
     if active is None:
         warnings.append(
             "Active owner unresolved; active equipment, life gear and bags were not attributed."

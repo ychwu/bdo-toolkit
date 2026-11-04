@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable, Optional
 
-from .._engine import toolkit_event_from_record
+from .._engine import _ITEM_MAX_ACTIVE_FLOWS, toolkit_event_from_record
 from .._protocol import (
     BDOFrame,
     EventSpec,
@@ -113,6 +114,10 @@ class _CharacterStateAccumulator:
         self._limit_error: Optional[ItemStateCaptureLimitError] = None
         self._frames: list[BDOFrame] = []
         self._seen_frames: set[tuple[_FrameKey, bytes]] = set()
+        # Stream positions only. Non-character payloads need not be retained.
+        self._last_frame_end: OrderedDict[tuple[str, int, str, int, int], tuple[int, bool]] = OrderedDict()
+        self._remote_starts: set[_FrameKey] = set()
+        self._remote_ends: set[_FrameKey] = set()
         self._inventory_events: list[BDOEvent] = []
         self._storage_events: list[BDOEvent] = []
         self._neutral_storage_events: list[BDOEvent] = []
@@ -128,6 +133,8 @@ class _CharacterStateAccumulator:
             self._frames_seen += 1
             if self._limit_error is not None:
                 raise self._limit_error
+            if self.character_layout_supported:
+                self._observe_remote_boundary(frame)
             if frame.opcode not in self.relevant_opcodes:
                 return
             digest = hashlib.blake2b(frame.message, digest_size=16).digest()
@@ -161,6 +168,20 @@ class _CharacterStateAccumulator:
             self._frames.append(frame)
             self._relevant_frames_retained = attempted_frames
             self._relevant_bytes_retained = attempted_bytes
+
+    def _observe_remote_boundary(self, frame: BDOFrame) -> None:
+        flow = _frame_flow_generation_key(frame)
+        previous = self._last_frame_end.pop(flow, None)
+        start = frame.stream_sequence
+        if start is None:
+            return
+        remote = frame.opcode == self.character_profile.tables["remote"].opcode
+        if previous is not None and previous[0] == start and previous[1] != remote:
+            boundary = self._remote_starts if remote else self._remote_ends
+            boundary.add(_frame_key(frame))
+        self._last_frame_end[flow] = (start + len(frame.message), remote)
+        if len(self._last_frame_end) > _ITEM_MAX_ACTIVE_FLOWS:
+            self._last_frame_end.popitem(last=False)
 
     def observe_record(self, record: Any, raw_message: bytes) -> None:
         del raw_message
@@ -227,6 +248,8 @@ class _CharacterStateAccumulator:
             relevant_bytes_retained = self._relevant_bytes_retained
             snapshot_records_retained = self._snapshot_records_retained
             frames = tuple(self._frames)
+            remote_starts = self._remote_starts.copy()
+            remote_ends = self._remote_ends.copy()
             inventory_events = tuple(self._inventory_events)
             storage_events = tuple(self._storage_events)
             neutral_storage_events = tuple(self._neutral_storage_events)
@@ -537,7 +560,8 @@ class _CharacterStateAccumulator:
         if self.include_characters:
             if self.character_layout_supported:
                 roster = characters.assemble_characters(
-                    character_frames, inventory, self.character_profile
+                    character_frames, inventory, self.character_profile,
+                    remote_starts=remote_starts, remote_ends=remote_ends,
                 )
             else:
                 roster = CharacterRoster(

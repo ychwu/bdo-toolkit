@@ -34,14 +34,15 @@ class CharacterItem:
 
 @dataclass(frozen=True)
 class CharacterSection:
-    """Positive observations only. Sources indicate which lists were seen."""
+    """An available section can replace saved items, including with zero rows."""
 
     items: tuple[CharacterItem, ...] = ()
     observed_sources: tuple[str, ...] = ()
+    complete: bool = True
 
     @property
     def observed(self) -> bool:
-        return bool(self.observed_sources)
+        return self.complete and bool(self.observed_sources)
 
     @property
     def status(self) -> str:
