@@ -344,12 +344,7 @@ def assemble_characters(
                 candidates.add(owner)
     active = next(iter(candidates)) if len(candidates) == 1 else None
     if remote_complete:
-        covered = remote_ids.copy()
-        # A stats-only owner is safe to classify as remote only when the
-        # active owner was independently identified.
-        if active is not None:
-            covered.update(stats.keys() - {active})
-        for owner in covered:
+        for owner in remote_ids:
             for section in ("main", "pearl", "gear", "other"):
                 sections[owner].sources[section].add("remote")
     if active is None:

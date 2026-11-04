@@ -253,13 +253,17 @@ def test_remote_replacement_requires_both_edges_and_all_pages(missing):
     roster = obj.snapshot().characters
     alt = roster.by_id(ALT.hex())
     stats_alt = roster.by_id(stats_only.hex())
+    assert stats_alt.dp == 0
+    assert all(section.status == "unavailable" for section in (
+        stats_alt.main_inventory, stats_alt.pearl_inventory, stats_alt.gear,
+        stats_alt.other_inventory, stats_alt.life_skills,
+    ))
     assert not roster.by_id(unseen.hex()).gear.observed
     assert not roster.by_id(ACTIVE.hex()).pearl_inventory.observed
     if missing is None:
         assert len(alt.main_inventory.items) == 3
-        assert alt.pearl_inventory.status == stats_alt.gear.status == "available"
-        assert not alt.pearl_inventory.items and not stats_alt.gear.items
-        assert stats_alt.life_skills.status == "unavailable"
+        assert alt.pearl_inventory.status == "available"
+        assert not alt.pearl_inventory.items
     else:
         assert alt.main_inventory.status == stats_alt.gear.status == "unavailable"
         assert not alt.main_inventory.items
