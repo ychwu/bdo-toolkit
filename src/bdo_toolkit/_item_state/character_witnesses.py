@@ -246,6 +246,70 @@ def life_layout(
     return unique(candidates)
 
 
+def _padded_character_name(field: bytes) -> str:
+    """Recognize a complete 60-byte UTF-16 name field in a candidate row."""
+    try:
+        name, terminator, padding = field.decode("utf-16le").partition("\0")
+    except UnicodeDecodeError:
+        return ""
+    if terminator and not padding.strip("\0") and name.replace("_", "").isalnum():
+        return name
+    return ""
+
+
+def _discover_named_pairs(
+    table: Candidate, portrait: CharacterTable, message: bytes, owner: bytes,
+    verified_name_offset: int | None,
+) -> list[tuple[CharacterTable, CharacterTable]]:
+    pairs: list[tuple[CharacterTable, CharacterTable]] = []
+    owner_pos = portrait.fields["owner"]
+    for row in set(r for r in table.rows if owner in r):
+        if row.count(owner) != 1:
+            continue
+        o = row.index(owner)
+        individual = []
+        shared_label_seen = False
+        for n in range(table.stride - 59):
+            if not (n + 60 <= o or o + 8 <= n):
+                continue
+            field = row[n:n + 60]
+            name = _padded_character_name(field)
+            if not name or message.count(field) != 1 or row.count(field) != 1:
+                continue
+            pos = message.index(field)
+            if not (pos + 60 <= owner_pos or owner_pos + 8 <= pos):
+                continue
+            # A suffix of the same name also matches both packets. Require
+            # the start of the shared name, even when its offset is odd.
+            if n >= 2 and pos >= 2 and row[n-2:n] == message[pos-2:pos]:
+                preceding = int.from_bytes(row[n-2:n], "little")
+                if chr(preceding).isalnum() or preceding == ord("_"):
+                    continue
+            labels: dict[bytes, str] = {}
+            for peer in table.rows:
+                peer_owner = peer[o:o + 8]
+                peer_name = _padded_character_name(peer[n:n + 60])
+                if not peer_name or not any(peer_owner):
+                    break
+                if labels.setdefault(peer_owner, peer_name) != peer_name:
+                    break
+            else:
+                # Family names can match both packets too, but several
+                # characters can share one. Require a one-to-one mapping.
+                if len(labels) < 3:
+                    continue
+                if len(set(labels.values())) < len(labels):
+                    shared_label_seen = True
+                else:
+                    individual.append((table.layout(owner=o, name=n), CharacterTable(
+                        portrait.opcode, 0, portrait.stride, None, 1,
+                        dict(owner=owner_pos, name=pos),
+                    )))
+        pairs.extend(pair for pair in individual
+                     if shared_label_seen or pair[1].fields["name"] == verified_name_offset)
+    return pairs
+
+
 def active_layouts(
     e: Evidence, previous: CharacterLayoutProfile
 ) -> dict[str, CharacterTable]:
@@ -325,66 +389,29 @@ def active_layouts(
                 pos = known
         portrait = CharacterTable(view.opcode, 0, view.length, None, 1, dict(owner=pos))
         portraits.append(portrait)
-        if not (
+        verified_name_offset = None
+        if (
             old_portrait
             and old_portrait.opcode == view.opcode
             and old_portrait.fields.get("owner") == pos
             and old_portrait.stride == view.length
             and "name" in old_portrait.fields
         ):
-            continue
-        p = old_portrait.fields["name"]
-        name = _name(view.message[p : p + 60])
-        if not name:
-            continue
-        encoded = name.encode("utf-16le") + b"\0\0"
-        np = view.message.find(encoded)
-        if (
-            np < 0
-            or view.message.count(encoded) != 1
-            or np + 60 > view.length
-            or not (np + 60 <= pos or pos + 8 <= np)
-        ):
-            continue
-        labeled_portraits.append(
-            CharacterTable(
-                view.opcode, 0, view.length, None, 1, dict(owner=pos, name=np)
-            )
-        )
-        # Multiple frame lengths disambiguate the counted row geometry.
+            n = old_portrait.fields["name"]
+            name = _name(view.message[n:n + 60])
+            if name and view.message.count(name.encode("utf-16le") + bytes(2)) == 1:
+                labeled_portraits.append(old_portrait)
+                verified_name_offset = n
+
         by: dict[int, list[bytes]] = defaultdict(list)
         for other in e.neighbors:
             if other.opcode != view.opcode:
                 by[other.opcode].append(other.message)
         for messages in by.values():
-            if len({len(b) for b in messages}) < 2 or not any(
-                owner in b and encoded in b for b in messages
-            ):
+            if len({len(b) for b in messages}) < 2 or not any(owner in b for b in messages):
                 continue
-            for t in counted(messages, 180, 350, 1):
-                for r in t.rows:
-                    o = r.find(owner)
-                    n = r.find(encoded)
-                    if (
-                        o < 0
-                        or n < 0
-                        or n + 60 > t.stride
-                        or not (n + 60 <= o or o + 8 <= n)
-                    ):
-                        continue
-                    named_pairs.append(
-                        (
-                            t.layout(owner=o, name=n),
-                            CharacterTable(
-                                view.opcode,
-                                0,
-                                view.length,
-                                None,
-                                1,
-                                dict(owner=pos, name=np),
-                            ),
-                        )
-                    )
+            for table in counted(messages, 180, 350, 1):
+                named_pairs.extend(_discover_named_pairs(table, portrait, view.message, owner, verified_name_offset))
     if named_pairs and all(pair == named_pairs[0] for pair in named_pairs):
         output["named"], output["portrait"] = named_pairs[0]
     else:

@@ -17,6 +17,30 @@ from bdo_toolkit.item_state import CharacterLoadSession, analyze_item_state_pcap
 from fixture_paths import JULY17_OPCODE_PROFILE
 
 
+@pytest.mark.parametrize("families, expected", [
+    (["Birch", "Birch", "Elm"], True),
+    (["Birch", "Cedar", "Elm"], False),
+])
+def test_shifted_character_name_requires_distinguishable_family(families, expected):
+    from bdo_toolkit._item_state.character_discovery import Candidate
+    from bdo_toolkit._item_state.character_profile import CharacterTable
+    from bdo_toolkit._item_state.character_witnesses import _discover_named_pairs
+
+    def field(name):
+        return name.encode("utf-16le").ljust(60, bytes(1))
+
+    owners = [sha256(str(i).encode()).digest()[:8] for i in range(3)]
+    rows = [owner + field(name) + field(family)
+            for owner, name, family in zip(owners, ["Alice", "Bob", "Zoë"], families)]
+    table = Candidate(70, 8, 128, 5, rows)
+    message = bytes(19) + owners[0] + field("Birch") + field("Alice")
+    portrait = CharacterTable(71, 0, len(message), None, 1, {"owner": 19})
+    pairs = _discover_named_pairs(table, portrait, message, owners[0], None)
+    assert [(a.fields["name"], b.fields["name"]) for a, b in pairs] == (
+        [(8, 87)] if expected else []
+    )
+
+
 def synthetic_login():
     ids = [sha256(f"anon {i}".encode()).digest()[:8] for i in range(9)]
     frames = []
