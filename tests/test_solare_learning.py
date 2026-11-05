@@ -499,8 +499,10 @@ def test_mixed_registered_and_unknown_tables_keep_independent_details(
         ("solare--leaderboard-complete-retry--8bfa6979ab", {"rich", "overall"}),
         ("solare--leaderboard-complete-post-patch--92d835cbe9", {"rich"}),
         ("solare--leaderboard-complete-unregistered--dfeb623bda", {"rich", "overall"}),
-        ("solare--leaderboard-complete-live-clock-regression--45c54a0567", {"rich"}),
-        ("solare--leaderboard-complete-post-patch-live-timeout-regression--341a4f1b87", set()),
+        # After draws are zeroed, adjacent nonzero bytes distinguish the
+        # original counter placement. Require the exact pre-mutation layout.
+        ("solare--leaderboard-complete-live-clock-regression--45c54a0567", {"rich", "overall"}),
+        ("solare--leaderboard-complete-post-patch-live-timeout-regression--341a4f1b87", {"rich", "overall"}),
     ),
 )
 def test_historical_zero_draw_counterfactual_recovers_only_proven_boundaries(

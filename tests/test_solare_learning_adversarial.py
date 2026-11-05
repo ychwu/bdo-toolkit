@@ -688,6 +688,19 @@ def test_zero_outcomes_reject_another_gap_large_enough_for_a_counter_array(gap_s
     assert learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies) is None
 
 
+@pytest.mark.parametrize("leading,trailing", ((b"", b"\x12\x34"), (b"\x56", b"\x78"), (b"\x34\x12", b"")))
+def test_zero_outcomes_require_unique_placement_inside_nonzero_container(leading, trailing):
+    records, occupancies = _zero_draw_tail()
+    rows = tuple(row[:7867] + (leading if i == 1 else bytes(len(leading))) +
+                 row[7867:] + (trailing if i == 1 else bytes(len(trailing)))
+                 for i, row in enumerate(records.rows))
+    records.family.frame_length += 2
+    performance = learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies)
+    assert performance is not None
+    assert performance.draws_offset == 7867 + len(leading)
+    assert not performance.zero_outcome_candidates
+
+
 @pytest.mark.parametrize("damage", ("large_tail", "nonzero_before", "nonzero_after", "other_wide_gap"))
 def test_zero_outcome_equivalence_rejects_unproved_containers(damage):
     records, occupancies = _zero_draw_tail()
