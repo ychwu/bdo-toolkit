@@ -189,10 +189,11 @@ def _discover_inventory_tail_layout(
         # orders. Keep the bounded tail search, but do not treat their order as
         # part of the protocol invariant.
         slot_tail_position = slot_relative % stride
-        for container_relative in range(
-            max(window_start, slot_tail_position - 4),
-            min(stride, slot_tail_position + 5),
-        ):
+        # Either field may precede the item. Read prefix candidates from
+        # this row, including the first row, never from the next row.
+        for container_relative in (*range(prefix_start, 0), *range(window_start, stride)):
+            if abs(container_relative % stride - slot_tail_position) > 4:
+                continue
             if container_relative == slot_relative:
                 continue
             observed_codes: set[int] = set()
@@ -202,7 +203,7 @@ def _discover_inventory_tail_layout(
                     frame.message[int(event.record_offset) + container_relative]
                     for event in group
                     if event.record_offset is not None
-                    and int(event.record_offset) + container_relative
+                    and 0 <= int(event.record_offset) + container_relative
                     < len(frame.message)
                 ]
                 if len(codes) != len(group) or len(set(codes)) != 1:

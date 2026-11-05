@@ -704,7 +704,7 @@ def test_inventory_container_layout_is_discovered_from_august_wrapper_header():
     assert all(item.inventory_slot is None for item in summary.items)
 
 
-def test_inventory_header_layout_rejects_incomplete_next_record_tail_candidate():
+def test_inventory_uses_current_record_prefix_container_and_final_slot():
     groups = [
         _synthetic_boundary_aligned_inventory_header_group(
             sequence=450 + code,
@@ -713,8 +713,7 @@ def test_inventory_header_layout_rejects_incomplete_next_record_tail_candidate()
         for code in (0x00, 0x0B)
     ]
 
-    assert inventory_module._discover_inventory_tail_layout(groups) is None
-    assert inventory_module._discover_inventory_header_container_offset(groups) == 32
+    assert inventory_module._discover_inventory_tail_layout(groups) == (224, -1)
 
     accumulator = _CharacterStateAccumulator(
         profile_source="test",
@@ -731,7 +730,9 @@ def test_inventory_header_layout_rejects_incomplete_next_record_tail_candidate()
     assert assembly.summary.unclassified_records == 0
     assert assembly.summary.container(0x00).occupied_stacks == 3
     assert assembly.summary.container(0x0B).occupied_stacks == 3
-    assert all(item.inventory_slot is None for item in assembly.summary.items)
+    for code in (0x00, 0x0B):
+        assert sorted(i.inventory_slot for i in assembly.summary.items
+                      if i.container_code == code) == [2, 3, 4]
 
 
 def test_inventory_summary_selects_unique_geometry_from_same_opcode_layouts():
