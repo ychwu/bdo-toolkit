@@ -6,6 +6,51 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.0 - 2026-11-05
+
+This release adds character loadouts and layout calibration, improves
+character-load recovery, and expands verified Solare board discovery.
+
+### Added
+
+- Add character loadouts to live and replay character-load snapshots, including
+  owner-keyed main/Pearl inventories, equipment, life-skill gear, other items,
+  and available stats or active names. Sections distinguish available data from
+  unavailable observations. Remote item replacement requires complete consecutive
+  pages with both framing boundaries and item evidence for each covered owner;
+  incomplete life-gear sources preserve prior observations. Equipment roles and
+  decoded lightstone socket positions are retained, with inferred roles marked.
+- Add explicit live/replay character-layout calibration and the
+  `character-calibrate` CLI. Calibration can save the shared profile's optional
+  `characters` section with backup and atomic replacement while preserving
+  unrelated fields. Explicit overrides and existing sidecars remain supported;
+  absent layouts can use the built-in November layout. Malformed character
+  layouts produce character warnings without blocking inventory/storage decoding.
+  Shifted active names require corroborating owner records, with ambiguous
+  identity withheld. Start a new session after updating layouts.
+- Support verified terminated short Solare class boards through a bounded
+  fallback when ordinary discovery is incomplete. Response-envelope, known-roster,
+  stream-continuity, and complete overall cross-checks preserve actual class
+  counts and singleton tails. Independently verified overall counters can
+  establish short-board labels when valid recent history disagrees with lifetime
+  totals. Missing boundaries, unresolved ambiguity, and transport loss still
+  reject completion; ordinary full-board validation remains unchanged.
+
+### Fixed
+
+- Recover sparse town storage in finite character-load sessions and offline
+  analysis when normal snapshot paths cannot classify small nonempty cohorts.
+  Recovery requires bounded inventory-anchored evidence, complete identity, and
+  no preceding or intervening recognized storage activity. Warnings identify
+  inferred and unaccepted records. Ordinary live snapshot classification is
+  unchanged; missing packets never imply empty storage or authorize clearing it.
+- Recover inventory slots when container fields precede items. Bounded discovery
+  reads prefix metadata from every record, including the first, while retaining
+  complete-column, geometry, and ambiguity checks.
+- Recover Solare class performance and equipment beside nonzero adjacent bytes
+  when exactly one complete zero-counter placement agrees across every record.
+  Ambiguous placements remain unavailable.
+
 ## 1.0.16 - 2026-10-29
 
 This patch restores Solare details around short unassigned fields.
