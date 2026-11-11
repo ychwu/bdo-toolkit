@@ -2977,3 +2977,39 @@ def test_small_load_fallback_preserves_snapshot_before_later_activity():
     state = accumulator.snapshot()
     assert state.storages.nonempty_count == 1
     assert any("Sparse storage state was inferred" in w for w in state.warnings)
+
+
+@pytest.mark.parametrize("workers", [1, 237])
+@pytest.mark.parametrize("boundary", ["outside", "inside", "unknown", "manual", "gap"])
+def test_worker_burst_can_only_recover_contiguous_neutral_frames(workers, boundary):
+    accumulator = _CharacterStateAccumulator(
+        profile_source="test", specs=(_storage_snapshot_spec(),),
+    )
+    accumulator.observe_event(_state_inventory_anchor())
+    for index in range(workers):
+        worker = _state_storage_event(
+            timestamp=1.3, sequence=200_000 + 257 * index,
+            storage_id=32, event_type="storage_delta",
+        )
+        worker = replace(worker, source="Worker Production")
+        if index == 0:
+            if boundary == "inside":
+                worker = replace(worker, extra={"stream_sequence": 1257})
+            elif boundary == "unknown":
+                worker = replace(worker, extra={})
+            elif boundary == "manual":
+                worker = replace(worker, source="Manual")
+        accumulator.observe_event(worker)
+    for index, town in enumerate(tuple(STORAGE_LOCATIONS)[:17]):
+        seq = 1000 + index * 257 + int(boundary == "gap" and index > 0)
+        event = _state_storage_event(
+            timestamp=1.2, sequence=seq, storage_id=town, event_type="storage_record",
+        )
+        count = 8 if index == 0 else 1
+        for i in range(count):
+            accumulator.observe_event(replace(
+                event, record_index=i + 1, record_count=count,
+                storage_instance=f"town-{town}-stack-{i}",
+            ))
+    result = accumulator.snapshot(decoder_health=DecoderHealth(storage_status="compatible"))
+    assert result.storages.occupied_stacks == (24 if boundary == "outside" else 0)

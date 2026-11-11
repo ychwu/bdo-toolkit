@@ -11,6 +11,7 @@ from .._protocol import (
     STORAGE_LOCATIONS,
     storage_location,
 )
+from .._storage_hydration import StorageHydrationTracker
 from ..events import BDOEvent
 
 from ._constants import (
@@ -222,6 +223,76 @@ def _small_character_storage_fallback(
     if len(_infer_storage_sweeps(observations)) != 1:
         return ()
     return tuple(replace(event, event_type="storage_snapshot", source=None) for event in events)
+
+
+def _worker_adjacent_storage_sweep(
+    events: tuple[BDOEvent, ...],
+    boundaries: tuple[BDOEvent, ...],
+    anchors: tuple[_HydrationAnchor, ...],
+) -> tuple[BDOEvent, ...]:
+    """Recover one contiguous broad sweep obscured by worker callback ordering.
+
+    Assembly has already selected the latest inventory flow and generation.
+    Require the entire neutral run, with consecutive frame byte ranges, so
+    neither missing frames nor live mutations can be bridged.
+    """
+    if not events or not anchors or not boundaries:
+        return ()
+    if any(
+        e.source != "Worker Production" or e.event_type != "storage_delta"
+        for e in boundaries
+    ):
+        return ()
+    if len({e.opcode for e in events}) != 1 or any(
+        not e.storage_instance or not e.storage_id or e.quantity <= 0 for e in events
+    ):
+        return ()
+    times = sorted({e.timestamp for e in events})
+    anchor = max(a.timestamp for a in anchors)
+    if not anchor <= times[0] <= times[-1] <= anchor + _STORAGE_HYDRATION_EPOCH_SECONDS:
+        return ()
+    if times[-1] - times[0] > _STORAGE_HYDRATION_MAX_BURST_SECONDS or any(
+        b - a > _STORAGE_HYDRATION_BURST_GAP_SECONDS for a, b in zip(times, times[1:])
+    ):
+        return ()
+    frame_events: dict[int, list[BDOEvent]] = {}
+    for event in events:
+        seq = _event_frame_key(event).stream_sequence
+        if seq is None:
+            return ()
+        frame_events.setdefault(seq, []).append(event)
+    positions: list[tuple[int, int, int]] = []
+    for seq, rows in frame_events.items():
+        first = rows[0]
+        if not first.message_length or not first.storage_id:
+            return ()
+        if len(rows) != (first.record_count or 1):
+            return ()
+        if len({row.record_index for row in rows}) != len(rows):
+            return ()
+        positions.append((seq, first.message_length, first.storage_id))
+    positions.sort()
+    towns: set[int] = set()
+    previous_town = None
+    end = positions[0][0]
+    for start, length, town in positions:
+        if start != end or (town != previous_town and town in towns):
+            return ()
+        end = start + length
+        towns.add(town)
+        previous_town = town
+    if (
+        len(towns) < StorageHydrationTracker.MIN_UNANCHORED_DESTINATIONS
+        or max(map(len, frame_events.values())) < StorageHydrationTracker.MIN_UNANCHORED_RECORD_COUNT
+    ):
+        return ()
+    for event in boundaries:
+        seq = _event_frame_key(event).stream_sequence
+        if seq is None or not event.message_length:
+            return ()
+        if seq < end and seq + event.message_length > positions[0][0]:
+            return ()
+    return tuple(replace(e, event_type="storage_snapshot") for e in events)
 
 
 def _reconcile_split_storage_hydration(

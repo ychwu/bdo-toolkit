@@ -44,6 +44,7 @@ from .storage import (
     _character_storage_snapshot_fallback,
     _reconcile_split_storage_hydration,
     _small_character_storage_fallback,
+    _worker_adjacent_storage_sweep,
 )
 
 
@@ -347,7 +348,19 @@ class _CharacterStateAccumulator:
             )
             small_fallback_used = bool(storage_events)
 
-        if storage_events and neutral_storage_events:
+        worker_sweep_used = False
+        if (
+            not storage_events
+            and fallback_observations is None
+            and decoder_health is not None
+            and decoder_health.storage_is_compatible
+        ):
+            storage_events = _worker_adjacent_storage_sweep(
+                neutral_storage_events, live_storage_boundaries, inventory_anchors,
+            )
+            worker_sweep_used = bool(storage_events)
+
+        if storage_events and neutral_storage_events and not worker_sweep_used:
             (
                 reconciled_events,
                 reconciled_observations,
@@ -421,6 +434,11 @@ class _CharacterStateAccumulator:
                 "Inventory hydration was observed only through calibrated count-zero "
                 "wrappers; the empty current state is preserved, but no record-level "
                 "container metadata was available."
+            )
+        if worker_sweep_used:
+            warnings.append(
+                "Storage hydration recovered from consecutive storage frames in TCP "
+                "stream order. Worker production was excluded."
             )
         if small_fallback_used:
             warnings.append(
