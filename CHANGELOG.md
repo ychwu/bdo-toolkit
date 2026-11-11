@@ -6,6 +6,17 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.1 - 2026-11-11
+
+This patch improves town-storage recovery during character loads.
+
+### Fixed
+
+- Recover town storage during login worker production. Live and recorded
+  character loads can recover a contiguous broad town-storage sweep when worker
+  production interrupts event delivery. Worker deposits remain excluded from
+  snapshot contents; stream continuity and existing integrity checks remain required.
+
 ## 1.1.0 - 2026-11-05
 
 This release adds character loadouts and layout calibration, improves
