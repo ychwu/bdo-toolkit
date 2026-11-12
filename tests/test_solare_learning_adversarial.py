@@ -688,17 +688,31 @@ def test_zero_outcomes_reject_another_gap_large_enough_for_a_counter_array(gap_s
     assert learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies) is None
 
 
-@pytest.mark.parametrize("leading,trailing", ((b"", b"\x12\x34"), (b"\x56", b"\x78"), (b"\x34\x12", b"")))
+@pytest.mark.parametrize("leading,trailing", (
+    (b"", b"\x12\x34"), (b"\x56", b"\x78"), (b"\x34\x12", b""),
+    (b"", b"\x01\x02\x03\x04"), (b"\x01\x02", b"\x03\x04"), (b"\x01\x02\x03\x04", b""),
+))
 def test_zero_outcomes_require_unique_placement_inside_nonzero_container(leading, trailing):
     records, occupancies = _zero_draw_tail()
     rows = tuple(row[:7867] + (leading if i == 1 else bytes(len(leading))) +
                  row[7867:] + (trailing if i == 1 else bytes(len(trailing)))
                  for i, row in enumerate(records.rows))
-    records.family.frame_length += 2
+    records.family.frame_length += len(leading) + len(trailing)
     performance = learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies)
     assert performance is not None
     assert performance.draws_offset == 7867 + len(leading)
     assert not performance.zero_outcome_candidates
+
+
+@pytest.mark.parametrize("trailing", (
+    b"\x00\x01\x02\x03",  # Two valid starts in a 16-byte region.
+    b"\x01\x02\x03\x04\x05",  # Unique placement, but beyond the fallback's bound.
+))
+def test_zero_outcomes_reject_ambiguous_or_oversized_placement_region(trailing):
+    records, occupancies = _zero_draw_tail()
+    rows = tuple(row + trailing for row in records.rows)
+    records.family.frame_length += len(trailing)
+    assert learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies) is None
 
 
 @pytest.mark.parametrize("damage", ("large_tail", "nonzero_before", "nonzero_after", "other_wide_gap"))

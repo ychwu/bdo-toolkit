@@ -70,7 +70,8 @@ _MAX_AGGREGATE_VECTORS = 256
 _MAX_LEARNED_RECORD_END = 32 * 1024
 _MIN_HISTORY_DISCRIMINATORS = 5
 _PREFILTER_ROWS = 32
-_MAX_ZERO_OUTCOME_PADDING = 3
+_MAX_WHOLE_ZERO_REGION = 15
+_MAX_ZERO_PLACEMENT_REGION = 16
 
 
 @dataclass(frozen=True)
@@ -489,8 +490,8 @@ def _anchored_zero_outcome_offsets(
     one bounded 12..15-byte zero region may remain. Shorter unassigned gaps
     cannot contain a complete three-counter array. Every complete placement
     in a fully zero region decodes the same vector. Otherwise require a unique
-    bounded region and exactly one all-zero array placement. No arbitrary
-    zero region is promoted.
+    bounded region of at most 16 bytes and exactly one all-zero array placement.
+    No arbitrary zero region is promoted.
     Distinct container proofs and conflicting counter solutions still reject.
     """
     complementary = tuple(
@@ -533,7 +534,7 @@ def _anchored_zero_outcome_offsets(
     if elos[0] >= class_field:
         fixed.append((elos[0], 4))
     proofs: set[tuple[int, ...]] = set()
-    nonzero_containers: set[tuple[int, int]] = set()
+    placement_containers: set[tuple[int, int]] = set()
     for first_offset, second_offset in complementary:
         intervals = sorted(fixed + [(first_offset, 12), (second_offset, 12)])
         cursor = class_field
@@ -553,22 +554,24 @@ def _anchored_zero_outcome_offsets(
         wide = [(start, size) for start, size in gaps if size >= 12]
         # Unknown bytes smaller than a full array cannot compete with its
         # container. Larger gaps still require the unique bounded proof below.
-        if len(wide) != 1 or wide[0][1] > 12 + _MAX_ZERO_OUTCOME_PADDING:
+        if len(wide) != 1 or wide[0][1] > _MAX_ZERO_PLACEMENT_REGION:
             continue
         start, size = wide[0]
-        if all(row[start:start + size] == bytes(size) for row in rows):
+        if size <= _MAX_WHOLE_ZERO_REGION and all(
+            row[start:start + size] == bytes(size) for row in rows
+        ):
             proofs.add(tuple(range(start, start + size - 12 + 1)))
             if len(proofs) > 1:
                 return ()
         else:
-            nonzero_containers.add((start, size))
+            placement_containers.add((start, size))
     if proofs:
         return next(iter(proofs))
     # Only after ordinary whole-container proof fails: the complementary
     # counters require zero in every slot. Adjacent bytes have no meaning.
-    if len(nonzero_containers) != 1:
+    if len(placement_containers) != 1:
         return ()
-    start, size = nonzero_containers.pop()
+    start, size = placement_containers.pop()
     placements = tuple(
         offset for offset in range(start, start + size - 12 + 1)
         if all(row[offset:offset + 12] == bytes(12) for row in rows)
