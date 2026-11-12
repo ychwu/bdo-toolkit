@@ -6,6 +6,17 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.2 - 2026-11-12
+
+This patch improves Solare detail recovery around zero outcome counters.
+
+### Fixed
+
+- Recover Solare class details from a wider draw-counter region. Performance
+  and equipment can now be recovered when a 16-byte region contains exactly
+  one valid placement for the zero outcome counters across all players.
+  Ambiguous placements still leave those details unavailable.
+
 ## 1.1.1 - 2026-11-11
 
 This patch improves town-storage recovery during character loads.
