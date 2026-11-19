@@ -899,6 +899,7 @@ def test_overall_aggregate_requires_its_lightweight_slot_match_summary() -> None
     ("offset_name", "value", "performance_survives"),
     (
         ("overall_specialization", b"\xff", False),
+        ("overall_specialization", b"\x00", False),
         ("overall_history", b"!", False),
         ("overall_gear", b"\xff", True),
         ("overall_addons", b"\xff", True),

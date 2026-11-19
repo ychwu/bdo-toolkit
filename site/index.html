@@ -9217,7 +9217,7 @@ def show_lahn_leaders(snapshot: SolareLeaderboardSnapshot) -&gt; None:
 </section>
 <section class="doc-section sym-break" data-symbol="">
 <h2 class="section-heading" data-anchor="specialization" data-toc="" id="solare-player-stats/specialization"><code>SolareSpecialization</code></h2>
-<aside class="note accent"><p class="note-label">Fails closed</p><p>Any other specialization code in an occupied slot stops optional detail decoding.</p></aside>
+<aside class="note accent"><p class="note-label">Fails closed</p><p>Wukong can also carry code 0 in an occupied slot. The toolkit preserves that code and displays Ascension. Other classes require code 1 or 2.</p></aside>
 <div class="signature" data-source="src/bdo_toolkit/solare/models.py"><span class="signature-kind">dataclass</span><div class="signature-code"><span class="sig-mod">bdo_toolkit.solare.</span>SolareSpecialization(code: int, branch: str, name: str | None)</div></div>
 <p>The advanced or succession branch used in one class slot.</p>
 <dl class="fields">

@@ -25,6 +25,7 @@ from ._constants import (
     EMPTY_SPEC_CODE,
     SOLARE_RICH_RECORD_COUNTS,
     class_name,
+    valid_occupied_specialization,
 )
 from ._details import (
     _ADDON_SLOT_SIZE,
@@ -209,6 +210,7 @@ def _learn_overall_class_offset(
 
 def _learn_spec_offset(
     rows: Sequence[bytes],
+    class_offset: int,
     occupancies: Sequence[int],
 ) -> Optional[int]:
     candidates: list[int] = []
@@ -220,7 +222,7 @@ def _learn_spec_offset(
             for slot in range(_CLASS_SLOT_COUNT):
                 code = row[offset + slot]
                 if slot < occupied:
-                    if code not in (1, 2):
+                    if not valid_occupied_specialization(row[class_offset + slot], code):
                         valid = False
                         break
                     observed_occupied.add(code)
@@ -509,7 +511,7 @@ def _anchored_zero_outcome_offsets(
         if learned_class is None:
             return ()
         class_field = learned_class[0]
-    spec = _learn_spec_offset(rows, occupancies)
+    spec = _learn_spec_offset(rows, class_field, occupancies)
     history = _history_candidates(rows, occupancies, matches_offset)
     elos = _elo_candidates(records)
     if spec is None or len(history) != 1 or len(elos) != 1:
@@ -864,7 +866,7 @@ def _learn_performance_offsets(
     companion: Optional[tuple[_RecordTable, _PerformanceOffsets]] = None,
     counter_check: Optional[Callable[[int, tuple[int, int, int]], bool]] = None,
 ) -> Optional[_PerformanceOffsets]:
-    spec_offset = _learn_spec_offset(records.rows, occupancies)
+    spec_offset = _learn_spec_offset(records.rows, class_offset, occupancies)
     if spec_offset is None:
         return None
 

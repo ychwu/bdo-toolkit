@@ -102,6 +102,10 @@ ADVANCED_SPEC_BY_CLASS: dict[int, str] = {
 }
 
 
+def valid_occupied_specialization(class_code: int, code: int) -> bool:
+    return code in (1, 2) or (code == 0 and class_code == 3)  # Wukong
+
+
 def class_name(code: int) -> Optional[str]:
     if code == EMPTY_CLASS_CODE:
         return None

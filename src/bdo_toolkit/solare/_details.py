@@ -27,6 +27,7 @@ from ._constants import (
     EMPTY_SPEC_CODE,
     SOLARE_RICH_RECORD_COUNTS,
     class_name,
+    valid_occupied_specialization,
 )
 from ._discovery import (
     DiscoveredSolareFamily,
@@ -317,7 +318,7 @@ def _decode_history_region(region: bytes) -> Optional[tuple[str, tuple[int, ...]
 
 
 def _specialization(class_code: int, code: int) -> SolareSpecialization:
-    if code == 1:
+    if code in (0, 1):
         return SolareSpecialization(
             code=code,
             branch="advanced",
@@ -539,7 +540,7 @@ def _decode_performance_slots(
             seen_empty
             or display_name is None
             or class_code in occupied_codes
-            or spec_code not in (1, 2)
+            or not valid_occupied_specialization(class_code, spec_code)
             or not 0 < slot_matches <= _MAX_PLAUSIBLE_MATCHES
             or any(
                 value > slot_matches for value in (slot_wins, slot_draws, slot_losses)

@@ -594,6 +594,14 @@ def test_all_zero_draws_do_not_establish_a_unique_outcome_layout() -> None:
     assert learning._balanced_counter_solution(rows, performance.occupancies) is None
 
 
+@pytest.mark.parametrize("second_class, expected", [(3, 3), (6, None)])
+def test_zero_specialization_requires_wukong_in_the_same_slot(second_class, expected):
+    # Wukong and Scholar both display Ascension. Only Wukong has a proven zero.
+    row = bytes((12, second_class, 101, 2, 0, 3))
+    assert learning._learn_spec_offset((row,), 0, (2,)) == expected
+    assert learning._learn_spec_offset((row + row[3:],), 0, (2,)) is None
+
+
 def _zero_draw_tail() -> tuple[learning._RecordTable, tuple[int, ...]]:
     # Independent synthetic geometry, not copied from a captured layout.
     rows = []
