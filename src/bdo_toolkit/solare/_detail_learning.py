@@ -239,6 +239,7 @@ def _learn_spec_offset(
 
 
 def _elo_candidates(records: _RecordTable) -> tuple[int, ...]:
+    minimum = 0 if records.family.short_record_locations else 1
     sample = _sample_ordinals(len(records.rows))
     prefiltered: list[int] = []
     for offset in range(records.record_end - 3):
@@ -246,7 +247,8 @@ def _elo_candidates(records: _RecordTable) -> tuple[int, ...]:
             _u32le(records.rows[ordinal], offset) for ordinal in sample
         )
         if (
-            not all(0 < value <= _MAX_LEARNED_ELO for value in sample_values)
+            sample_values[0] == 0
+            or not all(minimum <= value <= _MAX_LEARNED_ELO for value in sample_values)
             or not all(
                 left >= right
                 for left, right in zip(sample_values, sample_values[1:])
@@ -261,7 +263,7 @@ def _elo_candidates(records: _RecordTable) -> tuple[int, ...]:
     for offset in prefiltered:
         values = tuple(_u32le(row, offset) for row in records.rows)
         if (
-            all(0 < value <= _MAX_LEARNED_ELO for value in values)
+            all(minimum <= value <= _MAX_LEARNED_ELO for value in values)
             and all(left >= right for left, right in zip(values, values[1:]))
             and len(set(values)) >= _MIN_ELO_DISTINCT
         ):
@@ -512,7 +514,7 @@ def _anchored_zero_outcome_offsets(
             return ()
         class_field = learned_class[0]
     spec = _learn_spec_offset(rows, class_field, occupancies)
-    history = _history_candidates(rows, occupancies, matches_offset)
+    history = _history_candidates(rows, occupancies, matches_offset, independent_counters=True)
     elos = _elo_candidates(records)
     if spec is None or len(history) != 1 or len(elos) != 1:
         return ()
@@ -668,10 +670,15 @@ def _history_candidates(
     matches_offset: int,
     *, independent_counters: bool = False,
 ) -> tuple[int, ...]:
+    if independent_counters:
+        strict = _history_candidates(rows, occupancies, matches_offset)
+        if strict:
+            return strict
     required = _CLASS_SLOT_COUNT * _HISTORY_SLOT_SIZE
     sample = _sample_ordinals(len(rows), occupancies)
 
     def valid_for(offset: int, ordinals: Sequence[int]) -> bool:
+        malformed = 0
         for ordinal in ordinals:
             row = rows[ordinal]
             occupied = occupancies[ordinal]
@@ -680,6 +687,13 @@ def _history_candidates(
                 decoded = _decode_history_region(
                     row[start : start + _HISTORY_SLOT_SIZE]
                 )
+                if slot < occupied and independent_counters and (
+                    decoded is None or not decoded[0] or _history_outcome_counts(decoded[1]) is None
+                ):
+                    malformed += 1
+                    if malformed > 1 or len(rows) < 20:
+                        return False
+                    continue
                 if decoded is None:
                     return False
                 raw, codes = decoded
@@ -829,7 +843,7 @@ def _counter_geometry_check(
     if counters is None:
         return None
     source_matches, source_outcomes = counters
-    if len(_history_candidates(source.rows, source_occupancies, source_matches)) != 1:
+    if len(_history_candidates(source.rows, source_occupancies, source_matches, independent_counters=True)) != 1:
         return None
     by_name = {name: i for i, name in enumerate(source.names)}
 
@@ -898,7 +912,7 @@ def _validate_performance_candidate(
     *,
     companion: Optional[tuple[_RecordTable, _PerformanceOffsets]] = None,
 ) -> Optional[_PerformanceOffsets]:
-    independent = bool(getattr(records.family, "short_record_locations", ())) and companion is not None
+    independent = companion is not None
     histories = _history_candidates(
         records.rows,
         occupancies,
@@ -916,20 +930,11 @@ def _validate_performance_candidate(
         history_offset,
     )
     if oriented is None and companion is not None:
-        # Short-board fallback: a separately oriented companion establishes
-        # labels. Recent UI history may cover a different set of matches;
-        # preserve valid raw windows without treating them as counter totals.
-        # Ordinary full-board inference retains its original history checks.
+        # Orient the independently balanced counters using shared player slots.
         supported = tuple(
-            proposed for proposed in (
-                tuple((a, b, c) for a, b, c in itertools.permutations(outcome_offsets)) if independent else
-                _history_outcome_candidates(
-                    records.rows, occupancies, matches_offset, outcome_offsets,
-                    history_offset, minimum_discriminators=0,
-                )
-            )
+            (w, d, l) for w, d, l in itertools.permutations(outcome_offsets)
             if _companion_outcomes_agree(
-                records, class_offset, occupancies, matches_offset, proposed,
+                records, class_offset, occupancies, matches_offset, (w, d, l),
                 companion[0], companion[1],
             )
         )
@@ -1149,12 +1154,12 @@ def _ranges_overlap(left: int, right: int, size: int = 4) -> bool:
     return left < right + size and right < left + size
 
 
-def _aggregate_zero_offsets(
+def _aggregate_zero_proof(
     records: _RecordTable,
     performance: _PerformanceOffsets,
     companion: Optional[_RecordTable],
-) -> tuple[int, ...]:
-    """Prove zero counters in four-byte gaps between independent header fields.
+) -> Optional[tuple[int, Optional[int]]]:
+    """Return the zero address and any required adjacent lifetime-counter address.
 
     Historical headers carry a 62-byte name, a 101-byte recent-history block,
     and an eight-byte identity shared with the class response. Identity matches
@@ -1162,15 +1167,15 @@ def _aggregate_zero_offsets(
     No absolute era-specific offsets or arbitrary runs of zeroes are used.
     """
     if companion is None or companion.family.class_offset is None:
-        return ()
+        return None
     elos = _elo_candidates(records)
     rich_elos = _elo_candidates(companion)
     if len(elos) != 1 or len(rich_elos) != 1:
-        return ()
+        return None
     boundary = performance.class_offset
     rich_boundary = companion.family.class_offset
     if max(boundary, rich_boundary) > 512:
-        return ()
+        return None
     fields = [(records.family.name_offset, 62),
               (records.family.rank_offset, 4), (elos[0], 4)]
     rich_fields = [(companion.family.name_offset, 62),
@@ -1196,13 +1201,13 @@ def _aggregate_zero_offsets(
         if valid:
             histories.append(offset)
     if len(histories) != 1:
-        return ()
+        return None
     fields.append((histories[0], _HISTORY_SLOT_SIZE))
     lookup = dict(zip(companion.names, companion.rows))
     pairs = [(row, lookup[name]) for name, row in zip(records.names, records.rows)
              if name in lookup]
     if len(pairs) < 20:
-        return ()
+        return None
     identities = []
     for offset in range(5, boundary - 7):
         if not free(offset, 8, fields):
@@ -1225,7 +1230,16 @@ def _aggregate_zero_offsets(
                 proofs.add((identity, other, start + size))
     # Shifted identity aliases are possible when high bytes are zero. Only a
     # unique identity/boundary proof can authorize the zero counter.
-    return (next(iter(proofs))[2],) if len(proofs) == 1 else ()
+    if not proofs and len(identities) == 1 and companion.family.short_record_locations:
+        # A bounded pair of words between the name and the shared identity.
+        # The active neighbor must itself be verified as a lifetime counter.
+        start = records.family.name_offset + 62
+        if identities[0][0] == start + 8 and free(start, 8, fields):
+            words = (start, start + 4)
+            zero = [pos for pos in words if all(_u32le(row, pos) == 0 for row in records.rows)]
+            if len(zero) == 1:
+                return zero[0], next(pos for pos in words if pos != zero[0])
+    return (next(iter(proofs))[2], None) if len(proofs) == 1 else None
 
 
 def _aggregate_candidates(
@@ -1258,11 +1272,11 @@ def _aggregate_candidates(
     ):
         return None
 
-    zero_offsets = _aggregate_zero_offsets(records, performance, companion)
+    zero_proof = _aggregate_zero_proof(records, performance, companion)
     # A proven header counter limits the search before applying fan-out bounds.
     # Name/rank bytes are independently owned fields, including name padding;
     # numeric-looking UTF-16 bytes cannot be competing lifetime counters.
-    scan_end = performance.class_offset if zero_offsets else records.record_end
+    scan_end = performance.class_offset if zero_proof else records.record_end
     forbidden = ((records.family.name_offset, 62), (records.family.rank_offset, 4))
     by_vector: dict[tuple[int, ...], list[int]] = {}
     for offset in range(scan_end - 3):
@@ -1286,8 +1300,8 @@ def _aggregate_candidates(
         if len(by_vector) > _MAX_AGGREGATE_VECTORS:
             return None
 
-    if zero_offsets:
-        by_vector[(0,) * len(records.rows)] = list(zero_offsets)
+    if zero_proof:
+        by_vector[(0,) * len(records.rows)] = [zero_proof[0]]
     vectors = tuple(by_vector)
     subset_lookup: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
     for vector in vectors:
@@ -1336,6 +1350,9 @@ def _aggregate_candidates(
                                 right_offset,
                                 third_offset,
                             )
+                            if (zero_proof and zero_proof[0] in offsets
+                                    and zero_proof[1] is not None and zero_proof[1] not in offsets):
+                                continue
                             if len(set(offsets)) != 3:
                                 continue
                             ordered = sorted(offsets)
@@ -1621,7 +1638,7 @@ def _decode_learned_rich(learned: _LearnedTable) -> Optional[SolareDetailDecode]
         )
         if elo is not None:
             if (
-                not 0 < elo <= _MAX_LEARNED_ELO
+                not 0 <= elo <= _MAX_LEARNED_ELO
                 or (previous_elo is not None and previous_elo < elo)
             ):
                 return None
@@ -1695,7 +1712,7 @@ def _decode_learned_overall(
         )
         if elo is not None:
             if (
-                not 0 < elo <= _MAX_LEARNED_ELO
+                not 0 <= elo <= _MAX_LEARNED_ELO
                 or (previous_elo is not None and previous_elo < elo)
             ):
                 return None

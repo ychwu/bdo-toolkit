@@ -18,9 +18,6 @@ def discover_short_board(
     frames: Sequence[BDOFrame], boundaries: Sequence[BDOFrame], *,
     allow_trailing_overall: bool,
 ) -> Optional[tuple[DiscoveredSolareFamily, DiscoveredSolareFamily]]:
-    # October JP evidence: 17-byte envelope, start flag at payload byte zero,
-    # uint16 row count at byte 10. These are reviewed envelope semantics, not
-    # opcode, region, player, class or total-row-count exceptions.
     all_frames = sorted({id(f): f for f in (*frames, *boundaries)}.values(),
                         key=lambda f: f.index)
     ordinals = {id(f): i for i, f in enumerate(all_frames)}
@@ -28,54 +25,74 @@ def discover_short_board(
     for f in all_frames:
         if f.flag == 0 and f.stream_sequence is not None:
             groups[(f.context.flow, f.context.flow_generation)].append(f)
+    selected = None
     for stream in groups.values():
         stream.sort(key=_stream_offset)
         for start, first in enumerate(stream):
-            if not (8192 <= first.length <= 32768 and first.message[5] == 1
-                    and first.message[10:12] == b'\x02\x00'):
+            if len(first.message) != first.length or not 8192 <= first.length <= 32768:
                 continue
-            stride, remainder = divmod(first.length - 17, 2)
-            if remainder or stride <= 0:
+            if start and _family_key(stream[start - 1]) == _family_key(first):
                 continue
             pairs = [first]
-            terminal = None
-            end_index = start
             previous = first
+            terminal = None
             for end_index in range(start + 1, min(len(stream), start + 512)):
                 f = stream[end_index]
-                if _stream_offset(f) != _stream_end(previous):
+                if _stream_offset(f) != _stream_end(previous) or len(f.message) != f.length:
                     break
                 previous = f
                 if f.opcode != first.opcode:
-                    # Complete, bounded interleaved control frames are allowed.
                     if f.length >= 8192:
                         break
                     continue
-                if f.length < 17 or f.message[5] != 0:
-                    break
-                count = int.from_bytes(f.message[10:12], 'little')
-                if count == 2 and f.length == first.length:
-                    pairs.append(f)
-                elif count in (0, 1) and f.length == 17 + count * stride:
+                if f.length != first.length:
                     terminal = f
                     break
-                else:
-                    break
-            if terminal is None or end_index + 50 >= len(stream):
+                pairs.append(f)
+            if terminal is None or len(pairs) * 2 < DISCOVERY_MIN_RICH_RECORDS - 1:
                 continue
-            tail_count = int.from_bytes(terminal.message[10:12], 'little')
+            ranked = _discover_ranked_family(_family_key(first), pairs, ordinals)
+            if ranked is None:
+                continue
+            stride = ranked.record_stride
+            envelope = first.length - 2 * stride
+            if not 7 <= envelope <= 32 or terminal.length not in (envelope, envelope + stride):
+                continue
+            tail_count = int(terminal.length != envelope)
+            if ranked.name_offset < envelope or ranked.rank_offset < envelope:
+                continue
+            if not any(
+                all(f.message[pos:pos+2] == b'\x02\x00' for f in pairs)
+                and int.from_bytes(terminal.message[pos:pos+2], 'little') == tail_count
+                for pos in range(5, envelope - 1)
+            ):
+                continue
+            if not any(first.message[pos] == 1 and terminal.message[pos] == 0
+                       and all(f.message[pos] == 0 for f in pairs[1:])
+                       for pos in range(5, envelope)):
+                continue
             count = 2 * len(pairs) + tail_count
             if not DISCOVERY_MIN_RICH_RECORDS <= count < max(map(len, SOLARE_CLASS_ROSTERS)) * 20:
                 continue
+            boundary = terminal
+            while end_index + 1 < len(stream):
+                control = stream[end_index + 1]
+                if (control.length >= 8192 or control.opcode == first.opcode
+                        or control.length != len(control.message)
+                        or _stream_end(boundary) != _stream_offset(control)):
+                    break
+                end_index += 1
+                boundary = control
             overall_frames = stream[end_index + 1:end_index + 51]
+            if len(overall_frames) != 50:
+                continue
             if any(_stream_end(a) != _stream_offset(b)
-                   for a, b in zip([terminal, *overall_frames], overall_frames)):
+                   for a, b in zip([boundary, *overall_frames], overall_frames)):
                 continue
             key = _family_key(overall_frames[0])
-            if any(_family_key(f) != key for f in overall_frames) or key[2] == first.opcode:
-                continue
-            ranked = _discover_ranked_family(_family_key(first), pairs, ordinals)
-            if ranked is None or ranked.record_stride != stride:
+            if key[2] == first.opcode or any(
+                len(f.message) != f.length or _family_key(f) != key for f in overall_frames
+            ):
                 continue
             locations = tuple((f, base) for f in pairs for base in (0, stride))
             names, ranks = ranked.names, ranked.ranks
@@ -88,7 +105,7 @@ def discover_short_board(
                 names += (name,)
                 ranks += (rank,)
             candidates = []
-            for offset in range(17, min(512, stride)):
+            for offset in range(envelope, min(512, stride)):
                 codes = tuple(f.message[base + offset] for f, base in locations)
                 counts = Counter(codes)
                 if (any(set(counts) == set(roster) for roster in SOLARE_CLASS_ROSTERS)
@@ -112,5 +129,25 @@ def discover_short_board(
             if (overall is not None
                     and _overall_generation_is_closed(group, overall_frames, overall,
                                                      allow_trailing_overall=allow_trailing_overall)):
-                return rich, overall
-    return None
+                if selected is not None:
+                    # Two distinct complete response pairs in the supplied window.
+                    return None
+                if not _verified_short_details(rich, overall):
+                    continue
+                selected = (rich, overall)
+    return selected
+
+
+def _verified_short_details(rich: DiscoveredSolareFamily, overall: DiscoveredSolareFamily) -> bool:
+    """Corroborate inferred envelope geometry with both complete detail tables."""
+    from ._detail_learning import decode_equipment_table, learn_unknown_solare_details
+
+    players, leaders = learn_unknown_solare_details(
+        rich.frames, rich, overall.frames, overall,
+        learn_rich=True, learn_overall=True, retain_raw_extensions=False,
+    )
+    required = {"elo", "performance"}
+    return (players is not None and leaders is not None
+            and required <= players.capabilities and required <= leaders.capabilities
+            and decode_equipment_table(rich.frames, rich, players.players, gear_offset=None) is not None
+            and decode_equipment_table(overall.frames, overall, leaders.entries, gear_offset=None) is not None)

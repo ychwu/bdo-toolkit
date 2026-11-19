@@ -2037,23 +2037,25 @@ def test_agent_continuation_does_not_latch_historical_prefix_live() -> None:
     assert tracker.result.rich.record_count == 640
 
 
-def _short_board_frames(count=637):
+def _short_board_frames(count=637, envelope=17, start_offset=5, count_offset=10, separator=False):
     original = _complete_frames(include_agent=True)
     messages = []
     for i, f in enumerate(original[:count // 2]):
-        msg = bytearray(f.message + bytes(7))
+        msg = bytearray(f.message + bytes(envelope - 10))
         msg[:2] = len(msg).to_bytes(2, "little")
-        msg[5] = int(i == 0)
-        msg[10:12] = (2).to_bytes(2, "little")
+        msg[start_offset] = int(i == 0)
+        msg[count_offset:count_offset + 2] = (2).to_bytes(2, "little")
         messages.append(bytes(msg))
     # Include a complete control frame within the response.
     messages.insert(50, b"\x0d\x00\x00\x66\x66" + bytes(8))
-    msg = bytearray(original[count // 2].message[:4217] if count % 2 else bytes(17))
+    msg = bytearray(original[count // 2].message[:4200 + envelope] if count % 2 else bytes(envelope))
     msg[:2] = len(msg).to_bytes(2, "little")
     msg[3:5] = (0x4444).to_bytes(2, "little")
-    msg[5] = 0
-    msg[10:12] = (count % 2).to_bytes(2, "little")
+    msg[start_offset] = 0
+    msg[count_offset:count_offset + 2] = (count % 2).to_bytes(2, "little")
     messages.append(bytes(msg))
+    if separator:
+        messages.append(b"\x0d\x00\x00\x66\x66" + bytes(8))
     messages += [f.message for f in original[-50:]]
     frames = []
     sequence = 100000
@@ -2064,8 +2066,40 @@ def _short_board_frames(count=637):
     return tuple(frames)
 
 
+@pytest.fixture
+def verified_short_details(monkeypatch):
+    # The synthetic frames model response boundaries and carry only rankings.
+    monkeypatch.setattr("bdo_toolkit.solare._short_board._verified_short_details",
+                        lambda rich, overall: True)
+
+
+@pytest.mark.parametrize("count,envelope,start,rows", ((637, 12, 7, 8), (638, 15, 5, 7), (639, 13, 9, 5)))
+def test_short_response_envelope_is_inferred(count, envelope, start, rows, verified_short_details):
+    frames = _short_board_frames(count, envelope, start, rows, separator=True)
+    result = build_solare_result(frames, _health(frames))
+    assert result.complete and len(result.snapshot.players) == count
+    assert not build_solare_result(frames[:-1], _health(frames[:-1])).complete
+    truncated = frames[:-1] + (replace(frames[-1], message=frames[-1].message[:-1]),)
+    assert not build_solare_result(truncated, _health(truncated)).complete
+
+
+def test_competing_short_refreshes_do_not_confirm(verified_short_details):
+    first = _short_board_frames(637)
+    next_start = first[-1].stream_sequence + first[-1].length
+    second = tuple(replace(f, index=len(first) + i,
+                           stream_sequence=next_start + f.stream_sequence - first[0].stream_sequence)
+                   for i, f in enumerate(_short_board_frames(639)))
+    frames = first + second
+    assert not build_solare_result(frames, _health(frames)).complete
+
+
+def test_short_rankings_alone_do_not_confirm_detail_tables():
+    frames = _short_board_frames()
+    assert not build_solare_result(frames, _health(frames)).complete
+
+
 @pytest.mark.parametrize("count", (621, 634, 635, 636, 637, 639))
-def test_short_board_fallback_preserves_actual_counts_and_live_completion(count):
+def test_short_board_fallback_preserves_actual_counts_and_live_completion(count, verified_short_details):
     frames = _short_board_frames(count)
     tracker = LiveSolareDiscoveryTracker(lambda update: None)
     for f in frames:
@@ -2082,7 +2116,7 @@ def test_short_board_fallback_preserves_actual_counts_and_live_completion(count)
 
 
 @pytest.mark.parametrize("damage", ("first", "middle", "control", "terminal", "overall", "start", "count", "name", "class", "generation"))
-def test_short_board_fallback_rejects_incomplete_or_contradictory_windows(damage):
+def test_short_board_fallback_rejects_incomplete_or_contradictory_windows(damage, verified_short_details):
     frames = list(_short_board_frames())
     remove = {"first": 0, "middle": 100, "control": 50, "terminal": -51, "overall": -1}
     if damage in remove:
@@ -2109,7 +2143,7 @@ def test_regular_complete_board_never_invokes_short_fallback(monkeypatch):
     frames = _complete_frames(include_agent=True)
     assert build_solare_result(frames, _health(frames)).complete
 
-def test_short_board_live_idle_closes_despite_trailing_small_traffic():
+def test_short_board_live_idle_closes_despite_trailing_small_traffic(verified_short_details):
     frames = _short_board_frames(637)
     tracker = LiveSolareDiscoveryTracker(lambda update: None)
     for frame in frames:

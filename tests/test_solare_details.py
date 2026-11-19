@@ -22,7 +22,7 @@ _FLOW = FlowKey("198.51.100.10", 8889, "192.0.2.25", 50000)
 @pytest.mark.parametrize('role', ('rich', 'overall'))
 @pytest.mark.parametrize('matches', (5, 81))
 @pytest.mark.parametrize('damage', (None, 'draw_as_loss', 'unknown_pair', 'odd_signed'))
-def test_registered_history_accepts_observed_draw_and_rejects_contradictions(role, matches, damage):
+def test_registered_history_preserves_counters_and_isolates_malformed_fields(role, matches, damage):
     layout = _REPRESENTATIVE_LAYOUT
     synthetic = _synthetic_snapshot(layout)
     frames = synthetic.rich_frames if role == 'rich' else synthetic.overall_frames
@@ -40,20 +40,17 @@ def test_registered_history_accepts_observed_draw_and_rejects_contradictions(rol
     changed = (replace(frames[0],message=bytes(message)), *frames[1:])
     if role == 'rich':
         decoded = decode_solare_details(changed,synthetic.rich)
-        if damage:
-            assert decoded is None
-            return
+        assert decoded is not None
         entries = decoded.players
     else:
         decoded = decode_solare_overall_details(changed,synthetic.overall)
         assert decoded is not None and 'aggregate_performance' in decoded.capabilities
-        if damage:
-            assert 'performance' not in decoded.capabilities
-            return
+        assert 'performance' in decoded.capabilities
         entries = decoded.entries
     performance = entries[0].classes_played[0]
-    assert performance.recent_results_wire_text == wire
-    assert performance.recent_results_raw[-2:] == (-1,0)
+    malformed = damage in ("unknown_pair", "odd_signed")
+    assert performance.recent_results_wire_text == (None if malformed else wire)
+    assert performance.recent_results_raw[-2:] == (() if malformed else (-1, 0))
     assert (performance.matches,performance.wins,performance.draws,performance.losses) == (matches,wins,draws,losses)
 
 
@@ -900,7 +897,7 @@ def test_overall_aggregate_requires_its_lightweight_slot_match_summary() -> None
     (
         ("overall_specialization", b"\xff", False),
         ("overall_specialization", b"\x00", False),
-        ("overall_history", b"!", False),
+        ("overall_history", b"!", True),
         ("overall_gear", b"\xff", True),
         ("overall_addons", b"\xff", True),
     ),
@@ -930,6 +927,8 @@ def test_overall_aggregate_is_independent_of_deeper_and_opaque_fields(
     assert "aggregate_performance" in result.capabilities
     assert all(entry.total_matches is not None for entry in result.entries)
     assert ("performance" in result.capabilities) is performance_survives
+    if offset_name == "overall_history":
+        assert result.entries[0].classes_played[0].recent_results_raw == ()
     if performance_survives:
         assert "raw_extensions" in result.capabilities
     else:

@@ -520,9 +520,9 @@ def _decode_performance_slots(
         history_start = base + layout.history_offset + slot * _HISTORY_SLOT_SIZE
         history_region = bytes(data[history_start : history_start + _HISTORY_SLOT_SIZE])
         history = _decode_history_region(history_region)
-        if history is None:
+        if history is None and class_code == EMPTY_CLASS_CODE:
             return None
-        history_raw, history_codes = history
+        history_raw, history_codes = history or (None, ())
 
         is_empty = class_code == EMPTY_CLASS_CODE
         if is_empty:
@@ -546,17 +546,8 @@ def _decode_performance_slots(
                 value > slot_matches for value in (slot_wins, slot_draws, slot_losses)
             )
             or slot_wins + slot_draws + slot_losses != slot_matches
-            or not history_raw
         ):
             return None
-        if -1 in history_codes:
-            # Signed histories have observed pair semantics. Keep legacy binary
-            # registered decoding unchanged, but never publish a contradictory draw.
-            recent = _history_outcome_counts(history_codes)
-            if recent is None or not _history_matches_outcomes(
-                recent, slot_matches, slot_wins, slot_draws, slot_losses,
-            ):
-                return None
         occupied_codes.add(class_code)
 
         gear_loadout_raw: Optional[SolareRawSection] = None

@@ -49,6 +49,7 @@ def _family(
         DiscoveredSolareFamily,
         SimpleNamespace(
             role=role,
+            short_record_locations=(),
             frame_length=row_size + 4,
             record_stride=4,
             name_offset=120,
@@ -1096,8 +1097,7 @@ def test_short_fallback_preserves_unrelated_recent_history_with_independent_coun
             target, _CLASS_OFFSET, occupied, _SPEC_OFFSET, _MATCHES_OFFSET,
             (_WINS_OFFSET, _DRAWS_OFFSET, _LOSSES_OFFSET), companion=other,
         )
-    # The full-board route keeps the old strict rule.
-    assert infer((companion, known)) is None
+    assert infer((companion, known)) is not None
     target.family.short_record_locations = ((None, 0),)
     assert infer(None) is None
     assert infer((companion, known)) is not None
@@ -1106,4 +1106,4 @@ def test_short_fallback_preserves_unrelated_recent_history_with_independent_coun
     malformed = bytearray(target.rows[-1])
     malformed[_HISTORY_OFFSET:_HISTORY_OFFSET+101] = b"2,2" + bytes(98)
     target = replace(target, rows=target.rows[:-1] + (bytes(malformed),))
-    assert infer((companion, known)) is None
+    assert infer((companion, known)) is not None

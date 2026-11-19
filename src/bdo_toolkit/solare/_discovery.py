@@ -1142,15 +1142,13 @@ def discover_solare(
                     following = group[end + 1]
                     if _u32le(following.message, rich.rank_offset) != 1:
                         rich = None
-                elif rich.frame_length == 17 + 2 * rich.record_stride and window[0].message[5] == 1 and any(
+                elif any(
                     frame.context.flow == rich.flow
                     and frame.context.flow_generation == rich.flow_generation
                     and frame.opcode == rich.opcode
                     and _stream_offset(frame) == rich.last_stream_end
                     and frame.length == rich.frame_length - rich.record_stride
                     and len(frame.message) > rich.rank_offset + 4
-                    and frame.message[5] == 0
-                    and frame.message[10:12] == b"\x01\x00"
                     and _u32le(frame.message, rich.rank_offset) > rich.ranks[-1]
                     for frame in (*unique_frames, *_boundary_frames)
                 ):

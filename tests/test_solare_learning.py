@@ -240,7 +240,7 @@ def _elo_record_table(
 ) -> learning_module._RecordTable:
     family = cast(
         DiscoveredSolareFamily,
-        SimpleNamespace(frame_length=8, record_stride=4),
+        SimpleNamespace(frame_length=8, record_stride=4, short_record_locations=()),
     )
     names = tuple(f"Player{ordinal}" for ordinal in range(len(values)))
     return learning_module._RecordTable(
