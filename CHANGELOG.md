@@ -6,6 +6,21 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.3 - 2026-11-19
+
+This patch improves shortened Solare board recovery and Wukong detail parsing.
+
+### Fixed
+
+- Recover complete short Solare boards across varying response headers,
+  including singleton endings and intervening control frames. Displayed recent
+  results may disagree with independently verified counters while performance
+  and equipment remain available; response completeness, stream continuity,
+  and independent validation remain required.
+- Recover Solare class details for Wukong with specialization code zero.
+  Preserve the original zero code and display Ascension, allowing performance
+  and equipment to decode for the rest of the leaderboard.
+
 ## 1.1.2 - 2026-11-12
 
 This patch improves Solare detail recovery around zero outcome counters.
