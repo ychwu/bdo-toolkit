@@ -74,3 +74,6 @@ Desktop.ini
 # Claude Code local tooling (per-user, not part of the package)
 .claude/
 examples/live_transfer_log_exitlag.py
+
+# Private character-load research guide
+/CHARACTER_LOADOUTS.md
