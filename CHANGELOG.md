@@ -6,6 +6,18 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.4 - 2026-11-23
+
+This patch preserves verified Solare details when individual fields are unreadable.
+
+### Fixed
+
+- Recover verified Solare ratings and isolate individual field failures.
+  Complete leaderboards can report a verified zero rating. When independent
+  layout checks isolate a player with unreadable details, the result preserves
+  verified fields and reports the affected player and field in its warnings.
+  Table capabilities continue to describe fields verified for every row.
+
 ## 1.1.3 - 2026-11-19
 
 This patch improves shortened Solare board recovery and Wukong detail parsing.
