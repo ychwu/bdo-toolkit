@@ -548,6 +548,7 @@ class SolareCaptureResult:
     evidence: SolareEvidence
     snapshot: Optional[SolareLeaderboardSnapshot] = None
     message: Optional[str] = None
+    warnings: tuple[str, ...] = ()
     schema_version: ClassVar[int] = _SOLARE_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -570,6 +571,8 @@ class SolareCaptureResult:
             "complete": self.complete,
             "evidence": self.evidence.to_dict(),
         }
+        if self.warnings:
+            output["warnings"] = list(self.warnings)
         if self.message is not None:
             output["message"] = self.message
         if self.snapshot is not None:
@@ -690,6 +693,18 @@ def solare_snapshot_id(
         and _available_overall_details_agree(entry, player)
         for entry, player in zip(overall_entries, rich_overall_players)
     )
+    if exact_semantic_overlap:
+        # Whole-table omission keeps its historical identity. A field available
+        # on only some overall rows must participate in the digest for backfill.
+        slot_availability = {
+            (slot.matches is not None, slot.specialization is not None, slot.equipment is not None)
+            for entry in overall_entries for slot in entry.classes_played
+        }
+        row_availability = {
+            (entry.elo is not None, entry.total_matches is not None)
+            for entry in overall_entries
+        }
+        exact_semantic_overlap = len(slot_availability) <= 1 and len(row_availability) <= 1
     if not overall_rows or exact_semantic_overlap:
         semantic_payload: object = rows
     else:

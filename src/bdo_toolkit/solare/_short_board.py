@@ -147,7 +147,16 @@ def _verified_short_details(rich: DiscoveredSolareFamily, overall: DiscoveredSol
         learn_rich=True, learn_overall=True, retain_raw_extensions=False,
     )
     required = {"elo", "performance"}
-    return (players is not None and leaders is not None
+    if (players is not None and leaders is not None
             and required <= players.capabilities and required <= leaders.capabilities
             and decode_equipment_table(rich.frames, rich, players.players, gear_offset=None) is not None
-            and decode_equipment_table(overall.frames, overall, leaders.entries, gear_offset=None) is not None)
+            and decode_equipment_table(overall.frames, overall, leaders.entries, gear_offset=None) is not None):
+        return True
+    from ._result import _ranking_players, _overall_entries
+    from ._row_isolation import recover_one_player
+
+    return recover_one_player(
+        rich, overall,
+        players.players if players is not None else _ranking_players(rich),
+        leaders.entries if leaders is not None else _overall_entries(overall),
+    ) is not None

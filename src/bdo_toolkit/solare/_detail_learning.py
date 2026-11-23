@@ -239,7 +239,14 @@ def _learn_spec_offset(
 
 
 def _elo_candidates(records: _RecordTable) -> tuple[int, ...]:
-    minimum = 0 if records.family.short_record_locations else 1
+    if not records.family.short_record_locations:
+        positive = _bounded_elo_candidates(records, minimum=1)
+        if positive:
+            return positive
+    return _bounded_elo_candidates(records, minimum=0)
+
+
+def _bounded_elo_candidates(records: _RecordTable, *, minimum: int) -> tuple[int, ...]:
     sample = _sample_ordinals(len(records.rows))
     prefiltered: list[int] = []
     for offset in range(records.record_end - 3):
@@ -1801,6 +1808,24 @@ def learn_unknown_solare_details(
     if rich_records is None or overall_records is None:
         return None, None
 
+    rich_learned, overall_learned = _learn_record_layouts(
+        rich_records, overall_records, learn_rich=learn_rich, learn_overall=learn_overall,
+        retain_raw_extensions=retain_raw_extensions, known_rich_elos=known_rich_elos,
+        known_overall_elos=known_overall_elos,
+    )
+    return (
+        _decode_learned_rich(rich_learned) if learn_rich else None,
+        _decode_learned_overall(overall_learned) if learn_overall else None,
+    )
+
+
+def _learn_record_layouts(
+    rich_records: _RecordTable, overall_records: _RecordTable, *,
+    learn_rich: bool, learn_overall: bool, retain_raw_extensions: bool,
+    known_rich_elos: Optional[Mapping[str, int]] = None,
+    known_overall_elos: Optional[Mapping[str, int]] = None,
+) -> tuple[_LearnedTable, _LearnedTable]:
+    rich = rich_records.family
     rich_occupancies: Optional[tuple[int, ...]] = None
     if rich.class_offset is not None:
         rich_occupancies = _class_occupancies(
@@ -1928,10 +1953,8 @@ def learn_unknown_solare_details(
             rich_learned = proposed_rich
             overall_learned = proposed_overall
 
-    return (
-        _decode_learned_rich(rich_learned) if learn_rich else None,
-        _decode_learned_overall(overall_learned) if learn_overall else None,
-    )
+    return rich_learned, overall_learned
+
 
 
 _EQUIPMENT_SLOT_CODES = (0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 27, 29)

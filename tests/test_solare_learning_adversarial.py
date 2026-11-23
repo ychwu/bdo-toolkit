@@ -374,6 +374,18 @@ def _raw_rows(
     return records, performance
 
 
+def test_full_board_zero_elo_requires_unique_ordered_cross_table_values() -> None:
+    values = tuple(i * 500 for i in range(99, -1, -1))
+    left = _elo_table(values, offsets=(4,), role="rich")
+    right = _elo_table(values, offsets=(8,), role="overall")
+    assert learning._choose_elo_offsets(left, right) == (4, 8)
+    for invalid in ((0,) * 100, values[:-2] + (0, 1), values[:-1] + (1,)):
+        other = _elo_table(invalid, offsets=(8,), role="overall")
+        assert learning._choose_elo_offsets(left, other) == (None, None)
+    duplicate = _elo_table(values, offsets=(4, 12), role="rich")
+    assert learning._choose_elo_offsets(duplicate, right) == (None, None)
+
+
 def test_duplicate_or_corrupted_elo_columns_withhold_elo() -> None:
     values = tuple(range(50_000, 49_900, -1))
     ambiguous_rich = _elo_table(values, offsets=(0, 8), role="rich")

@@ -494,6 +494,7 @@ def _decode_performance_slots(
     layout: _RichDetailLayout | _OverallDetailLayout,
     *,
     retain_raw_extensions: bool,
+    isolate_fields: bool = False,
 ) -> Optional[tuple[SolareClassPerformance, ...]]:
     class_codes = tuple(
         data[base + layout.class_offset + index] for index in range(_CLASS_SLOT_COUNT)
@@ -540,13 +541,14 @@ def _decode_performance_slots(
             seen_empty
             or display_name is None
             or class_code in occupied_codes
-            or not valid_occupied_specialization(class_code, spec_code)
-            or not 0 < slot_matches <= _MAX_PLAUSIBLE_MATCHES
-            or any(
-                value > slot_matches for value in (slot_wins, slot_draws, slot_losses)
-            )
-            or slot_wins + slot_draws + slot_losses != slot_matches
         ):
+            return None
+        spec_valid = valid_occupied_specialization(class_code, spec_code)
+        counters_valid = (
+            0 < slot_matches <= _MAX_PLAUSIBLE_MATCHES
+            and slot_wins + slot_draws + slot_losses == slot_matches
+        )
+        if not isolate_fields and not (spec_valid and counters_valid):
             return None
         occupied_codes.add(class_code)
 
@@ -575,11 +577,11 @@ def _decode_performance_slots(
                 slot=slot,
                 primary=slot == 0,
                 player_class=player_class,
-                specialization=_specialization(class_code, spec_code),
-                matches=slot_matches,
-                wins=slot_wins,
-                draws=slot_draws,
-                losses=slot_losses,
+                specialization=_specialization(class_code, spec_code) if spec_valid else None,
+                matches=slot_matches if counters_valid else None,
+                wins=slot_wins if counters_valid else None,
+                draws=slot_draws if counters_valid else None,
+                losses=slot_losses if counters_valid else None,
                 recent_results_raw=history_codes,
                 recent_results_wire_text=history_raw,
                 gear_loadout_raw=gear_loadout_raw,

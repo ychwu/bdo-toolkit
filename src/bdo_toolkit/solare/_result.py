@@ -22,6 +22,7 @@ from ._discovery import (
     discover_solare,
     family_frames,
 )
+from ._row_isolation import recover_one_player
 from ._validation import validate_retain_raw_extensions
 from .models import (
     SolareCaptureHealth,
@@ -432,6 +433,15 @@ def build_solare_result(
         overall_entries = tuple(replace(p, classes_played=equipment[p.name]) for p in overall_entries)
         overall_capabilities.add("equipment")
 
+    warnings: tuple[str, ...] = ()
+    required = {"elo", "performance", "equipment"}
+    if not required <= (class_table_capabilities & overall_capabilities):
+        recovery = recover_one_player(rich, overall, players, overall_entries, retain_raw_extensions)
+        if recovery is not None:
+            players, overall_entries, rich_caps, overall_caps, warnings = recovery
+            class_table_capabilities.update(rich_caps)
+            overall_capabilities.update(overall_caps)
+
     evidence = _evidence(
         discovery,
         health,
@@ -455,5 +465,6 @@ def build_solare_result(
         status=status,
         evidence=evidence,
         snapshot=snapshot,
+        warnings=warnings,
         message=_message_for_status(status),
     )

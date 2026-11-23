@@ -80,3 +80,18 @@ def test_unknown_boundary_must_be_unique_and_failures_preserve_other_table():
             assert decode_equipment_table((), family, (player,)) is None
         # A separately validated response can still publish equipment.
         assert decode_equipment_table((), family, (player,), gear_offset=0) is not None
+
+def test_one_unavailable_overall_field_changes_identity_until_backfill():
+    spec = SolareClass(29, "Archer")
+    slot = SolareClassPerformance(0, True, spec, equipment=_parse_equipment(gear()))
+    players = tuple(SolarePlayer(name, rank, spec, elo=1400, classes_played=(slot,))
+                    for rank, name in enumerate(("First", "Second"), start=1))
+    overall = tuple(SolareOverallEntry(p.name, p.global_rank, elo=p.elo,
+                    classes_played=p.classes_played) for p in players)
+    healthy = solare_snapshot_id(players, overall_top_100=overall)
+    assert healthy == solare_snapshot_id(players)
+    for partial in (
+        replace(overall[0], elo=None),
+        replace(overall[0], classes_played=(replace(slot, equipment=None),)),
+    ):
+        assert solare_snapshot_id(players, overall_top_100=(partial, overall[1])) != healthy
