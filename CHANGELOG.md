@@ -6,6 +6,18 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.5 - 2026-11-23
+
+This patch improves Solare name decoding and overall class-field discovery.
+
+### Fixed
+
+- Decode additional Solare player names, including accented Latin, Cyrillic,
+  and the multiplication sign used in names.
+- Resolve overlapping overall class fields using shared players' primary
+  classes. When several fields pass structural checks, an independent
+  cross-check can identify a unique field and recover overall details.
+
 ## 1.1.4 - 2026-11-23
 
 This patch preserves verified Solare details when individual fields are unreadable.
