@@ -152,6 +152,12 @@ class _NamePair:
 def _is_player_identifier_codepoint(code: int) -> bool:
     if code in PLAYER_NAME_BYTES or 0xAC00 <= code <= 0xD7A3:
         return True
+    if code == 0x00D7:  # Multiplication sign, observed in MENA names
+        return True
+    if (0x00C0 <= code <= 0x024F              # Latin-1 letters, Latin Extended-A/B
+            or 0x1E00 <= code <= 0x1EFF        # Latin Extended Additional
+            or 0x0400 <= code <= 0x052F):      # Cyrillic, Cyrillic Supplement
+        return unicodedata.category(chr(code))[0] in "LM"
     # Assigned letters/marks/numbers in the requested scripts, not entire
     # Unicode blocks (which also include punctuation and unassigned values).
     if (0x0E00 <= code <= 0x0E7F                 # Thai

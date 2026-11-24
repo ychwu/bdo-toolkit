@@ -94,6 +94,26 @@ def _table(
     )
 
 
+def test_overall_class_tie_requires_one_candidate_matching_shared_ranked_names():
+    codes = tuple(range(1, 6)) * 4
+    empty = learning.EMPTY_CLASS_CODE
+    rows = tuple(bytes((0, c, empty, empty)) for c in codes)
+    overall = _table(rows)
+    rich = _table(rows, role="rich", class_codes=codes)
+    assert learning._learn_overall_class_offset(overall) is None
+    assert learning._learn_overall_class_offset(overall, rich) == (1, (1,) * 20)
+    warriors = _table(rows, role="rich", class_codes=(0,) * 20)
+    assert learning._learn_overall_class_offset(overall, warriors) == (0, (2,) * 20)
+    assert learning._learn_overall_class_offset(overall, replace(rich, ranks=rich.ranks[1:] + (21,))) is None
+    assert learning._learn_overall_class_offset(overall, replace(rich, names=rich.names[:-1] + ("Other",))) is None
+    contradictory = _table(rows, role="rich", class_codes=(0, *codes[1:]))
+    assert learning._learn_overall_class_offset(overall, contradictory) is None
+    duplicated = _table(tuple(row + row for row in rows))
+    assert learning._learn_overall_class_offset(duplicated, rich) is None
+    unique = _table(tuple(row[1:] for row in rows))
+    assert learning._learn_overall_class_offset(unique, contradictory) == (0, (1,) * 20)
+
+
 def _write_u32_slots(
     row: bytearray,
     offset: int,

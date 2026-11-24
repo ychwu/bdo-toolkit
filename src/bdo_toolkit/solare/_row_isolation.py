@@ -191,12 +191,14 @@ def _read_table(
     return tuple(output), available
 
 
-def _nominate(table: _RecordTable, candidate: _LearnedTable) -> set[str]:
+def _nominate(
+    table: _RecordTable, candidate: _LearnedTable, rich: Optional[_RecordTable] = None,
+) -> set[str]:
     """Find outliers without using a sampled layout to authorize any result."""
     sample = candidate.records
     class_offset = table.family.class_offset
     if class_offset is None:
-        placement = _learn_overall_class_offset(table)
+        placement = _learn_overall_class_offset(table, rich)
         if placement is None:
             return set()
         class_offset = placement[0]
@@ -328,8 +330,8 @@ def recover_one_player(
         if sum(rank % 2 == parity for rank in rich_rows.ranks) < 20:
             continue
         pair = learn(lambda name, rank: rank % 2 == parity)
-        for table, candidate in zip((rich_rows, overall_rows), pair):
-            suspects.update(_nominate(table, candidate))
+        suspects.update(_nominate(rich_rows, pair[0]))
+        suspects.update(_nominate(overall_rows, pair[1], rich_rows))
     if not suspects:
         suspects.update(_counter_outliers(rich_rows, leaders))
         suspects.update(_counter_outliers(overall_rows, players))

@@ -197,15 +197,36 @@ def _class_occupancies(
 
 def _learn_overall_class_offset(
     records: _RecordTable,
+    rich: Optional[_RecordTable] = None,
 ) -> Optional[tuple[int, tuple[int, ...]]]:
-    candidates: list[tuple[int, tuple[int, ...]]] = []
-    for offset in range(records.record_end - _CLASS_SLOT_COUNT + 1):
-        occupancies = _class_occupancies(records.rows, offset)
-        if occupancies is not None:
-            candidates.append((offset, occupancies))
-            if len(candidates) > 1:
+    candidates = (
+        (offset, occupied)
+        for offset in range(records.record_end - _CLASS_SLOT_COUNT + 1)
+        if (occupied := _class_occupancies(records.rows, offset)) is not None
+    )
+    initial = list(itertools.islice(candidates, 2))
+    if len(initial) < 2:
+        return initial[0] if initial else None
+    if rich is None:
+        return None
+
+    primary = {name: (rank, code) for name, rank, code in
+               zip(rich.names, rich.ranks, rich.family.class_codes)}
+    shared = []
+    for name, rank, row in zip(records.names, records.ranks, records.rows):
+        if name in primary:
+            class_rank, code = primary[name]
+            if class_rank != rank:
                 return None
-    return candidates[0] if len(candidates) == 1 else None
+            shared.append((row, code))
+    if len(shared) < 20:
+        return None
+    matches = (
+        candidate for candidate in itertools.chain(initial, candidates)
+        if all(row[candidate[0]] == code for row, code in shared)
+    )
+    winner = next(matches, None)
+    return winner if next(matches, None) is None else None
 
 
 def _learn_spec_offset(
@@ -493,6 +514,7 @@ def _anchored_zero_outcome_offsets(
     matches_offset: int,
     matches: tuple[int, ...],
     outcomes: tuple[tuple[int, tuple[int, ...]], ...],
+    class_field: Optional[int] = None,
 ) -> tuple[int, ...]:
     """Locate zero counters by bounded field geometry, never by zero scans.
 
@@ -514,7 +536,8 @@ def _anchored_zero_outcome_offsets(
     if not complementary:
         return ()
     rows = records.rows
-    class_field = records.family.class_offset
+    if class_field is None:
+        class_field = records.family.class_offset
     if class_field is None:
         learned_class = _learn_overall_class_offset(records)
         if learned_class is None:
@@ -595,6 +618,7 @@ def _balanced_counter_solution(
     occupancies: Sequence[int],
     *,
     records: Optional[_RecordTable] = None,
+    class_offset: Optional[int] = None,
     validate: Optional[Callable[[int, tuple[int, int, int]], bool]] = None,
 ) -> Optional[tuple[int, tuple[int, int, int]]]:
     record_size = len(rows[0])
@@ -620,7 +644,7 @@ def _balanced_counter_solution(
             continue
         if records is not None:
             zero_offsets = _anchored_zero_outcome_offsets(
-                records, occupancies, matches_offset, matches, outcomes,
+                records, occupancies, matches_offset, matches, outcomes, class_offset,
             )
             outcomes += tuple(
                 # All placements in the proved container have identical values.
@@ -845,7 +869,7 @@ def _counter_geometry_check(
     # Establish numerical geometry without assigning any W/D/L labels.
     # An ambiguous source cannot corroborate another ambiguous response.
     counters = _balanced_counter_solution(
-        source.rows, source_occupancies, records=source,
+        source.rows, source_occupancies, records=source, class_offset=source_class,
     )
     if counters is None:
         return None
@@ -899,7 +923,7 @@ def _learn_performance_offsets(
             companion=companion,
         ) is not None
     counters = _balanced_counter_solution(
-        records.rows, occupancies, records=records, validate=validate,
+        records.rows, occupancies, records=records, class_offset=class_offset, validate=validate,
     )
     if counters is None:
         return None
@@ -962,7 +986,7 @@ def _validate_performance_candidate(
     zero_candidates = (
         _anchored_zero_outcome_offsets(
             records, occupancies, matches_offset,
-            _counter_vector(records.rows, matches_offset), active,
+            _counter_vector(records.rows, matches_offset), active, class_offset,
         ) if len(active) == 2 else ()
     )
     return _PerformanceOffsets(
@@ -1840,7 +1864,9 @@ def _learn_record_layouts(
             != rich.class_codes
         ):
             rich_occupancies = None
-    overall_class = _learn_overall_class_offset(overall_records)
+    overall_class = _learn_overall_class_offset(
+        overall_records, rich_records if rich_occupancies is not None else None,
+    )
 
     if learn_rich and learn_overall:
         rich_elo, overall_elo = _choose_elo_offsets(
