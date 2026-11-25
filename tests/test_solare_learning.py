@@ -497,7 +497,9 @@ def test_mixed_registered_and_unknown_tables_keep_independent_details(
         # Its separate five-byte gap cannot compete with the 12-byte draw
         # container. Removing draws must still recover the original layout.
         ("solare--leaderboard-complete-retry--8bfa6979ab", {"rich", "overall"}),
-        ("solare--leaderboard-complete-post-patch--92d835cbe9", {"rich"}),
+        # The widened bounded proof also recovers the overall counter after
+        # zeroing it; both layouts must match the independently observed draws.
+        ("solare--leaderboard-complete-post-patch--92d835cbe9", {"rich", "overall"}),
         ("solare--leaderboard-complete-unregistered--dfeb623bda", {"rich", "overall"}),
         # After draws are zeroed, adjacent nonzero bytes distinguish the
         # original counter placement. Require the exact pre-mutation layout.

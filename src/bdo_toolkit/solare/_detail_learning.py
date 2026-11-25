@@ -72,7 +72,7 @@ _MAX_LEARNED_RECORD_END = 32 * 1024
 _MIN_HISTORY_DISCRIMINATORS = 5
 _PREFILTER_ROWS = 32
 _MAX_WHOLE_ZERO_REGION = 15
-_MAX_ZERO_PLACEMENT_REGION = 16
+_MAX_ZERO_PLACEMENT_REGION = 18
 
 
 @dataclass(frozen=True)
@@ -523,7 +523,7 @@ def _anchored_zero_outcome_offsets(
     one bounded 12..15-byte zero region may remain. Shorter unassigned gaps
     cannot contain a complete three-counter array. Every complete placement
     in a fully zero region decodes the same vector. Otherwise require a unique
-    bounded region of at most 16 bytes and exactly one all-zero array placement.
+    bounded region of at most 18 bytes. Keep all equivalent all-zero placements.
     No arbitrary zero region is promoted.
     Distinct container proofs and conflicting counter solutions still reject.
     """
@@ -548,22 +548,14 @@ def _anchored_zero_outcome_offsets(
     elos = _elo_candidates(records)
     if spec is None or len(history) != 1 or len(elos) != 1:
         return ()
-    gear = _raw_base_candidates(
-        rows, occupancies, value_count=126, slot_size=_GEAR_SLOT_SIZE,
-        minimum_text_length=300, maximum_text_length=500,
-    )
-    addons = _raw_base_candidates(
-        rows, occupancies, value_count=12, slot_size=_ADDON_SLOT_SIZE,
-        minimum_text_length=20, maximum_text_length=100,
-        allow_empty_slots=True,
-    )
-    if len(gear) != 1 or len(addons) != 1:
+    raw, _ = _anchored_loadout_offsets(rows, occupancies)
+    if raw is None:
         return ()
     fixed = [
         (class_field, 3), (spec, 3), (matches_offset, 12),
         (history[0], 3 * _HISTORY_SLOT_SIZE),
-        (gear[0], 3 * _GEAR_SLOT_SIZE),
-        (addons[0], 3 * _ADDON_SLOT_SIZE),
+        (raw.gear_offset, 3 * _GEAR_SLOT_SIZE),
+        (raw.addons_offset, 3 * _ADDON_SLOT_SIZE),
     ]
     if elos[0] >= class_field:
         fixed.append((elos[0], 4))
@@ -600,7 +592,7 @@ def _anchored_zero_outcome_offsets(
         else:
             placement_containers.add((start, size))
     if proofs:
-        return next(iter(proofs))
+        return () if placement_containers else next(iter(proofs))
     # Only after ordinary whole-container proof fails: the complementary
     # counters require zero in every slot. Adjacent bytes have no meaning.
     if len(placement_containers) != 1:
@@ -610,7 +602,7 @@ def _anchored_zero_outcome_offsets(
         offset for offset in range(start, start + size - 12 + 1)
         if all(row[offset:offset + 12] == bytes(12) for row in rows)
     )
-    return placements if len(placements) == 1 else ()
+    return placements
 
 
 def _balanced_counter_solution(
@@ -1038,6 +1030,7 @@ def _raw_base_candidates(
     minimum_text_length: int,
     maximum_text_length: int,
     allow_empty_slots: bool = False,
+    exclude: Optional[tuple[int, int]] = None,
 ) -> tuple[int, ...]:
     first = rows[0]
     candidates: list[int] = []
@@ -1057,6 +1050,8 @@ def _raw_base_candidates(
         }
         offsets = sorted(witnessed)
     for offset in offsets:
+        if exclude and offset < exclude[1] and exclude[0] < offset + required_end:
+            continue
         if allow_empty_slots or value_count == 126:
             # Gear must satisfy its typed slot grammar; addons permit zero to
             # six complete pairs. Validate every occupied block and its padding;
@@ -1154,6 +1149,37 @@ def _raw_base_candidates(
             if len(candidates) > 1:
                 return ()
     return tuple(candidates)
+
+
+def _anchored_loadout_offsets(
+    rows: Sequence[bytes], occupancies: Sequence[int],
+) -> tuple[Optional[_RawOffsets], bool]:
+    """Find typed gear and addon boundaries; flag a tie resolved by gear ownership."""
+    gear = _raw_base_candidates(
+        rows, occupancies, value_count=126, slot_size=_GEAR_SLOT_SIZE,
+        minimum_text_length=300, maximum_text_length=500,
+    )
+    if len(gear) != 1:
+        return None, False
+    gear_span = (gear[0], gear[0] + _CLASS_SLOT_COUNT * _GEAR_SLOT_SIZE)
+
+    def addons(exclude: Optional[tuple[int, int]] = None) -> tuple[int, ...]:
+        return _raw_base_candidates(
+            rows, occupancies, value_count=12, slot_size=_ADDON_SLOT_SIZE,
+            minimum_text_length=20, maximum_text_length=100, allow_empty_slots=True,
+            exclude=exclude,
+        )
+
+    positions = addons()
+    if positions:
+        start = positions[0]
+        if start < gear_span[1] and gear_span[0] < start + _CLASS_SLOT_COUNT * _ADDON_SLOT_SIZE:
+            return None, False
+        return _RawOffsets(gear[0], start), False
+    positions = addons(gear_span)
+    if len(positions) == 1:
+        return _RawOffsets(gear[0], positions[0]), True
+    return None, False
 
 
 def _learn_raw_offsets(
@@ -1961,6 +1987,16 @@ def _learn_record_layouts(
             if overall_performance is not None
             else None
         )
+        if ((rich_raw is None or overall_raw is None)
+                and rich_performance is not None and overall_performance is not None):
+            # Only the new gear-disambiguated case may use the structural addon
+            # boundaries for raw retention. Cross-response byte agreement below
+            # still applies, including for partial lists on the companion table.
+            rich_anchor, rich_tie = _anchored_loadout_offsets(rich_records.rows, rich_performance.occupancies)
+            overall_anchor, overall_tie = _anchored_loadout_offsets(overall_records.rows, overall_performance.occupancies)
+            if rich_tie or overall_tie:
+                if rich_raw in (None, rich_anchor) and overall_raw in (None, overall_anchor):
+                    rich_raw, overall_raw = rich_anchor, overall_anchor
         proposed_rich = _LearnedTable(
             rich_learned.records,
             rich_learned.elo_offset,

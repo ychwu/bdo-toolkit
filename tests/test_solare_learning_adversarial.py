@@ -482,6 +482,28 @@ def test_ambiguous_or_unbalanced_counters_withhold_performance() -> None:
     )
 
 
+def test_two_balanced_counter_placements_with_different_values_fail_closed():
+    table, perf = _performance_rows()
+    competing = []
+    alternative_only = []
+    for source in table.rows:
+        row = bytearray(source)
+        for slot in range(3):
+            delta = 4 * slot
+            wins = learning._u32le(row, _WINS_OFFSET + delta)
+            losses = learning._u32le(row, _LOSSES_OFFSET + delta)
+            shift = int(wins > 1 and losses > 1)
+            row[80 + delta:84 + delta] = (wins - shift).to_bytes(4, "little")
+            row[96 + delta:100 + delta] = (losses + shift).to_bytes(4, "little")
+        competing.append(bytes(row))
+        row[_WINS_OFFSET:_WINS_OFFSET + 12] = bytes([255]) * 12
+        row[_LOSSES_OFFSET:_LOSSES_OFFSET + 12] = bytes([255]) * 12
+        alternative_only.append(bytes(row))
+    assert learning._balanced_counter_solution(table.rows, perf.occupancies) is not None
+    assert learning._balanced_counter_solution(alternative_only, perf.occupancies) is not None
+    assert learning._balanced_counter_solution(competing, perf.occupancies) is None
+
+
 def test_ambiguous_or_corrupted_history_withholds_performance() -> None:
     ambiguous, performance = _performance_rows(duplicate_history=True)
     assert (
@@ -745,35 +767,44 @@ def test_zero_outcomes_require_unique_placement_inside_nonzero_container(leading
     assert not performance.zero_outcome_candidates
 
 
-@pytest.mark.parametrize("trailing", (
-    b"\x00\x01\x02\x03",  # Two valid starts in a 16-byte region.
-    b"\x01\x02\x03\x04\x05",  # Unique placement, but beyond the fallback's bound.
+@pytest.mark.parametrize(("trailing", "count"), (
+    (bytes([0, 1, 2, 3]), 2),
+    (bytes([0, 0, 1, 2, 3, 4]), 3),
 ))
-def test_zero_outcomes_reject_ambiguous_or_oversized_placement_region(trailing):
+def test_zero_outcomes_keep_equivalent_positions_in_mixed_container(trailing, count):
     records, occupancies = _zero_draw_tail()
     rows = tuple(row + trailing for row in records.rows)
     records.family.frame_length += len(trailing)
-    assert learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies) is None
+    perf = learning._learn_performance_offsets(replace(records, rows=rows), 12, occupancies)
+    assert perf is not None
+    assert perf.zero_outcome_candidates == tuple(range(7867, 7867 + count))
 
 
-@pytest.mark.parametrize("damage", ("large_tail", "nonzero_before", "nonzero_after", "other_wide_gap"))
+@pytest.mark.parametrize("damage", ("large_tail", "conflicting_rows", "other_wide_gap"))
 def test_zero_outcome_equivalence_rejects_unproved_containers(damage):
     records, occupancies = _zero_draw_tail()
-    rows = [row + bytes(2) for row in records.rows]
-    extra = 2
     if damage == "large_tail":
-        rows = [row + bytes(2) for row in rows]
-        extra += 2
-    elif damage in ("nonzero_before", "nonzero_after"):
-        row = bytearray(rows[0])
-        row[7867 if damage == "nonzero_before" else -1] = 1
-        rows[0] = bytes(row)
+        rows = [row + bytes(7) for row in records.rows]
+    elif damage == "conflicting_rows":
+        # Every row has a valid zero window, but no position works on both sets.
+        rows = [row[:7867] + (bytes(12) + b"xxxxxx" if i % 2 else b"xxxxxx" + bytes(12))
+                for i, row in enumerate(records.rows)]
     else:
-        size = 12
-        rows = [row[:1864] + bytes(size) + row[1864:] for row in rows]
-        extra += size
-    records.family.frame_length += extra
+        rows = [row[:1864] + bytes(12) + row[1864:] + bytes(2) for row in records.rows]
+    records.family.frame_length += len(rows[0]) - len(records.rows[0])
     assert learning._learn_performance_offsets(replace(records, rows=tuple(rows)), 12, occupancies) is None
+
+
+def test_addon_fallback_requires_a_unique_nonoverlapping_array():
+    # All players occupy three slots. A blank gear tail followed by three
+    # populated addons also looks like shifted three-slot addon arrays.
+    gear = _gear_text().ljust(2001, bytes(1)) * 3
+    addon = b",".join([b"1572"] * 12).ljust(501, bytes(1))
+    rows = (gear + addon * 3,) * 3
+    assert learning._anchored_loadout_offsets(rows, (3, 3, 3)) == (
+        learning._RawOffsets(0, len(gear)), True)
+    competing = tuple(row + addon.replace(b"1572", b"1630") for row in rows)
+    assert learning._anchored_loadout_offsets(competing, (3, 3, 3))[0] is None
 
 
 @pytest.mark.parametrize("damage", ("extra_gap", "nonzero_draw", "broken_gear", "broken_addons", "broken_history", "unbalanced"))
