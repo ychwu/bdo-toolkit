@@ -6,6 +6,18 @@ All notable released changes to `bdo-toolkit` are documented here.
 
 No unreleased changes yet.
 
+## 1.1.6 - 2026-11-25
+
+This patch improves Solare detail recovery around competing draw and addon positions.
+
+### Fixed
+
+- Recover Solare details when draw and addon positions overlap plausible
+  alternatives. Capture and replay can recover verified performance and
+  equipment when several positions inside one bounded interval yield identical
+  zero draws, or when verified gear rules out competing addon positions.
+  Conflicting interpretations continue to withhold unverified details.
+
 ## 1.1.5 - 2026-11-23
 
 This patch improves Solare name decoding and overall class-field discovery.
