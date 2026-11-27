@@ -7,15 +7,16 @@ must not block calibration. No opcode, wizard batch size, or town is assumed.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
-from .._protocol import BDOFrame, SOURCE_CONTEXT_LABELS
+from .._protocol import BDOFrame, FlowKey, SOURCE_CONTEXT_LABELS, storage_destination_candidates
 from ._constants import _HIGH_ENTROPY_CONTEXTS
 from ._records import (
     _CalibratedItemRecord, _FrameIndex, _Options,
-    _discover_storage_context_offset, _find_calibration_item_records,
+    _find_calibration_item_records,
     _full_transfer_record_offsets, _plausible_record_offsets, _record_frame_shape,
+    _storage_clock_alias_status,
 )
 from .analysis import detect_transfer_family
 from .companions import _discover_source_stack_decrement
@@ -51,21 +52,26 @@ def _linked_decrement(
     )
 
 
-def observe_transfers(
-    frames: list[BDOFrame], *, item_id: int, quantity: int | None,
-    action: str, context_frames: int, min_confidence: float,
-    run_id: str, frames_discarded: int,
-) -> tuple[CalibrationObservation, ...]:
-    """Replaceable retained-window snapshot, in capture arrival order."""
-    if action == "loot-preview":
-        return ()
-    index = _FrameIndex(frames)
-    options = _Options(item_id, quantity, action, context_frames, min_confidence, index)
+@dataclass(frozen=True)
+class _ObservationCandidate:
+    position: int
+    record: _CalibratedItemRecord
+    first_offset: int
+    base_length: int
+    record_count: int
+    watched_count: int
+    quantity: int
+
+
+def _observation_candidates(
+    frames: list[BDOFrame], options: _Options,
+) -> list[_ObservationCandidate]:
+    item_id, quantity = options.item_id, options.quantity
     records = _find_calibration_item_records(frames, options, "inventory-to-storage", [])
     by_frame: dict[int, list[_CalibratedItemRecord]] = {}
     for record in records:
         by_frame.setdefault(id(record.frame), []).append(record)
-    observations = []
+    accepted = []
     for position, frame in enumerate(frames):
         candidates = by_frame.get(id(frame), [])
         if not candidates or frame.length != len(frame.message):
@@ -89,12 +95,71 @@ def observe_transfers(
         if (not 200 <= base_length <= 300 or (len(offsets) > 1 and stride is None)
                 or (stride is not None and stride > base_length)):
             continue
-        family, _, _, _ = detect_transfer_family(
-            frames, frame, offsets[0], item_id, context_frames, _frame_index=index,
+        accepted.append(_ObservationCandidate(
+            position, record, offsets[0], base_length,
+            len(offsets), len(watched), sum(quantities),
+        ))
+    return accepted
+
+
+def _observation_clock_aliases(candidates: list[_ObservationCandidate]) -> dict[int, int]:
+    """Compare only complete watched wrappers in one connection and record layout."""
+    cohorts: dict[tuple[FlowKey, int, int, int, int], list[BDOFrame]] = {}
+    for candidate in candidates:
+        frame = candidate.record.frame
+        key = (frame.context.flow, frame.context.flow_generation, frame.opcode,
+               candidate.first_offset, candidate.base_length)
+        cohorts.setdefault(key, []).append(frame)
+
+    excluded = {}
+    for (_, _, _, first, _), frames in cohorts.items():
+        if len(frames) < 2:
+            continue
+        columns = storage_destination_candidates(frames[0].message, before_offset=first)
+        proven = [
+            offset for offset, _ in columns
+            if _storage_clock_alias_status(frames, destination_offset=offset, item_offset=first)[1]
+        ]
+        if len(proven) == 1:
+            for frame in frames:
+                excluded[id(frame)] = proven[0]
+    return excluded
+
+
+def observe_transfers(
+    frames: list[BDOFrame], *, item_id: int, quantity: int | None,
+    action: str, context_frames: int, min_confidence: float,
+    run_id: str, frames_discarded: int,
+) -> tuple[CalibrationObservation, ...]:
+    """Replaceable retained-window snapshot, in capture arrival order."""
+    if action == "loot-preview":
+        return ()
+    index = _FrameIndex(frames)
+    options = _Options(item_id, quantity, action, context_frames, min_confidence, index)
+    candidates = _observation_candidates(frames, options)
+    clock_aliases = _observation_clock_aliases(candidates)
+    observations = []
+    for candidate in candidates:
+        record = candidate.record
+        frame = record.frame
+        excluded_offset = clock_aliases.get(id(frame))
+        family, _, _, storage_context = detect_transfer_family(
+            frames, frame, candidate.first_offset, item_id, context_frames,
+            _frame_index=index, _excluded_storage_offset=excluded_offset,
         )
         direction: Literal["inventory-to-storage", "storage-to-inventory"]
         if family == "into_storage":
-            if _discover_storage_context_offset(frame, offsets[0]) is None:
+            if not storage_context:
+                continue
+            # A single plausible clock reading may veto this positive observation.
+            # It cannot remove a competing column to establish direction.
+            columns = storage_destination_candidates(frame.message, before_offset=candidate.first_offset)
+            if any(
+                _storage_clock_alias_status(
+                    [frame], destination_offset=offset, item_offset=candidate.first_offset,
+                )[0]
+                for offset, _ in columns if offset != excluded_offset
+            ):
                 continue
             if not _linked_decrement(record, options, index):
                 continue
@@ -102,7 +167,7 @@ def observe_transfers(
         elif family == "into_inventory":
             # Inventory receipts include loot/gathering/etc. Only an unambiguous
             # Storage source can guide the withdrawal step.
-            prefix = frame.message[:offsets[0]]
+            prefix = frame.message[:candidate.first_offset]
             labels = [SOURCE_CONTEXT_LABELS[raw] for raw in _HIGH_ENTROPY_CONTEXTS
                       for _ in range(prefix.count(raw))]
             if labels != ["Storage"]:
@@ -112,11 +177,11 @@ def observe_transfers(
             continue
         if action not in ("auto", direction):
             continue
-        frame_number = frames_discarded + position + 1
+        frame_number = frames_discarded + candidate.position + 1
         observations.append(CalibrationObservation(
             observation_id=f"{run_id}:{frame_number}", frame_number=frame_number,
             direction=direction, opcode=frame.opcode, item_id=item_id,
-            record_count=len(offsets), item_record_count=len(watched),
-            item_quantity=sum(quantities),
+            record_count=candidate.record_count, item_record_count=candidate.watched_count,
+            item_quantity=candidate.quantity,
         ))
     return tuple(observations)

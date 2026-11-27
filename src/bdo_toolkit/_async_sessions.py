@@ -385,6 +385,7 @@ class AsyncCalibrationSession:
         *,
         item_id: int,
         quantity: Optional[int] = None,
+        storage_town: str | None = None,
         action: str = "auto",
         capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
@@ -397,6 +398,7 @@ class AsyncCalibrationSession:
         self._session = CalibrationSession(
             item_id=item_id,
             quantity=quantity,
+            storage_town=storage_town,
             action=action,
             capture_options=capture_options,
             context_frames=context_frames,

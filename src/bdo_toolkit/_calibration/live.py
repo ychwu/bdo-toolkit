@@ -109,6 +109,7 @@ class LiveCalibration:
             retention = session._retention_unlocked()
         assessment = assess_frames(
             frames, item_id=session._item_id, quantity=session._quantity,
+            storage_town=session._storage_town,
             action=session._action, context_frames=session._context_frames,
             min_confidence=session._min_confidence,
         )

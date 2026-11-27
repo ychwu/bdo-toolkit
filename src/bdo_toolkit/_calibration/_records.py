@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Iterable, Optional
 from .._record_geometry import uniform_stride
 from .._protocol import (
@@ -81,6 +82,7 @@ class _Options:
     context_frames: int
     min_confidence: float
     frame_index: Optional[_FrameIndex] = None
+    storage_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -499,6 +501,8 @@ def _discover_source_container_trailing_context_offset(
 def _discover_storage_context_offset(
     frame: BDOFrame,
     before_offset: int,
+    *,
+    excluded_offset: int | None = None,
 ) -> Optional[int]:
     """Return one unambiguous town column in a structurally valid wrapper."""
     if not _has_dynamic_storage_record_geometry(frame, before_offset):
@@ -507,6 +511,8 @@ def _discover_storage_context_offset(
         frame.message,
         before_offset=before_offset,
     )
+    if excluded_offset is not None:
+        candidates = tuple(c for c in candidates if c[0] != excluded_offset)
     if len(candidates) == 1:
         offset = candidates[0][0]
         if _storage_candidate_aliases_batch_count(frame, before_offset, offset):
@@ -547,20 +553,96 @@ def _storage_candidate_aliases_batch_count(
     )
 
 
+def _storage_clock_alias_status(
+    frames: list[BDOFrame], *, destination_offset: int, item_offset: int,
+) -> tuple[bool, bool]:
+    """Return (suspected, proven) for the fourth byte of a uint64 Unix clock.
+
+    One near-arrival clock reading can veto choosing its slice. Discounting it
+    to resolve competing columns requires independent, advancing readings on
+    the same connection and layout. A stale or absent clock grants no proof.
+    """
+    start = destination_offset - 3
+    end = start + 8
+    if start < 5 or end > item_offset or not frames:
+        return False, False
+
+    near_clock = False
+    all_near = True
+    same_epoch_byte = True
+    ordered = True
+    advanced = False
+    previous_wire = -1
+    previous_arrival = float("-inf")
+    first_second_by_lag: dict[int, int] = {}
+    for frame in frames:
+        arrival = frame.context.timestamp
+        if len(frame.message) < end or not isfinite(arrival):
+            all_near = same_epoch_byte = False
+            continue
+        wire = int.from_bytes(frame.message[start:end], "little")
+        second = int(arrival)
+        lag = second - wire
+        near_clock |= abs(lag) <= 1
+        all_near &= abs(lag) <= 1
+        same_epoch_byte &= wire >> 24 == second >> 24
+        ordered &= wire >= previous_wire and arrival >= previous_arrival
+        advanced |= first_second_by_lag.setdefault(lag, wire) != wire
+        previous_wire, previous_arrival = wire, arrival
+
+    # Even with host clock skew, a matching epoch byte and lockstep elapsed
+    # seconds can veto picking this slice. Only near-arrival evidence can
+    # *remove* a competing candidate and thereby authorize another column.
+    skewed_clock = ordered and advanced and same_epoch_byte and len(first_second_by_lag) == 1
+    suspected = near_clock or skewed_clock
+    if not (ordered and advanced and all_near):
+        return suspected, False
+
+    base_lengths: set[int] = set()
+    strides: set[int] = set()
+    first = frames[0]
+    for frame in frames:
+        if (frame.context.flow != first.context.flow
+                or frame.context.flow_generation != first.context.flow_generation
+                or frame.opcode != first.opcode or frame.length != len(frame.message)):
+            return suspected, False
+        # Require full record markers at the same first-item boundary. Distinct
+        # cardinalities may corroborate each other only at one normalized layout.
+        offsets = _full_transfer_record_offsets(frame, item_offset, item_offset + 35)
+        if not offsets or offsets[0] != item_offset:
+            return suspected, False
+        if len(offsets) == 1:
+            base_lengths.add(frame.length)
+            continue
+        stride = uniform_stride(offsets)
+        if stride is None:
+            return suspected, False
+        prefix = frame.length - len(offsets) * stride
+        if not end <= prefix <= item_offset:
+            return suspected, False
+        strides.add(stride)
+        base_lengths.add(prefix + stride)
+
+    proven = len(base_lengths) == 1 and len(strides) <= 1
+    return suspected, proven
+
+
 def _discover_storage_context_offset_from_frames(
     frames: Iterable[BDOFrame],
     *,
     opcode: int,
     item_offset: int,
+    expected_storage_id: int | None = None,
 ) -> Optional[int]:
     """Learn the destination column by cross-frame offset consistency.
 
-    This intentionally assumes neither the byte envelope around a town ID nor
-    an item-relative position.  Registered-ID overlaps disappear when the
-    same field column is intersected across different destination values.
+    Intersect registered columns across qualifying deposits. An operator label
+    constrains their values. A corroborated clock slice can be removed from
+    consideration even when its high byte matches a town on every deposit.
     """
 
     candidate_intersection: Optional[set[int]] = None
+    checked_frames: list[BDOFrame] = []
     unregistered_messages: list[bytes] = []
     messages_seen: set[bytes] = set()
     for frame in frames:
@@ -572,13 +654,17 @@ def _discover_storage_context_offset_from_frames(
             continue
         candidates = {
             offset
-            for offset, _storage_id in storage_destination_candidates(
+            for offset, storage_id in storage_destination_candidates(
                 frame.message,
                 before_offset=item_offset,
             )
+            if expected_storage_id is None or storage_id == expected_storage_id
         }
         messages_seen.add(frame.message)
+        checked_frames.append(frame)
         if not candidates:
+            if expected_storage_id is not None:
+                return None
             # A newly added town can be structurally valid before the toolkit
             # name registry knows its numeric key. Let registered destinations
             # establish the column, then require that same column to contain a
@@ -593,9 +679,22 @@ def _discover_storage_context_offset_from_frames(
         )
         if not candidate_intersection:
             return None
-    if candidate_intersection is None or len(candidate_intersection) != 1:
+    if not candidate_intersection:
+        return None
+    suspected_offsets = set()
+    for offset in tuple(candidate_intersection):
+        suspected, proven = _storage_clock_alias_status(
+            checked_frames, destination_offset=offset, item_offset=item_offset,
+        )
+        if suspected:
+            suspected_offsets.add(offset)
+        if proven:
+            candidate_intersection.remove(offset)
+    if len(candidate_intersection) != 1:
         return None
     selected = next(iter(candidate_intersection))
+    if selected in suspected_offsets:
+        return None
     if any(
         selected + 4 > item_offset
         or int.from_bytes(message[selected : selected + 4], "little") == 0

@@ -853,6 +853,102 @@ def _storage_frame(
     )
 
 
+@pytest.mark.parametrize(
+    ("town", "extra_keys", "expected_offset"),
+    [
+        (" heIDel ", (107, 107), 8),
+        (None, (107, 107), None),
+        ("Velia", (107, 107), None),
+        ("Heidel", (32, 32), None),
+        ("Velia", (5, 107), None),
+    ],
+)
+def test_selected_storage_town_requires_one_matching_column_on_every_deposit(
+    town, extra_keys, expected_offset,
+):
+    frames = []
+    for index, extra_key in enumerate(extra_keys):
+        frame = _storage_frame(count=index + 1, index=index)
+        message = bytearray(frame.message)
+        message[20:24] = extra_key.to_bytes(4, "little")
+        frames.append(replace(frame, message=bytes(message)))
+    calibrate = partial(
+        calibrate_frames, frames, item_id=99123, quantity=3,
+        action="inventory-to-storage", storage_town=town,
+    )
+    if expected_offset is None:
+        with pytest.raises(CalibrationAuthorityError, match="destination-field"):
+            calibrate()
+    else:
+        delta = next(s for s in calibrate().specs if s.event == "STORAGE_ITEM_DELTA")
+        assert delta.context_offset == expected_offset
+        assert delta.record_count_offset == 6
+
+
+@pytest.mark.parametrize(
+    ("town", "town_key", "wire_step", "skew", "separate_epochs", "extra_town", "expected"),
+    [
+        (None, 5, 1, 0, False, False, 8),
+        ("Velia", 5, 1, 0, False, False, 8),
+        ("Heidel", 5, 1, 0, False, False, None),
+        ("Keplan", 5, 1, 0, False, False, None),
+        ("Keplan", 107, 1, 0, False, False, 8),
+        (None, 107, 1, 0, False, False, 8),
+        (None, 5, 0, 0, False, False, None),
+        ("Keplan", 5, 0, 0, False, False, None),
+        ("Velia", 5, 0, 0, False, False, 8),
+        (None, 5, 1, 5, False, False, None),
+        ("Keplan", 5, 1, 5, False, False, None),
+        (None, 5, 1, 0, True, False, None),
+        (None, 5, 1, 0, False, True, None),
+        ("Velia", 5, 1, 0, False, True, None),
+        (None, 0x123456, 1, 0, False, False, None),
+    ],
+)
+def test_storage_clock_slice_cannot_supply_destination_authority(
+    town, town_key, wire_step, skew, separate_epochs, extra_town, expected,
+):
+    frames = []
+    for index in range(2):
+        frame = _storage_frame(count=index + 1, index=index)
+        message = bytearray(frame.message)
+        second = 0x6B120000 + index * wire_step
+        message[19:27] = second.to_bytes(8, "little")
+        message[8:12] = town_key.to_bytes(4, "little")
+        if extra_town:
+            message[13:17] = town_key.to_bytes(4, "little")
+        context = replace(
+            frame.context, timestamp=second + skew + 0.25,
+            flow_generation=index if separate_epochs else 0,
+        )
+        frames.append(replace(frame, context=context, message=bytes(message)))
+    calibrate = partial(
+        calibrate_frames, frames, item_id=99123, quantity=3,
+        action="inventory-to-storage", storage_town=town,
+    )
+    if expected is None:
+        with pytest.raises(CalibrationAuthorityError, match="destination-field"):
+            calibrate()
+    else:
+        spec = next(s for s in calibrate().specs if s.event == "STORAGE_ITEM_DELTA")
+        assert (spec.context_offset, spec.record_count_offset) == (expected, 6)
+
+
+def test_storage_clock_elimination_cannot_promote_the_proven_count_as_a_town():
+    frames = []
+    for index, count in enumerate((5, 32)):  # Both counts are also registered towns.
+        frame = _storage_frame(count=count, index=index)
+        message = bytearray(frame.message)
+        message[8:12] = bytes(4)
+        message[27:31] = (0x123456).to_bytes(4, "little")  # Unregistered destination.
+        second = 0x6B123456 + index
+        message[15:23] = second.to_bytes(8, "little")
+        frames.append(replace(frame, message=bytes(message),
+                              context=replace(frame.context, timestamp=second + 0.3)))
+    with pytest.raises(CalibrationAuthorityError, match="destination-field"):
+        calibrate_frames(frames, item_id=99123, quantity=3, action="inventory-to-storage")
+
+
 def test_explicit_calibration_refuses_contradictory_intrinsics():
     frame = _storage_frame(contradictory=True)
 

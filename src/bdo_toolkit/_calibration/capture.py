@@ -60,6 +60,7 @@ def calibrate_pcap(
     *,
     item_id: int,
     quantity: Optional[int] = None,
+    storage_town: str | None = None,
     action: str = "auto",
     ports: tuple[int, ...] = DEFAULT_SERVER_PORTS,
     context_frames: int = 5,
@@ -69,6 +70,7 @@ def calibrate_pcap(
     _validate_calibration_options(
         item_id=item_id,
         quantity=quantity,
+        storage_town=storage_town,
         action=action,
         context_frames=context_frames,
         min_confidence=min_confidence,
@@ -78,6 +80,7 @@ def calibrate_pcap(
         frames,
         item_id=item_id,
         quantity=quantity,
+        storage_town=storage_town,
         action=action,
         context_frames=context_frames,
         min_confidence=min_confidence,
@@ -153,6 +156,7 @@ class CalibrationSession:
         *,
         item_id: int,
         quantity: Optional[int] = None,
+        storage_town: str | None = None,
         action: str = "auto",
         capture_options: Optional[PacketCaptureOptions] = None,
         context_frames: int = 5,
@@ -165,6 +169,7 @@ class CalibrationSession:
         _validate_calibration_options(
             item_id=item_id,
             quantity=quantity,
+            storage_town=storage_town,
             action=action,
             context_frames=context_frames,
             min_confidence=min_confidence,
@@ -186,6 +191,7 @@ class CalibrationSession:
         self._live: LiveCalibration | None = None
         self._item_id = item_id
         self._quantity = quantity
+        self._storage_town = storage_town
         self._action = action
         self._capture_options = capture_options or PacketCaptureOptions()
         self._context_frames = context_frames
@@ -451,6 +457,7 @@ class CalibrationSession:
             frames,
             item_id=self._item_id,
             quantity=self._quantity,
+            storage_town=self._storage_town,
             action=self._action,
             context_frames=self._context_frames,
             min_confidence=self._min_confidence,
@@ -615,6 +622,7 @@ def calibrate_live(
     item_id: int,
     capture_seconds: Optional[float] = None,
     quantity: Optional[int] = None,
+    storage_town: str | None = None,
     action: str = "auto",
     capture_options: Optional[PacketCaptureOptions] = None,
     context_frames: int = 5,
@@ -656,6 +664,7 @@ def calibrate_live(
     session = CalibrationSession(
         item_id=item_id,
         quantity=quantity,
+        storage_town=storage_town,
         action=action,
         capture_options=capture_options,
         context_frames=context_frames,

@@ -550,6 +550,7 @@ def _run_calibrate(args: argparse.Namespace) -> int:
                 args.pcap,
                 item_id=args.item_id,
                 quantity=args.qty,
+                storage_town=args.town,
                 action=args.action,
                 ports=args.ports,
                 min_confidence=args.min_confidence,
@@ -565,6 +566,7 @@ def _run_calibrate(args: argparse.Namespace) -> int:
             result = calibrate_live(
                 item_id=args.item_id,
                 quantity=args.qty,
+                storage_town=args.town,
                 action=args.action,
                 capture_options=PacketCaptureOptions(
                     interface=args.iface,
@@ -1096,6 +1098,9 @@ def build_parser() -> argparse.ArgumentParser:
             "gathering calibration; watch a known item id and omit --qty when its "
             "preview quantity is random."
         ),
+    )
+    calibrate.add_argument(
+        "--town", help="known storage destination for all watched deposits",
     )
     calibrate.add_argument(
         "--ports",

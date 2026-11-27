@@ -12,6 +12,7 @@ LOOT_PREVIEW. By default, profile updates preserve unrelated existing families.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 from bdo_toolkit.calibration import CalibrationSession, update_profile
@@ -25,17 +26,24 @@ QUANTITY = 1
 
 
 def main() -> None:
-    session = CalibrationSession(item_id=ITEM_ID, quantity=QUANTITY)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--town", help="storage destination for both deposits, e.g. Velia")
+    args = parser.parse_args()
+    town = args.town if args.town is not None else input("Storage town for both deposits (e.g. Velia): ")
+    town = town.strip()
+    if town.casefold() in {"muzgar", "velandir", "yukjo street", "godu village", "bukpo"}:
+        parser.error("use a guided calibration town such as Velia or Heidel")
+    try:
+        session = CalibrationSession(item_id=ITEM_ID, quantity=QUANTITY, storage_town=town)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     session.start()
     print("Listening in the background.")
     print(
         "Perform the following in-game actions yourself while capture remains open."
     )
-    print(
-        "Use one unambiguous town such as Velia, Heidel, Calpheon City, or Olvia."
-    )
-    print("Do not use Muzgar, Velandir, Yukjo Street, Godu Village, or Bukpo.")
+    print(f"Deposit into {town} storage for both moves.")
     print(f"Using unstackable item {ITEM_ID} (per-record quantity {QUANTITY}):")
     print("deposit one item, then deposit the remaining four,")
     print("then withdraw all five matching items in one action.")

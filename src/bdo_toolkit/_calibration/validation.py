@@ -6,7 +6,7 @@ import inspect
 import math
 from dataclasses import replace
 from typing import Optional
-from .._protocol import MAX_PLAUSIBLE_ITEM_ID
+from .._protocol import MAX_PLAUSIBLE_ITEM_ID, STORAGE_LOCATIONS
 from ._constants import CALIBRATION_ACTIONS
 
 
@@ -25,10 +25,11 @@ def _validate_calibration_options(
     *,
     item_id: int,
     quantity: Optional[int],
+    storage_town: str | None = None,
     action: str,
     context_frames: int,
     min_confidence: float,
-) -> None:
+) -> int | None:
     if isinstance(item_id, bool) or not isinstance(item_id, int):
         raise ValueError("item_id must be an integer")
     if not 1 <= item_id <= MAX_PLAUSIBLE_ITEM_ID:
@@ -59,6 +60,17 @@ def _validate_calibration_options(
         or not 0 <= min_confidence <= 1
     ):
         raise ValueError("min_confidence must be a finite number from 0 to 1")
+
+    if storage_town is None:
+        return None
+    if action not in ("auto", "inventory-to-storage"):
+        raise ValueError("storage_town requires calibration with deposits")
+    if isinstance(storage_town, str):
+        name = storage_town.strip().casefold()
+        for storage_id, location in STORAGE_LOCATIONS.items():
+            if location.name.casefold() == name:
+                return storage_id
+    raise ValueError(f"unknown storage town {storage_town!r}")
 
 
 def _validate_calibration_retention_limits(

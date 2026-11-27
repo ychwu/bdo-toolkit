@@ -2596,12 +2596,11 @@ session = CharacterLoadSession(
 </figure>
 <h3 class="subheading" data-anchor="run" data-toc="" id="calibration-profile/run">Run the example and make the moves</h3>
 <aside class="note accent"><p class="note-label">Writes opcodes.local</p><p>Only after the required transfer evidence passes. Unrelated families are kept and an existing file is backed up; an incomplete result writes nothing.</p></aside>
-<pre data-lang="shell"><code>python examples/live_calibrate_profile.py</code></pre>
-<p>Wait for the prompt before touching storage:</p>
+<pre data-lang="shell"><code>python examples/live_calibrate_profile.py --town Velia</code></pre>
+<p>Supply the storage destination with <code>--town</code>, or enter it when prompted. Wait for capture to start before touching storage:</p>
 <div class="example-output"><div class="output-label"><span>stdout</span><span>the opening prompt</span></div><pre class="output-block"><code>Listening in the background.
 Perform the following in-game actions yourself while capture remains open.
-Use one unambiguous town such as Velia, Heidel, Calpheon City, or Olvia.
-Do not use Muzgar, Velandir, Yukjo Street, Godu Village, or Bukpo.
+Deposit into Velia storage for both moves.
 Using unstackable item 15156 (per-record quantity 1):
 deposit one item, then deposit the remaining four,
 then withdraw all five matching items in one action.
@@ -2941,6 +2940,7 @@ def inspect_result(result: CalibrationResult) -&gt; None:
 <aside class="note accent"><p class="note-label">Excluded towns</p><p>Muzgar (<code>0x055F</code>), Velandir (<code>0x0566</code>), Yukjo Street (<code>0x058C</code>), Godu Village (<code>0x0590</code>) and Bukpo (<code>0x05A4</code>) each hold Velia’s key <code>0x0005</code> one byte later in the wrapper, so a capture there can’t prove which column is real.</p></aside>
 <aside class="note"><p class="note-label">See also</p><p><a href="#calibration-types/message-spec-attributes"><code>MessageSpec</code> fields</a> · <a href="#live-capture-health/decoder-health"><code>DecoderHealth</code></a></p></aside>
 <p>Before promoting <code>STORAGE_ITEM_DELTA</code>, calibration must uniquely identify both the destination field and the declared record-count field. Across the captured deposits it intersects registered-destination candidates with two-byte count candidates whose values fit the observed record geometry. It needs at least two distinct validated deposit counts; the one-record and four-record deposits provide that cross-check.</p>
+<p>A timestamp inside a storage message can contain the same four bytes as a town key. When the embedded time advances with packet time across comparable deposits, calibration can exclude that slice. For a single-town capture, the <code>--town</code> option supplies the expected destination. A second matching town field still blocks the write.</p>
 <p>The excluded-town restriction applies only while learning the offset. A profile calibrated in an unambiguous town handles those destinations normally.</p>
 <p>If either column stays ambiguous, <a href="#calibration-errors/calibration-authority-error"><code>CalibrationAuthorityError</code></a> is raised before any result or write. Once both are proven, calibration records the one-record base <code>length</code>, <code>context_offset</code> and <code>record_count_offset</code>. Runtime derives each wrapper’s stride from its declared count, actual length and that base, and validates every declared record before emitting any neutral storage record.</p>
 </section>

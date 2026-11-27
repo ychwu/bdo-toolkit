@@ -29,6 +29,7 @@ from ._records import (
     _passes_min_confidence,
     _plausible_record_offsets,
     _record_frame_shape,
+    _ranges_overlap,
 )
 from .companions import (
     _discover_source_container_decrement,
@@ -52,13 +53,14 @@ def calibrate_frames(
     *,
     item_id: int,
     quantity: Optional[int] = None,
+    storage_town: str | None = None,
     action: str = "auto",
     context_frames: int = 5,
     min_confidence: float = 0.80,
 ) -> CalibrationResult:
     """Score collected frames and promote plausible message specs."""
     assessment = assess_frames(
-        frames, item_id=item_id, quantity=quantity, action=action,
+        frames, item_id=item_id, quantity=quantity, action=action, storage_town=storage_town,
         context_frames=context_frames, min_confidence=min_confidence,
     )
     if assessment.error is not None:
@@ -79,14 +81,16 @@ def assess_frames(
     *,
     item_id: int,
     quantity: Optional[int] = None,
+    storage_town: str | None = None,
     action: str = "auto",
     context_frames: int = 5,
     min_confidence: float = 0.80,
 ) -> FrameAssessment:
     """Use the batch rules while preserving progress from incomplete evidence."""
-    _validate_calibration_options(
+    storage_id = _validate_calibration_options(
         item_id=item_id,
         quantity=quantity,
+        storage_town=storage_town,
         action=action,
         context_frames=context_frames,
         min_confidence=min_confidence,
@@ -96,6 +100,7 @@ def assess_frames(
     options = _Options(
         item_id=item_id,
         quantity=quantity,
+        storage_id=storage_id,
         action=action,
         context_frames=context_frames,
         min_confidence=min_confidence,
@@ -191,11 +196,6 @@ def _has_item_reference_frame(
     return False
 
 
-def _has_storage_delta_context(frame: BDOFrame, before_offset: int) -> bool:
-    """Whether a validated storage destination field precedes the record."""
-    return _discover_storage_context_offset(frame, before_offset) is not None
-
-
 def detect_transfer_family(
     frames: list[BDOFrame],
     record_frame: BDOFrame,
@@ -204,6 +204,7 @@ def detect_transfer_family(
     context_frames: int = 5,
     *,
     _frame_index: Optional[_FrameIndex] = None,
+    _excluded_storage_offset: int | None = None,
 ) -> tuple[Optional[str], bool, bool, bool]:
     """Classify a record frame's transfer direction, opcode-free.
 
@@ -233,7 +234,9 @@ def detect_transfer_family(
         frame_index, record_frame, item_id, context_frames
     )
     context_label = _has_context_label_before(record_frame, item_offset)
-    storage_context = _has_storage_delta_context(record_frame, item_offset)
+    storage_context = _discover_storage_context_offset(
+        record_frame, item_offset, excluded_offset=_excluded_storage_offset,
+    ) is not None
 
     if context_label and storage_context:
         family: Optional[str] = None  # contradictory intrinsic signals: refuse
@@ -533,6 +536,7 @@ def _calibrate_inventory_to_storage(
         (record.frame for record in storage_records),
         opcode=best.frame.opcode,
         item_offset=layout_item_offset,
+        expected_storage_id=options.storage_id,
     )
     record_count_offset = _discover_storage_record_count_offset(
         frames,
@@ -542,6 +546,11 @@ def _calibrate_inventory_to_storage(
         instance_offset=layout_instance_offset,
         single_record_length=single_record_length,
     )
+    # Counts such as 5 and 32 are also registered town keys. Removing a clock
+    # alias must never let the proven count masquerade as the destination.
+    if (storage_context_offset is not None and record_count_offset is not None
+            and _ranges_overlap(storage_context_offset, 4, record_count_offset, 2)):
+        storage_context_offset = None
     # The strongest target record can be the single-record action even when
     # the same guided run also contains the multi-record shape that proves the
     # wrapper stride. Learn that stride across every structurally compatible
@@ -573,10 +582,12 @@ def _calibrate_inventory_to_storage(
     if missing_authority:
         missing_text = ", ".join(missing_authority)
         guidance: list[str] = []
-        if "destination-field" in missing_authority:
+        if "destination-field" in missing_authority and options.storage_id is not None:
+            guidance.append("check the selected town and use that destination for both deposits")
+        elif "destination-field" in missing_authority:
             guidance.append(
-                "repeat the deposit in an unambiguous registered town such as "
-                "Velia or Heidel (or include controlled deposits to different towns)"
+                "supply the actual storage town for a single-town capture "
+                "(--town on the CLI), or collect controlled deposits to different towns"
             )
         if "record-count-field" in missing_authority:
             guidance.append(

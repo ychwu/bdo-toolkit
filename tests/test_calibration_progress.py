@@ -85,6 +85,91 @@ def test_observation_prefix_counts_and_stable_identity():
     assert set(o.observation_id for o in current).isdisjoint(o.observation_id for o in restarted)
 
 
+def clock_deposits():
+    frames = transfer_frames()
+    for position, second in ((1, 0x6B031234), (3, 0x6B031235)):
+        target = frames[position]
+        data = bytearray(target.message)
+        data[13:21] = second.to_bytes(8, "little")
+        frames[position] = replace(
+            target, message=bytes(data), context=replace(target.context, timestamp=second + 0.25),
+        )
+    return frames
+
+
+def test_proven_clock_restores_guidance_and_lost_witness_retracts_it():
+    frames = clock_deposits()
+    assert observations(frames[:2]) == ()
+    found = observations(frames)
+    assert [(o.direction, o.record_count, o.frame_number) for o in found] == [
+        ("inventory-to-storage", 1, 2), ("inventory-to-storage", 4, 4),
+        ("storage-to-inventory", 5, 5),
+    ]
+    assert observations(frames[2:], frames_discarded=2) == found[2:]
+
+
+@pytest.mark.parametrize("mutation", ["epoch", "flow", "opcode", "geometry", "wrong-quantity", "clock"])
+def test_independent_clock_evidence_must_come_from_comparable_watched_wrappers(mutation):
+    frames = clock_deposits()
+    target = frames[3]
+    data = bytearray(target.message)
+    context = target.context
+    if mutation == "epoch":
+        context = replace(context, flow_generation=1)
+    elif mutation == "flow":
+        context = replace(context, flow=replace(context.flow, destination_port=60000))
+    elif mutation == "opcode":
+        data[3:5] = (0xAB09).to_bytes(2, "little")
+    elif mutation == "geometry":
+        data.append(0)
+        data[:2] = len(data).to_bytes(2, "little")
+    elif mutation == "wrong-quantity":
+        data[41:45] = (3).to_bytes(4, "little")
+    else:
+        context = replace(context, timestamp=context.timestamp + 10)
+    frames[3] = replace(target, context=context, message=bytes(data))
+    assert [o.record_count for o in observations(frames)] == [5]
+
+
+def test_suspected_clock_alone_cannot_acknowledge_deposits_to_unregistered_town():
+    frames = clock_deposits()[:4]
+    second = 0x6B031234
+    for position in (1, 3):
+        target = frames[position]
+        data = bytearray(target.message)
+        data[8:12] = (0x77777777).to_bytes(4, "little")
+        data[13:21] = second.to_bytes(8, "little")
+        frames[position] = replace(
+            target, message=bytes(data), context=replace(target.context, timestamp=second + 0.25),
+        )
+    assert observations(frames[:2]) == ()
+    assert observations(frames) == ()
+
+
+def test_discounting_clock_cannot_turn_record_count_into_a_town():
+    frames = []
+    for second in (0x6B031234, 0x6B031235):
+        target = record(5)
+        data = bytearray(target.message)
+        # The uint16 batch count now also reads as the four-byte Velia key.
+        data[8:12] = bytes(4)
+        data[13:21] = second.to_bytes(8, "little")
+        frames.extend((decrement(5), replace(
+            target, message=bytes(data), context=replace(target.context, timestamp=second + 0.25),
+        )))
+    assert observations(frames) == ()
+
+
+def test_proven_clock_preserves_direction_conflicts_and_requires_linked_decrement():
+    frames = clock_deposits()
+    assert [o.record_count for o in observations(frames[1:])] == [4, 5]
+    target = frames[3]
+    data = bytearray(target.message)
+    data[27:31] = bytes.fromhex("d0f205a3")
+    frames[3] = replace(target, message=bytes(data))
+    assert [o.record_count for o in observations(frames)] == [1, 5]
+
+
 def test_first_deposit_observation_does_not_promote_layout():
     session = CalibrationSession(item_id=99123, quantity=1)
     for value in transfer_frames()[:2]:
